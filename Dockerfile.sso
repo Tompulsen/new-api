@@ -1,0 +1,3 @@
+FROM community-sso-newapi-base:706144769e5b
+COPY --chmod=755 community-sso-new-api /new-api
+LABEL org.opencontainers.image.revision="706144769e5bed5a47b78721e3bb11da3cf4c0b9+community-sso-20261107"

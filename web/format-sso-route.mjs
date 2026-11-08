@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const file='src/routes/community-authorize.tsx';
+const source=fs.readFileSync(file,'utf8');
+const match=source.match(/\/\*[\s\S]*?\*\//);
+if(!match)throw new Error('Missing license');
+fs.writeFileSync(file,source.replace(match[0],'').trimStart());
+const run=spawnSync('bunx',['oxfmt','--write',file],{stdio:'inherit'});
+fs.writeFileSync(file,match[0]+'\n'+fs.readFileSync(file,'utf8'));
+if(run.status)process.exit(run.status);
