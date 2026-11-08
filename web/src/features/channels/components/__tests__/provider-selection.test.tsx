@@ -514,16 +514,14 @@ test.each([true, false])(
     for (const category of ['All', 'Built-in', 'Gateways']) {
       await user.click(screen.getByRole('tab', { name: category }))
       expect(
-        screen.getByRole('option', { name: 'New API Built-in #60' })
+        screen.getByRole('option', { name: '章鱼 Built-in #60' })
       ).toBeVisible()
       expect(
         screen.getByRole('option', { name: 'Sub2API Built-in #59' })
       ).toBeVisible()
     }
     expect(screen.getAllByRole('option')).toHaveLength(2)
-    await user.click(
-      screen.getByRole('option', { name: 'New API Built-in #60' })
-    )
+    await user.click(screen.getByRole('option', { name: '章鱼 Built-in #60' }))
     expect(select).toHaveBeenLastCalledWith({ kind: 'builtin', type: 60 })
     const search = screen.getByRole('combobox')
     await user.type(search, 'Sub2API')

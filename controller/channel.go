@@ -561,7 +561,7 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 
 	setting := channel.GetSetting()
 	if channel.Type != constant.ChannelTypeNewAPI && len(setting.TaskExtendPluginKeys) > 0 {
-		return fmt.Errorf("task_extend_plugin_keys is only supported on New API channels")
+		return fmt.Errorf("task_extend_plugin_keys is only supported on 章鱼 channels")
 	}
 	if channel.Type == constant.ChannelTypeNewAPI {
 		if len(setting.TaskExtendPluginKeys) > maxTaskExtendPluginKeys {
@@ -589,14 +589,14 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 				return fmt.Errorf("task plugin %q is not registered", key)
 			}
 			if !plugin.Meta.SupportsUpstream(jsplugin.UpstreamKindNewAPI) {
-				return fmt.Errorf("task plugin %q does not support a New API upstream and cannot be bound to a New API channel", key)
+				return fmt.Errorf("task plugin %q does not support a 章鱼 upstream and cannot be bound to a 章鱼 channel", key)
 			}
 			bound[key] = struct{}{}
 		}
 	}
 
 	if channel.Type == constant.ChannelTypeNewAPI && strings.TrimSpace(channel.GetBaseURL()) == "" {
-		return fmt.Errorf("New API channel base URL cannot be empty")
+		return fmt.Errorf("章鱼 channel base URL cannot be empty")
 	}
 	if channel.Type == constant.ChannelTypeVLLM && strings.TrimSpace(channel.GetBaseURL()) == "" {
 		return fmt.Errorf("vLLM channel base URL cannot be empty")

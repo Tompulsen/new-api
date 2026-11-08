@@ -57,19 +57,19 @@ function CommunityAuthorize() {
         studioTitle: 'Continue to the creation studio',
         communityTitle: 'Continue to the community',
         studioHint:
-          'The studio will use this account. Model usage is charged to this New API account through your own API key.',
+          'The studio will use this account. Model usage is charged to this 章鱼 account through your own API key.',
         communityHint:
-          'Your first sign-in creates a community profile. Future sign-ins use the same profile. Your New API balance and API keys stay with this account.',
+          'Your first sign-in creates a community profile. Future sign-ins use the same profile. Your 章鱼 balance and API keys stay with this account.',
         continuing: 'Continuing…',
         continue: 'Continue with this account',
       }
     : {
         studioTitle: '使用对应账号进入制作空间',
-        communityTitle: '使用 New API 账号进入社区',
+        communityTitle: '使用章鱼账号进入社区',
         studioHint:
-          '制作空间将使用当前账号。调用模型时，通过你自己的密钥使用此 New API 账号的余额。',
+          '制作空间将使用当前账号。调用模型时，通过你自己的密钥使用此章鱼账号的余额。',
         communityHint:
-          '首次登录会自动建立社区账号，之后登录使用同一账号。New API 的余额和 API 密钥仍保留在当前账号中。',
+          '首次登录会自动建立社区账号，之后登录使用同一账号。章鱼的余额和 API 密钥仍保留在当前账号中。',
         continuing: '正在进入…',
         continue: '使用此账号继续',
       }
@@ -131,8 +131,8 @@ function CommunityAuthorize() {
         {!accountMatches && (
           <p role='alert'>
             {en
-              ? 'This is not the New API account linked to your community profile. Switch accounts in the account center before continuing.'
-              : '当前 New API 账号与社区对应的账号不一致。请先到账号中心切换账号，再返回继续。'}{' '}
+              ? 'This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.'
+              : '当前章鱼账号与社区对应的账号不一致。请先到账号中心切换账号，再返回继续。'}{' '}
             <a className='underline' href='/dashboard'>
               {en ? 'Account center' : '账号中心'}
             </a>
