@@ -289,3 +289,110 @@ it('keeps the confirmation open when a concurrent price edit rejects the batch',
   )
   expect(dialog).toBeVisible()
 })
+
+it('offers every model from selected channels and removes selections belonging only to a removed channel', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        bindings: { channel_ids: [], models: [] },
+        version: 'bindings-v1',
+        channels: [
+          {
+            id: 354,
+            name: 'Video channel A',
+            models: ['new-video', 'shared-model', 'custom-alias'],
+          },
+          {
+            id: 355,
+            name: 'Video channel B',
+            models: ['other-video', 'shared-model'],
+          },
+        ],
+        models: [],
+        usage_schema: schema,
+      },
+    },
+  })
+  const put = vi.spyOn(api, 'put').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        bindings: { channel_ids: [355], models: ['shared-model'] },
+        version: 'bindings-v2',
+        channels: [
+          {
+            id: 354,
+            name: 'Video channel A',
+            models: ['new-video', 'shared-model', 'custom-alias'],
+          },
+          {
+            id: 355,
+            name: 'Video channel B',
+            models: ['other-video', 'shared-model'],
+          },
+        ],
+        models: ['other-video', 'shared-model'],
+        usage_schema: schema,
+      },
+    },
+  })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  render(
+    <QueryClientProvider client={client}>
+      <VideoBillingSection />
+    </QueryClientProvider>
+  )
+  const user = userEvent.setup()
+  const channels = await screen.findByLabelText('Video channels')
+  const models = screen.getByLabelText('Additional video models')
+  expect(models).toBeDisabled()
+  await user.click(channels)
+  await user.click(
+    screen.getByRole('option', { name: 'Video channel A (#354)' })
+  )
+  await user.keyboard('{Escape}')
+  await user.click(models)
+  for (const name of ['new-video', 'shared-model', 'custom-alias']) {
+    expect(screen.getByRole('option', { name })).toBeVisible()
+  }
+  expect(
+    screen.queryByRole('option', { name: 'other-video' })
+  ).not.toBeInTheDocument()
+  await user.type(models, 'outside-model')
+  expect(screen.queryByRole('option')).not.toBeInTheDocument()
+  await user.keyboard('{Enter}')
+  await user.clear(models)
+  await user.click(models)
+  await user.click(await screen.findByRole('option', { name: 'new-video' }))
+  await user.click(screen.getByRole('option', { name: 'shared-model' }))
+  await user.keyboard('{Escape}')
+  await user.click(channels)
+  await user.click(
+    screen.getByRole('option', { name: 'Video channel B (#355)' })
+  )
+  await user.keyboard('{Escape}')
+  await user.click(models)
+  expect(screen.getAllByRole('option', { name: 'shared-model' })).toHaveLength(
+    1
+  )
+  expect(screen.getByRole('option', { name: 'other-video' })).toBeVisible()
+  await user.keyboard('{Escape}')
+  await user.click(channels)
+  await user.click(
+    screen.getByRole('option', { name: 'Video channel A (#354)' })
+  )
+  await user.keyboard('{Escape}')
+  expect(put).not.toHaveBeenCalled()
+  await user.click(
+    screen.getByRole('button', { name: 'Save video associations' })
+  )
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith('/api/option/video_billing', {
+      bindings: { channel_ids: [355], models: ['shared-model'] },
+      expected_version: 'bindings-v1',
+    })
+  )
+})

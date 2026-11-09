@@ -177,7 +177,11 @@ function VideoBillingForm(props: {
     label: `${channel.name} (#${channel.id})`,
   }))
   const modelOptions = [
-    ...new Set(props.config.channels.flatMap((channel) => channel.models)),
+    ...new Set(
+      props.config.channels
+        .filter((channel) => bindings.channel_ids.includes(channel.id))
+        .flatMap((channel) => channel.models)
+    ),
   ].map((name) => ({ value: name, label: name }))
   const dirty =
     JSON.stringify({
@@ -201,9 +205,18 @@ function VideoBillingForm(props: {
               id={channelsId}
               options={channelOptions}
               selected={bindings.channel_ids.map(String)}
-              onChange={(values) =>
-                setBindings({ ...bindings, channel_ids: values.map(Number) })
-              }
+              onChange={(values) => {
+                const channelIds = values.map(Number)
+                const models = new Set(
+                  props.config.channels
+                    .filter((channel) => channelIds.includes(channel.id))
+                    .flatMap((channel) => channel.models)
+                )
+                setBindings({
+                  channel_ids: channelIds,
+                  models: bindings.models.filter((name) => models.has(name)),
+                })
+              }}
               disabled={busy}
               maxVisibleChips={5}
             />
@@ -217,8 +230,7 @@ function VideoBillingForm(props: {
               options={modelOptions}
               selected={bindings.models}
               onChange={(models) => setBindings({ ...bindings, models })}
-              allowCreate
-              disabled={busy}
+              disabled={busy || bindings.channel_ids.length === 0}
               maxVisibleChips={5}
             />
           </Field>
