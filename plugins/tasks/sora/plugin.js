@@ -7,7 +7,7 @@ export const meta = {
     en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
-  version: "1.1.1",
+  version: "1.1.2",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
@@ -144,12 +144,23 @@ export function extractUsage(ctx) {
 
 export function extractUsageOnComplete(task, taskResult, body) {
   const facts = {};
-  const seconds = Number((body || {}).seconds || (body || {}).duration || 0);
-  if (Number.isFinite(seconds) && seconds > 0) facts.seconds = Math.min(seconds, 3600);
-  const size = trimmed((body || {}).size);
-  if (["720x1280", "1280x720", "1792x1024", "1024x1792"].includes(size)) facts.size = size;
-  const resolution = trimmed((body || {}).resolution || ((body || {}).metadata || {}).resolution).toLowerCase();
-  if (["480p", "720p", "1080p"].includes(resolution)) facts.resolution = resolution;
+  body = body || {};
+  for (const value of [body, body.video, body.data, body.usage, body.metadata]) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const seconds = Number(value.seconds === undefined ? (value.duration === undefined ? value.duration_seconds : value.duration) : value.seconds);
+    if (facts.seconds === undefined && Number.isFinite(seconds) && seconds > 0 && seconds <= 3600) facts.seconds = seconds;
+    const size = trimmed(value.size);
+    if (!facts.size && ["720x1280", "1280x720", "1792x1024", "1024x1792"].includes(size)) facts.size = size;
+    let resolution = trimmed(value.resolution || value.resolution_name).toLowerCase();
+    const dimensions = /^(\d+)[x:](\d+)$/.exec(size);
+    const width = Number(value.width || (dimensions && dimensions[1]));
+    const height = Number(value.height || (dimensions && dimensions[2]));
+    if (width > 0 && height > 0 && width <= 65535 && height <= 65535) {
+      const shortEdge = Math.min(width, height);
+      if ([480, 720, 1080].includes(shortEdge)) resolution = shortEdge + "p";
+    }
+    if (!facts.resolution && ["480p", "720p", "1080p"].includes(resolution)) facts.resolution = resolution;
+  }
   return facts;
 }
 

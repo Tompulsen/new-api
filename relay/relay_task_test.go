@@ -780,7 +780,7 @@ export function buildSubmitRequest(ctx) { return {url:ctx.baseUrl+"/submit",meth
 export function parseSubmitResponse(ctx,response) { return {taskId:response.body.id}; }
 export function buildQueryRequest(ctx) { return {url:ctx.baseUrl+"/query"}; }
 export function parseTaskResult() { return {status:"SUCCESS"}; }
-export function extractUsage() { return {seconds:6,resolution:"720p"}; }
+export function extractUsage(ctx) { return Object.assign({seconds:6}, ctx.requestBody.resolution ? {resolution:ctx.requestBody.resolution} : {}); }
 `
 	registry := pluginruntime.NewRegistry()
 	_, err := registry.Register(source, pluginruntime.Options{})
@@ -820,15 +820,25 @@ export function extractUsage() { return {seconds:6,resolution:"720p"}; }
 		name, model string
 		override    bool
 		wantError   bool
+		auto        bool
+		expression  string
+		wantQuota   int
 	}{
 		{name: "unknown alias uses sora price", model: "custom-video", override: true},
 		{name: "native collision rejects inherited price", model: "shared-video", wantError: true},
 		{name: "native collision accepts explicit sora price", model: "shared-video", override: true},
+		{name: "auto reserves most expensive resolution", model: "custom-video", override: true, auto: true,
+			expression: `u("resolution") == "480p" ? tier("480p", u("seconds") * 0.26) : u("resolution") == "720p" ? tier("720p", u("seconds") * 0.19) : tier("1080p", u("seconds") * 0.12)`,
+			wantQuota:  780000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			selectedExpression := expression
+			if tc.expression != "" {
+				selectedExpression = tc.expression
+			}
 			prices := map[string]string{}
 			if tc.override {
-				prices["sora::"+tc.model] = expression
+				prices["sora::"+tc.model] = selectedExpression
 			}
 			encoded, err := common.Marshal(prices)
 			require.NoError(t, err)
@@ -847,6 +857,9 @@ export function extractUsage() { return {seconds:6,resolution:"720p"}; }
 			}))
 			defer server.Close()
 			c, info := newTaskSubmitContext(t, tc.model, "")
+			if !tc.auto {
+				c.Set("task_request", map[string]any{"prompt": "p", "resolution": "720p"})
+			}
 			c.Set("channel_type", constant.ChannelTypeOpenAI)
 			c.Set("group", "default")
 			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
@@ -869,10 +882,23 @@ export function extractUsage() { return {seconds:6,resolution:"720p"}; }
 			require.Nil(t, taskErr, "submission error: %+v", taskErr)
 			require.NotNil(t, result)
 			require.NotNil(t, info.TieredBillingSnapshot)
-			assert.Equal(t, expression, info.TieredBillingSnapshot.ExprString)
-			assert.Equal(t, 225000, result.Quota)
+			assert.Equal(t, selectedExpression, info.TieredBillingSnapshot.ExprString)
+			wantQuota := 225000
+			if tc.wantQuota != 0 {
+				wantQuota = tc.wantQuota
+			}
+			assert.Equal(t, wantQuota, result.Quota)
 			assert.Equal(t, result.Quota, billing.held)
 			assert.Len(t, requests, 1)
+			if tc.auto {
+				assert.NotContains(t, info.TieredBillingSnapshot.UsageFacts, "resolution", "a reservation must not invent the actual resolution")
+				settled, facts, err := service.EvaluateTaskCompletionUsage(info.TieredBillingSnapshot, map[string]any{"seconds": float64(5), "resolution": "720p"})
+				require.NoError(t, err)
+				assert.Equal(t, 475000, settled.ActualQuotaAfterGroup)
+				assert.Equal(t, "720p", facts["resolution"])
+				_, _, err = service.EvaluateTaskCompletionUsage(info.TieredBillingSnapshot, map[string]any{"seconds": float64(5)})
+				assert.Error(t, err, "unknown output resolution cannot select the expression fallback tier")
+			}
 		})
 	}
 }

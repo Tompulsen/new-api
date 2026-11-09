@@ -79,5 +79,32 @@ func TestSoraCompatibleVideoBillingFacts(t *testing.T) {
 	measured := call("extractUsageOnComplete", nil, nil, map[string]any{"seconds": 5, "resolution": "720p"})
 	assert.Equal(t, float64(5), measured["seconds"])
 	assert.Equal(t, "720p", measured["resolution"])
+	for _, tc := range []struct {
+		name, body, resolution string
+		seconds                float64
+	}{
+		{"actual dimensions override label", `{"seconds":6,"size":"1920x1080","resolution":"720p"}`, "1080p", 6},
+		{"portrait dimensions", `{"duration":5,"width":1080,"height":1920}`, "1080p", 5},
+		{"nested output", `{"video":{"duration_seconds":4.5,"width":854,"height":480}}`, "480p", 4.5},
+		{"resolution name", `{"seconds":6,"resolution_name":"720P"}`, "720p", 6},
+		{"unknown dimensions are not guessed", `{"size":"1792x1024"}`, "", 0},
+		{"invalid duration is not billed", `{"seconds":3601}`, "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(tc.body, &body))
+			actual := call("extractUsageOnComplete", nil, nil, body)
+			if tc.resolution == "" {
+				assert.NotContains(t, actual, "resolution")
+			} else {
+				assert.Equal(t, tc.resolution, actual["resolution"])
+			}
+			if tc.seconds == 0 {
+				assert.NotContains(t, actual, "seconds")
+			} else {
+				assert.Equal(t, tc.seconds, actual["seconds"])
+			}
+		})
+	}
 	assert.Empty(t, call("extractUsageOnComplete", nil, nil, map[string]any{}))
 }

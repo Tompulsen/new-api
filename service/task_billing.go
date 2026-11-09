@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -69,6 +70,9 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, task *model
 		other.SetPublic("billing_mode", "tiered_expr")
 		other.SetPublic("expr_b64", base64.StdEncoding.EncodeToString([]byte(snap.ExprString)))
 		other.SetPublic("matched_tier", snap.EstimatedTier)
+		if snap.VideoUsagePending {
+			other.SetPublic("usage_estimated", true)
+		}
 		if len(snap.UsageFacts) > 0 {
 			other.SetPublic("usage_facts", snap.UsageFacts)
 		}
@@ -166,6 +170,9 @@ func taskBillingOther(task *model.Task) *model.LogOther {
 			other.SetPublic("billing_mode", "tiered_expr")
 			other.SetPublic("expr_b64", base64.StdEncoding.EncodeToString([]byte(snap.ExprString)))
 			other.SetPublic("matched_tier", snap.EstimatedTier)
+			if snap.VideoUsagePending {
+				other.SetPublic("usage_estimated", true)
+			}
 			if len(snap.UsageFacts) > 0 {
 				other.SetPublic("usage_facts", snap.UsageFacts)
 			}
@@ -441,6 +448,14 @@ func EvaluateTaskCompletionUsage(snap *billingexpr.BillingSnapshot, facts map[st
 	if snap == nil {
 		return billingexpr.TieredResult{}, nil, fmt.Errorf("task billing snapshot is missing")
 	}
+	if snap.VideoUsagePending {
+		if err := billing_setting.ValidateVideoExprFacts(snap.ExprString, facts); err != nil {
+			return billingexpr.TieredResult{}, nil, fmt.Errorf("actual video resolution is not available")
+		}
+		if _, used := billingexpr.UsedUsageKeys(snap.ExprString)["seconds"]; used && facts["seconds"] == nil {
+			return billingexpr.TieredResult{}, nil, fmt.Errorf("actual video duration is not available")
+		}
+	}
 	usage := make(map[string]any, len(snap.UsageFacts)+len(facts))
 	maps.Copy(usage, snap.UsageFacts)
 	maps.Copy(usage, facts)
@@ -449,4 +464,25 @@ func EvaluateTaskCompletionUsage(snap *billingexpr.BillingSnapshot, facts map[st
 		err = fmt.Errorf("task completion expression produced an invalid cost")
 	}
 	return result, usage, err
+}
+
+// Persist confirmed video usage through the existing terminal-status CAS, even
+// when its cost equals the reservation and no difference log is needed.
+func prepareVideoUsageSnapshot(task *model.Task, result *relaycommon.TaskInfo) {
+	if task.Status != model.TaskStatusSuccess || task.PrivateData.BillingContext == nil {
+		return
+	}
+	bc := task.PrivateData.BillingContext
+	if bc.TieredSnapshot == nil || !bc.TieredSnapshot.VideoUsagePending {
+		return
+	}
+	settled, facts, err := EvaluateTaskCompletionUsage(bc.TieredSnapshot, result.UsageFacts)
+	if err != nil {
+		return
+	}
+	snapshot := *bc.TieredSnapshot
+	snapshot.UsageFacts = facts
+	snapshot.EstimatedTier = settled.MatchedTier
+	snapshot.VideoUsagePending = false
+	bc.TieredSnapshot = &snapshot
 }

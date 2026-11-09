@@ -1749,6 +1749,51 @@ func TestSettle_TieredSnapshotWriteBackUsesSettledFactsAndMatchedTier(t *testing
 	assert.NotContains(t, other, "seconds")
 }
 
+func TestVideoActualUsageSettlement(t *testing.T) {
+	expression := `u("resolution") == "1080p" ? tier("1080p", u("seconds") * 0.1) : tier("720p", u("seconds") * 0.05)`
+	for _, tc := range []struct {
+		name, status string
+		facts        map[string]any
+		wantQuota    int
+		pending      bool
+	}{
+		{"actual output refunds the difference", "SUCCESS", map[string]any{"resolution": "1080p", "seconds": float64(6)}, 600, false},
+		{"actual output charges an increase", "SUCCESS", map[string]any{"resolution": "1080p", "seconds": float64(15)}, 1500, false},
+		{"same price still confirms actual usage", "SUCCESS", map[string]any{"resolution": "1080p", "seconds": float64(10)}, 1000, false},
+		{"missing resolution keeps estimated quota", "SUCCESS", map[string]any{"seconds": float64(6)}, 1000, true},
+		{"missing duration keeps estimated quota", "SUCCESS", map[string]any{"resolution": "1080p"}, 1000, true},
+		{"failed generation refunds all", "FAILURE", nil, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			const userID, initialQuota, reserved = 51, 10_000, 1000
+			seedUser(t, userID, initialQuota)
+			task := makeTask(userID, 0, reserved, 0, BillingSourceWallet, 0)
+			task.Status = model.TaskStatus(tc.status)
+			task.PrivateData.BillingContext.TieredSnapshot = &billingexpr.BillingSnapshot{
+				ExprString: expression, ExprHash: billingexpr.ExprHashString(expression),
+				GroupRatio: 1, QuotaPerUnit: 1000, ExprVersion: 1, TaskUsageBilling: true,
+				VideoUsagePending: true, UsageFacts: map[string]any{"seconds": float64(10)},
+			}
+			require.NoError(t, model.DB.Create(task).Error)
+			result := &relaycommon.TaskInfo{Status: tc.status, UsageFacts: tc.facts}
+			prepareVideoUsageSnapshot(task, result)
+			won, err := task.UpdateWithStatus(task.Status)
+			require.NoError(t, err)
+			require.True(t, won)
+			var stored model.Task
+			require.NoError(t, model.DB.First(&stored, task.ID).Error)
+			assert.Equal(t, tc.pending, stored.PrivateData.BillingContext.TieredSnapshot.VideoUsagePending)
+			finalizeTerminalTask(t.Context(), &mockAdaptor{}, task, result)
+			assert.Equal(t, tc.wantQuota, task.Quota)
+			assert.Equal(t, initialQuota+reserved-tc.wantQuota, getUserQuota(t, userID))
+			if tc.pending {
+				assert.Equal(t, true, taskBillingOther(task).Snapshot()["usage_estimated"])
+			}
+		})
+	}
+}
+
 func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
 	previousRatios := ratio_setting.ModelRatio2JSONString()
 	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"test-model":1}`))

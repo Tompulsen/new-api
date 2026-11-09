@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"os"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -32,12 +33,112 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/abema/go-mp4"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestVideoCompletionMeasuresMissingUsage(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "generated-*.mp4")
+	require.NoError(t, err)
+	writer := mp4.NewWriter(file)
+	_, err = writer.StartBox(&mp4.BoxInfo{Type: mp4.BoxTypeMoov()})
+	require.NoError(t, err)
+	for _, header := range []mp4.IImmutableBox{
+		&mp4.Mvhd{Timescale: 1000, DurationV0: 6500},
+		&mp4.Tkhd{TrackID: 1, DurationV0: 6500, Width: 1920 << 16, Height: 1080 << 16},
+	} {
+		if header.GetType() == mp4.BoxTypeTkhd() {
+			_, err = writer.StartBox(&mp4.BoxInfo{Type: mp4.BoxTypeTrak()})
+			require.NoError(t, err)
+		}
+		_, err = writer.StartBox(&mp4.BoxInfo{Type: header.GetType()})
+		require.NoError(t, err)
+		_, err = mp4.Marshal(writer, header, mp4.Context{})
+		require.NoError(t, err)
+		_, err = writer.EndBox()
+		require.NoError(t, err)
+		if header.GetType() == mp4.BoxTypeTkhd() {
+			_, err = writer.EndBox()
+			require.NoError(t, err)
+		}
+	}
+	_, err = writer.EndBox()
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	video, err := os.ReadFile(file.Name())
+	require.NoError(t, err)
+
+	fetchSetting := system_setting.GetFetchSetting()
+	previousSetting := *fetchSetting
+	fetchSetting.AllowPrivateIp = true
+	fetchSetting.AllowedPorts = []string{"1-65535"}
+	t.Cleanup(func() { *fetchSetting = previousSetting })
+	service.InitHttpClient()
+	source, err := plugins.Source("sora")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "sora"})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, status string
+		body         []byte
+		initial      map[string]any
+		want         map[string]any
+		requests     int
+		cancel       bool
+	}{
+		{"MP4 actual dimensions and fractional duration", "SUCCESS", video, nil, map[string]any{"seconds": 6.5, "resolution": "1080p"}, 1, false},
+		{"reported duration takes precedence", "SUCCESS", video, map[string]any{"seconds": float64(6)}, map[string]any{"seconds": float64(6), "resolution": "1080p"}, 1, false},
+		{"complete reported facts skip download", "SUCCESS", nil, map[string]any{"seconds": float64(6), "resolution": "720p"}, map[string]any{"seconds": float64(6), "resolution": "720p"}, 0, false},
+		{"queued tasks skip download", "IN_PROGRESS", nil, nil, nil, 0, false},
+		{"failed tasks skip download", "FAILURE", nil, nil, nil, 0, false},
+		{"invalid media does not invent usage", "SUCCESS", []byte("invalid"), nil, nil, 1, false},
+		{"oversized media stays estimated", "SUCCESS", make([]byte, (1<<20)+1), nil, nil, 1, false},
+		{"cancelled probing stays estimated", "SUCCESS", video, nil, nil, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previousLimit := constant.MaxFileDownloadMB
+			constant.MaxFileDownloadMB = 1
+			t.Cleanup(func() { constant.MaxFileDownloadMB = previousLimit })
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				assert.Equal(t, "/v1/videos/upstream-42/content", r.URL.Path)
+				assert.Equal(t, "Bearer selected-task-key", r.Header.Get("Authorization"), "probe must use the saved task key on multi-key channels")
+				w.Header().Set("Content-Type", "video/mp4")
+				_, _ = w.Write(tc.body)
+			}))
+			defer server.Close()
+			adaptor := New(plugin)
+			adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelBaseUrl: server.URL, ApiKey: "different-current-key",
+			}})
+			task := &model.Task{TaskID: "public-42", Properties: model.Properties{OriginModelName: "sora-2"}}
+			task.PrivateData.Key = "selected-task-key"
+			task.PrivateData.UpstreamTaskID = "upstream-42"
+			task.PrivateData.BillingContext = &model.TaskBillingContext{TieredSnapshot: &billingexpr.BillingSnapshot{
+				ExprString:        `u("resolution") == "1080p" ? tier("1080p", u("seconds") * 0.1) : tier("other", u("seconds") * 0.05)`,
+				VideoUsagePending: true,
+			}}
+			result := &relaycommon.TaskInfo{Status: tc.status, UsageFacts: tc.initial}
+			ctx := t.Context()
+			if tc.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			adaptor.completeVideoUsage(ctx, task, result)
+			assert.Equal(t, tc.requests, requests)
+			assert.Equal(t, tc.want, result.UsageFacts)
+			assert.Equal(t, "different-current-key", adaptor.info.ApiKey, "probing must not mutate shared channel credentials")
+		})
+	}
+	_, err = measureMP4Video(bytes.Repeat([]byte{0, 0, 0, 8, 'f', 'r', 'e', 'e'}, 513))
+	assert.ErrorContains(t, err, "box limit")
+}
 
 func TestCompatibleVideoBillingUsesAssociatedSchemaForCustomDimensions(t *testing.T) {
 	previousDB := model.DB
@@ -898,7 +999,7 @@ export function parseBatchResult() {return [];}
 			http.Redirect(w, r, target.URL+"/final", http.StatusFound)
 		}))
 		defer origin.Close()
-		resp, err := New(defaultPlugin).doFetchDescriptor(origin.URL, "", "", requestDescriptor{
+		resp, err := New(defaultPlugin).doFetchDescriptor(context.Background(), origin.URL, "", "", requestDescriptor{
 			URL:     origin.URL + "/query?key=query-secret",
 			Headers: map[string]string{"X-API-Key": "channel-secret", "x-goog-api-key": "channel-secret", "X-Vendor-Credential": "channel-secret"},
 		})
