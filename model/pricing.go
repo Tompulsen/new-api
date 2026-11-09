@@ -392,11 +392,14 @@ func updatePricing() {
 			}
 		}
 		if ok && plugin != nil {
-			usageSchema, usageExamples := plugin.Meta.UsageForModel(usageModel)
+			usageSchema, usageExamples := TaskPricingUsage(plugin, usageModel, model)
 			pricing.BillingUsageSchema = jsplugin.CloneUsageSchema(usageSchema)
 			pricing.BillingUsageExamples = jsplugin.CloneUsageExamples(usageExamples)
 		}
-		providers := pluginGeneration.PluginsByModel(model)
+		if len(pricing.BillingUsageSchema) == 0 && HasVideoBillingModel(model) {
+			pricing.BillingUsageSchema = billing_setting.VideoUsageSchema()
+		}
+		providers := TaskPricingPlugins(pluginGeneration, model)
 		hasProviderOverride := false
 		for _, provider := range providers {
 			if _, configured := billing_setting.GetPluginBillingExpr(provider.Meta.Key, model); configured {
@@ -406,7 +409,7 @@ func updatePricing() {
 		}
 		if hasProviderOverride || (len(providers) >= 2 && pricing.BillingMode == billing_setting.BillingModeTieredExpr) {
 			for _, provider := range providers {
-				schema, examples := provider.Meta.UsageForModel(model)
+				schema, examples := TaskPricingUsage(provider, model)
 				if schema == nil {
 					schema = map[string]jsplugin.UsageFieldSchema{}
 				}
@@ -417,6 +420,11 @@ func updatePricing() {
 				}
 				if mode == billing_setting.BillingModeTieredExpr && !billing_setting.TaskExprCompatible(expression, schema) {
 					expression = ""
+				}
+				if provider.Meta.Key == "sora" && VideoBillingRequiresProviderPrice(pluginGeneration, model) {
+					if _, overridden := billing_setting.GetPluginBillingExpr("sora", model); !overridden {
+						expression = ""
+					}
 				}
 				pricing.BillingPluginVariants = append(pricing.BillingPluginVariants, PricingPluginVariant{
 					PluginKey: provider.Meta.Key, PluginName: provider.Meta.Name, Icon: provider.Meta.Icon,

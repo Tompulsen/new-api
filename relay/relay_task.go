@@ -259,6 +259,13 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if pinnedPlugin.Plugin != nil {
 		pluginKey = pinnedPlugin.Plugin.Meta.Key
 	}
+	if pluginKey == "sora" && model.VideoBillingRequiresProviderPrice(pinnedPlugin.Generation, modelName, info.UpstreamModelName) {
+		_, clientPrice := billing_setting.GetPluginBillingExpr("sora", modelName)
+		_, mappedPrice := billing_setting.GetPluginBillingExpr("sora", info.UpstreamModelName)
+		if !clientPrice && !mappedPrice {
+			return nil, service.TaskErrorWrapperLocal(fmt.Errorf("configure an OpenAI Video provider price for model %s before submitting", modelName), "model_price_error", http.StatusBadRequest)
+		}
+	}
 	exprStr, exists := billing_setting.ResolveTaskBillingExpr(pluginKey, modelName, info.UpstreamModelName)
 	useTiered := exists || billing_setting.GetBillingMode(modelName) == billing_setting.BillingModeTieredExpr
 	if useTiered {
@@ -271,7 +278,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 		sharedModel := pinnedPlugin.Generation.SharedModel(modelName) || pinnedPlugin.Generation.SharedModel(info.UpstreamModelName)
 		if sharedModel && pinnedPlugin.Plugin != nil {
-			schema, _ := pinnedPlugin.Plugin.Meta.UsageForModels(info.UpstreamModelName, modelName)
+			schema, _ := model.TaskPricingUsage(pinnedPlugin.Plugin, info.UpstreamModelName, modelName)
 			if !billing_setting.TaskExprCompatible(exprStr, schema) {
 				return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s pricing is not configured for plugin %s", modelName, pluginKey), "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 			}
@@ -284,6 +291,11 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			}
 		} else {
 			facts = provider.ExtractUsageFacts(c, info)
+		}
+		if pluginKey == "sora" {
+			if err := billing_setting.ValidateVideoExprFacts(exprStr, facts); err != nil {
+				return nil, service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
+			}
 		}
 		cost, trace, runErr := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
 		if runErr != nil || cost < 0 {

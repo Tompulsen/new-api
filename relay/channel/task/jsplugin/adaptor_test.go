@@ -30,6 +30,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -37,6 +38,41 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestCompatibleVideoBillingUsesAssociatedSchemaForCustomDimensions(t *testing.T) {
+	previousDB := model.DB
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	model.DB = database
+	require.NoError(t, database.AutoMigrate(&model.Channel{}))
+	common.OptionMapRWMutex.Lock()
+	previousOptions := common.OptionMap
+	common.OptionMap = map[string]string{billing_setting.VideoBillingOption: `{"channel_ids":[],"models":["custom-billing-video"]}`}
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptions
+		common.OptionMapRWMutex.Unlock()
+		sqlDB, err := database.DB()
+		require.NoError(t, err)
+		assert.NoError(t, sqlDB.Close())
+	})
+	source, err := plugins.Source("sora")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "sora"})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	facts := map[string]any{"seconds": float64(6), "resolution": "480p", "size": "854x480"}
+	validated, _, err := adaptor.validatedUsageRatios(facts, "vendor-model", "custom-billing-video")
+	require.NoError(t, err)
+	assert.Equal(t, facts, validated)
+	_, _, err = adaptor.validatedUsageRatios(facts, "sora-2")
+	require.Error(t, err, "unassociated official models retain their own schema")
+	completion, err := adaptor.validatedCompletionUsageFacts(map[string]any{"seconds": float64(5)}, "custom-billing-video")
+	require.NoError(t, err)
+	assert.Equal(t, float64(5), completion["seconds"])
+}
 
 const mockPlugin = `
 export const meta = {

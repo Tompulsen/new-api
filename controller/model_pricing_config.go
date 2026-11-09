@@ -6,8 +6,39 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/gin-gonic/gin"
 )
+
+func GetVideoBillingConfig(c *gin.Context) {
+	cfg, err := model.GetVideoBillingConfig()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, cfg)
+}
+
+func UpdateVideoBillingConfig(c *gin.Context) {
+	var request struct {
+		Bindings        model.VideoBillingBindings `json:"bindings"`
+		ExpectedVersion string                     `json:"expected_version"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.UpdateVideoBillingBindings(request.Bindings, request.ExpectedVersion); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, model.ErrModelPricingConflict) {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	recordManageAudit(c, "option.update", map[string]any{"key": billing_setting.VideoBillingOption})
+	GetVideoBillingConfig(c)
+}
 
 func GetModelPricingConfig(c *gin.Context) {
 	snapshot, err := model.GetModelPricingSnapshot(c.QueryArray("model"))

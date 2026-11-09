@@ -1869,7 +1869,7 @@ func (a *TaskAdaptor) usageRatios(ctx context.Context, models []string, hook str
 // hook result may be a host value, such as the request body, that must stay
 // unchanged.
 func (a *TaskAdaptor) validatedUsageRatios(facts map[string]any, models ...string) (map[string]any, map[string]float64, error) {
-	usageSchema, _ := a.plugin.Meta.UsageForModels(models...)
+	usageSchema, _ := model.TaskPricingUsage(a.plugin, models...)
 	validated := make(map[string]any, len(facts))
 	ratios := make(map[string]float64)
 	for key, value := range facts {
@@ -1912,7 +1912,7 @@ func (a *TaskAdaptor) validatedUsageRatios(facts map[string]any, models ...strin
 }
 
 func (a *TaskAdaptor) validatedCompletionUsageFacts(facts any, models ...string) (map[string]any, error) {
-	usageSchema, _ := a.plugin.Meta.UsageForModels(models...)
+	usageSchema, _ := model.TaskPricingUsage(a.plugin, models...)
 	if facts == nil {
 		return nil, nil
 	}

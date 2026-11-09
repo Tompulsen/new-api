@@ -769,3 +769,110 @@ export function extractUsage() { return {seconds:2}; }
 		})
 	}
 }
+
+func TestRelayTaskSubmitVideoBillingLegacyFallback(t *testing.T) {
+	database := setupRelayChannelDB(t)
+	saveBillingConfig(t)
+	service.InitHttpClient()
+	const source = `
+export const meta = {apiVersion:1,key:"sora",name:"Video",version:"1.0.0",author:{name:"Test"},models:["factory-video"],fetchMode:"per_task",usageSchema:{seconds:{type:"number",unit:"second"},resolution:{enum:["480p","720p","1080p"]}}};
+export function buildSubmitRequest(ctx) { return {url:ctx.baseUrl+"/submit",method:"POST",body:{model:ctx.upstreamModel},action:"text_to_video"}; }
+export function parseSubmitResponse(ctx,response) { return {taskId:response.body.id}; }
+export function buildQueryRequest(ctx) { return {url:ctx.baseUrl+"/query"}; }
+export function parseTaskResult() { return {status:"SUCCESS"}; }
+export function extractUsage() { return {seconds:6,resolution:"720p"}; }
+`
+	registry := pluginruntime.NewRegistry()
+	_, err := registry.Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	native := strings.ReplaceAll(source, `key:"sora"`, `key:"native-video"`)
+	native = strings.ReplaceAll(native, `"factory-video"`, `"shared-video"`)
+	_, err = registry.Register(native, pluginruntime.Options{})
+	require.NoError(t, err)
+	previousRegistry := pluginruntime.DefaultRegistry
+	pluginruntime.DefaultRegistry = registry
+	t.Cleanup(func() { pluginruntime.DefaultRegistry = previousRegistry })
+
+	common.OptionMapRWMutex.Lock()
+	previousOptions := common.OptionMap
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
+	previousBindings, hadBindings := common.OptionMap[billing_setting.VideoBillingOption]
+	common.OptionMap[billing_setting.VideoBillingOption] = `{"channel_ids":[84302],"models":[]}`
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		if hadBindings {
+			common.OptionMap[billing_setting.VideoBillingOption] = previousBindings
+		} else {
+			delete(common.OptionMap, billing_setting.VideoBillingOption)
+		}
+		common.OptionMap = previousOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+	require.NoError(t, database.Create(&model.Channel{
+		Id: 84302, Name: "compatible video", Type: constant.ChannelTypeOpenAI,
+		Models: "custom-video,shared-video",
+	}).Error)
+	const expression = `tier("720p", u("seconds") * 0.075)`
+	for _, tc := range []struct {
+		name, model string
+		override    bool
+		wantError   bool
+	}{
+		{name: "unknown alias uses sora price", model: "custom-video", override: true},
+		{name: "native collision rejects inherited price", model: "shared-video", wantError: true},
+		{name: "native collision accepts explicit sora price", model: "shared-video", override: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prices := map[string]string{}
+			if tc.override {
+				prices["sora::"+tc.model] = expression
+			}
+			encoded, err := common.Marshal(prices)
+			require.NoError(t, err)
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+				billing_setting.PluginBillingExprOption: string(encoded),
+				"billing_setting.billing_mode":          `{"shared-video":"tiered_expr"}`,
+				"billing_setting.billing_expr":          `{"shared-video":"tier(\"native\", 9)"}`,
+				"group_ratio_setting.group_ratio":       `{"default":1}`,
+			}))
+			requests := make(chan struct{}, 1)
+			billing := &imageReservation{limit: 1 << 30}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests <- struct{}{}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"video-42"}`))
+			}))
+			defer server.Close()
+			c, info := newTaskSubmitContext(t, tc.model, "")
+			c.Set("channel_type", constant.ChannelTypeOpenAI)
+			c.Set("group", "default")
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+			info.OriginModelName, info.UserGroup, info.UsingGroup = tc.model, "default", "default"
+			info.Billing = billing
+
+			result, taskErr := RelayTaskSubmit(c, info)
+			pinned := c.MustGet(pluginruntime.ContextKeyPinnedPlugin).(pluginruntime.PinnedPlugin)
+			require.NotNil(t, pinned.Plugin)
+			assert.Equal(t, "sora", pinned.Plugin.Meta.Key)
+			if tc.wantError {
+				require.NotNil(t, taskErr)
+				assert.Equal(t, "model_price_error", taskErr.Code)
+				assert.Equal(t, http.StatusBadRequest, taskErr.StatusCode)
+				assert.Nil(t, result)
+				assert.Empty(t, requests, "invalid pricing must never reach the upstream")
+				assert.Zero(t, billing.held, "invalid pricing must never reserve funds")
+				return
+			}
+			require.Nil(t, taskErr, "submission error: %+v", taskErr)
+			require.NotNil(t, result)
+			require.NotNil(t, info.TieredBillingSnapshot)
+			assert.Equal(t, expression, info.TieredBillingSnapshot.ExprString)
+			assert.Equal(t, 225000, result.Quota)
+			assert.Equal(t, result.Quota, billing.held)
+			assert.Len(t, requests, 1)
+		})
+	}
+}

@@ -189,6 +189,10 @@ func UpdateOption(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
+	if option.Key == billing_setting.VideoBillingOption {
+		common.ApiErrorMsg(c, "Use the video billing settings endpoint to update bindings")
+		return
+	}
 	switch option.Value.(type) {
 	case bool:
 		option.Value = common.Interface2String(option.Value.(bool))

@@ -7,7 +7,7 @@ export const meta = {
     en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
-  version: "1.1.0",
+  version: "1.1.1",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
@@ -88,6 +88,12 @@ function responsesVideoText(ctx) {
 
 function requestValues(req, model) {
   const values = Object.assign({}, req || {});
+  const metadata = values.metadata;
+  if (/^grok(?:[-_.]|$)/i.test(model || "") && metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    for (const key of ["resolution", "aspect_ratio", "generate_audio", "last_frame", "reference_images", "keyframes", "reference_audios"]) {
+      if (!Object.prototype.hasOwnProperty.call(values, key) && Object.prototype.hasOwnProperty.call(metadata, key)) values[key] = metadata[key];
+    }
+  }
   values.model = model;
   return values;
 }
@@ -126,10 +132,14 @@ export function parseSubmitResponse(ctx, resp) {
 
 export function extractUsage(ctx) {
   if (ctx.action === "remix") return {};
-  const req = ctx.requestBody || {};
-  let seconds = Number(req.seconds || req.duration || 4);
-  if (!Number.isFinite(seconds) || seconds <= 0) seconds = 4;
-  return { seconds: Math.min(seconds, 3600), size: req.size || "720x1280" };
+  const req = requestValues(ctx.requestBody, ctx.upstreamModel || ctx.model);
+  const seconds = Number(req.seconds === undefined ? (req.duration === undefined ? 4 : req.duration) : req.seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) throw new Error("seconds must be between 1 and 3600");
+  const facts = { seconds, size: req.size || "720x1280" };
+  const metadata = req.metadata && typeof req.metadata === "object" && !Array.isArray(req.metadata) ? req.metadata : {};
+  const resolution = trimmed(req.resolution || req.resolution_name || metadata.resolution || metadata.resolution_name).toLowerCase();
+  if (["480p", "720p", "1080p"].includes(resolution)) facts.resolution = resolution;
+  return facts;
 }
 
 export function extractUsageOnComplete(task, taskResult, body) {
@@ -138,6 +148,8 @@ export function extractUsageOnComplete(task, taskResult, body) {
   if (Number.isFinite(seconds) && seconds > 0) facts.seconds = Math.min(seconds, 3600);
   const size = trimmed((body || {}).size);
   if (["720x1280", "1280x720", "1792x1024", "1024x1792"].includes(size)) facts.size = size;
+  const resolution = trimmed((body || {}).resolution || ((body || {}).metadata || {}).resolution).toLowerCase();
+  if (["480p", "720p", "1080p"].includes(resolution)) facts.resolution = resolution;
   return facts;
 }
 

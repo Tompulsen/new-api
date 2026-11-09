@@ -272,13 +272,16 @@ func GetModelPricingSnapshot(names []string) (*ModelPricingSnapshot, error) {
 		entry.CacheWriteMode = ResolveCacheWriteMode(name, configured)
 		entry.BillingDetails = ResolveLegacyBillingDetails(name, entry.Effective, configured)
 		if plugin, ok := generation.GetByModel(name); ok {
-			entry.UsageSchema, _ = plugin.Meta.UsageForModel(name)
+			entry.UsageSchema, _ = TaskPricingUsage(plugin, name)
 		} else if target, ok := ResolveTaskModelAlias(generation, name); ok {
 			if plugin, ok := generation.Get(target.PluginKey); ok {
 				entry.UsageSchema, _ = plugin.Meta.UsageForModel(target.Declared)
 			}
 		}
-		plugins := generation.PluginsByModel(name)
+		plugins := TaskPricingPlugins(generation, name)
+		if len(entry.UsageSchema) == 0 && HasVideoBillingModel(name) {
+			entry.UsageSchema = billing_setting.VideoUsageSchema()
+		}
 		configuredVariants, _ := configured[billing_setting.PluginBillingExprOption].(map[string]any)
 		if len(plugins) > 0 || len(configuredVariants) > 0 {
 			keys := make(map[string]bool, len(plugins)+len(configuredVariants))
@@ -292,7 +295,7 @@ func GetModelPricingSnapshot(names []string) (*ModelPricingSnapshot, error) {
 				configuredValue, overridden := configuredVariants[key]
 				configuredExpr, _ := configuredValue.(string)
 				plugin, exists := generation.Get(key)
-				if !exists || !slices.Contains(plugin.Meta.Models, name) {
+				if !exists || (!slices.Contains(plugin.Meta.Models, name) && !(key == "sora" && HasVideoBillingModel(name))) {
 					variant := ModelPricingPluginVariant{
 						PluginKey: key, PluginName: key, Configured: configuredExpr,
 						UsageSchema: map[string]jsplugin.UsageFieldSchema{}, Stale: true,
@@ -303,7 +306,7 @@ func GetModelPricingSnapshot(names []string) (*ModelPricingSnapshot, error) {
 					entry.PluginVariants = append(entry.PluginVariants, variant)
 					continue
 				}
-				schema, examples := plugin.Meta.UsageForModel(name)
+				schema, examples := TaskPricingUsage(plugin, name)
 				if schema == nil {
 					schema = map[string]jsplugin.UsageFieldSchema{}
 				}
@@ -314,7 +317,8 @@ func GetModelPricingSnapshot(names []string) (*ModelPricingSnapshot, error) {
 				entry.PluginVariants = append(entry.PluginVariants, ModelPricingPluginVariant{
 					PluginKey: plugin.Meta.Key, PluginName: plugin.Meta.Name, Icon: plugin.Meta.Icon,
 					UsageSchema: schema, UsageExamples: examples, Configured: configuredExpr, Effective: expression,
-					Compatible: billing_setting.TaskExprCompatible(expression, schema),
+					Compatible: billing_setting.TaskExprCompatible(expression, schema) &&
+						!(key == "sora" && !overridden && VideoBillingRequiresProviderPrice(generation, name)),
 				})
 			}
 		}
@@ -473,6 +477,10 @@ func ValidateModelPricing(name string, values PricingValues) error {
 // Writes pass the locked database snapshot here, so allowing an unchanged stale
 // override cannot bypass validation through an out-of-date process-local cache.
 func validateModelPricing(name string, values, previous PricingValues) error {
+	return validateModelPricingWithBindings(name, values, previous, videoBillingModels())
+}
+
+func validateModelPricingWithBindings(name string, values, previous PricingValues, videoModels map[string]bool) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("model name is required")
 	}
@@ -491,7 +499,7 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 				return fmt.Errorf("model %s: plugin %s: billing expression is required", name, key)
 			}
 			plugin, exists := generation.Get(key)
-			declared := exists && slices.Contains(plugin.Meta.Models, name)
+			declared := exists && (slices.Contains(plugin.Meta.Models, name) || (key == "sora" && videoModels[name]))
 			// An unchanged override stays saveable after its plugin disappears or
 			// stops declaring the model. A sole provider also keeps it after
 			// narrowing its usage profile; relay checks shared models against
@@ -502,7 +510,7 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 			if !declared {
 				return fmt.Errorf("model %s: plugin %s does not declare this model", name, key)
 			}
-			schema, _ := plugin.Meta.UsageForModel(name)
+			schema, _ := taskPricingUsage(plugin, videoModels, name)
 			if err := billing_setting.SmokeTestTaskExpr(expression, schema); err != nil {
 				return fmt.Errorf("model %s: plugin %s: %w", name, key, err)
 			}
@@ -536,14 +544,14 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 			// shared models against each profile, so their prices must follow it.
 			unchanged := previous[key] == expression
 			var err error
-			if plugins := generation.PluginsByModel(name); len(plugins) > 0 {
+			if plugins := taskPricingPlugins(generation, name, videoModels); len(plugins) > 0 {
 				for _, plugin := range plugins {
 					_, overridden := variants[plugin.Meta.Key]
 					_, wasOverridden := previousVariants[plugin.Meta.Key]
 					if overridden || (unchanged && !wasOverridden && len(plugins) == 1) {
 						continue
 					}
-					schema, _ := plugin.Meta.UsageForModel(name)
+					schema, _ := taskPricingUsage(plugin, videoModels, name)
 					if err = billing_setting.SmokeTestTaskExpr(expression, schema); err != nil {
 						return fmt.Errorf("model %s: plugin %s: %w", name, plugin.Meta.Key, err)
 					}
@@ -597,6 +605,8 @@ func UpdateModelPricing(changes []ModelPricingChange) error {
 			return ErrModelPricingConflict
 		}
 	}
+	// Resolve metadata before taking a transaction's connection, including with a cold cache.
+	videoModels := videoBillingModels()
 	return mutateModelPricingOptions(func(_ *gorm.DB, values map[string]map[string]any) error {
 		defaults := defaultPricingMaps()
 		for _, change := range changes {
@@ -608,7 +618,7 @@ func UpdateModelPricing(changes []ModelPricingChange) error {
 			if change.Reset {
 				pricing = modelPricingValues(defaults, change.ModelName)
 			}
-			if err := validateModelPricing(change.ModelName, pricing, previous); err != nil {
+			if err := validateModelPricingWithBindings(change.ModelName, pricing, previous, videoModels); err != nil {
 				return err
 			}
 			replaceModelPricing(values, change.ModelName, pricing)
@@ -620,6 +630,7 @@ func UpdateModelPricing(changes []ModelPricingChange) error {
 // UpdateModelPricingOptions keeps legacy single-option callers on the same
 // locking, validation and transaction path as the model-level API.
 func UpdateModelPricingOptions(updates map[string]string) error {
+	videoModels := videoBillingModels()
 	return mutateModelPricingOptions(func(_ *gorm.DB, values map[string]map[string]any) error {
 		previous := maps.Clone(values)
 		names := make(map[string]bool)
@@ -649,7 +660,7 @@ func UpdateModelPricingOptions(updates map[string]string) error {
 			values[key] = entries
 		}
 		for name := range names {
-			if err := validateModelPricing(name, modelPricingValues(values, name), modelPricingValues(previous, name)); err != nil {
+			if err := validateModelPricingWithBindings(name, modelPricingValues(values, name), modelPricingValues(previous, name), videoModels); err != nil {
 				return err
 			}
 		}
