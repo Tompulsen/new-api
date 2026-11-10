@@ -100,8 +100,8 @@
       "properties": {
         "__videoUpload": {
           "oneOf": [
-            {"type": "object", "additionalProperties": false, "required": ["fileRef"], "properties": {"fileRef": {"type": "string", "minLength": 1}}},
-            {"type": "object", "additionalProperties": false, "required": ["dataUrl"], "properties": {"dataUrl": {"type": "string", "minLength": 1}}}
+            {"type": "object", "additionalProperties": false, "required": ["fileRef"], "properties": {"fileRef": {"type": "string", "minLength": 1}, "mediaType": {"enum": ["image", "video", "audio"]}}},
+            {"type": "object", "additionalProperties": false, "required": ["dataUrl"], "properties": {"dataUrl": {"type": "string", "minLength": 1}, "mediaType": {"enum": ["image", "video", "audio"]}}}
           ]
         }
       }

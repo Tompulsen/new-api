@@ -15,12 +15,13 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/abema/go-mp4"
 )
 
 // Probe only when a priced output fact is absent, after generation succeeded.
 func (a *TaskAdaptor) completeVideoUsage(ctx context.Context, task *model.Task, result *relaycommon.TaskInfo) {
-	if a.plugin.Meta.Key != "sora" || task == nil || result.Status != model.TaskStatusSuccess ||
+	if !billing_setting.UsesVideoUsageSettlement(a.plugin.Meta.Key) || task == nil || result.Status != model.TaskStatusSuccess ||
 		task.PrivateData.BillingContext == nil || task.PrivateData.BillingContext.TieredSnapshot == nil {
 		return
 	}
@@ -48,7 +49,7 @@ func (a *TaskAdaptor) completeVideoUsage(ctx context.Context, task *model.Task, 
 		}
 	}
 	request, err := contentAdaptor.BuildContentRequest(ctx, task, "video", channel.TaskArtifactClientRequest{Method: http.MethodGet})
-	if err != nil || request == nil || request.Method != http.MethodGet || request.Credentialless || len(request.ContentPath) != 0 {
+	if err != nil || request == nil || request.Method != http.MethodGet || len(request.ContentPath) != 0 {
 		logger.LogWarn(ctx, "video usage could not be measured; retaining estimated quota")
 		return
 	}
@@ -56,9 +57,19 @@ func (a *TaskAdaptor) completeVideoUsage(ctx context.Context, task *model.Task, 
 		logger.LogWarn(ctx, "video usage download blocked; retaining estimated quota")
 		return
 	}
-	resp, err := a.doFetchDescriptor(ctx, baseURL, key, proxy, requestDescriptor{
-		URL: request.URL, Method: request.Method, Headers: request.Headers,
-	})
+	var resp *http.Response
+	if request.Credentialless {
+		// Signed CDN URLs never receive channel headers or API credentials.
+		var fetch *http.Request
+		fetch, err = http.NewRequestWithContext(ctx, http.MethodGet, request.URL, nil)
+		if err == nil {
+			resp, err = service.GetSSRFProtectedHTTPClient().Do(fetch)
+		}
+	} else {
+		resp, err = a.doFetchDescriptor(ctx, baseURL, key, proxy, requestDescriptor{
+			URL: request.URL, Method: request.Method, Headers: request.Headers,
+		})
+	}
 	if err != nil {
 		logger.LogWarn(ctx, "video usage download failed; retaining estimated quota")
 		return

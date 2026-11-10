@@ -12,6 +12,11 @@ import (
 
 const VideoBillingOption = "VideoBillingBindings"
 
+// These drivers settle from actual duration and the shared short-edge tiers.
+func UsesVideoUsageSettlement(pluginKey string) bool {
+	return pluginKey == "sora" || pluginKey == "async-compatible"
+}
+
 func VideoUsageSchema() map[string]jsplugin.UsageFieldSchema {
 	return map[string]jsplugin.UsageFieldSchema{
 		"seconds": {

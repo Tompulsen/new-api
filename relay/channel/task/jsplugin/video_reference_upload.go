@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -37,18 +38,43 @@ type videoReferenceUploader struct {
 	urls    map[string]string
 }
 
+var generationFileID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{16,100}$`)
+
 func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]any, form *multipart.Form, limit int64, total *int64) (string, error) {
 	reject := func(message string) (string, error) {
 		return "", &videoReferenceError{message: message, status: http.StatusBadRequest}
 	}
-	if u.adaptor.plugin.Meta.Key != "sora" || !u.info.HasChannelMeta() || u.info.ChannelSetting.VideoRequestFormat != "json" {
+	async := u.adaptor.plugin.Meta.Key == "async-compatible"
+	if !u.info.HasChannelMeta() || (!async && (u.adaptor.plugin.Meta.Key != "sora" || u.info.ChannelSetting.VideoRequestFormat != "json")) {
 		return reject("video reference uploads require the channel JSON video format")
 	}
 	source, ok := placeholder["__videoUpload"].(map[string]any)
-	if len(placeholder) != 1 || !ok || len(source) != 1 {
+	if len(placeholder) != 1 || !ok {
+		return reject("invalid video reference upload")
+	}
+	mediaType := "image"
+	if async {
+		if value, exists := source["mediaType"]; exists {
+			mediaType, _ = value.(string)
+			if mediaType != "image" && mediaType != "video" && mediaType != "audio" {
+				return reject("invalid reference media type")
+			}
+		}
+	}
+	expectedFields := 1
+	if async && source["mediaType"] != nil {
+		expectedFields++
+	}
+	if len(source) != expectedFields {
 		return reject("invalid video reference upload")
 	}
 	maxBytes := min(limit, 20<<20)
+	if async {
+		maxBytes = min(limit, 64<<20)
+		if mediaType == "image" {
+			maxBytes = min(limit, 16<<20)
+		}
+	}
 	var data []byte
 	filename := "reference"
 	cacheKey := ""
@@ -58,12 +84,12 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 			return reject("unknown video reference file")
 		}
 		header := form.File[field][index]
-		cacheKey = ref
+		cacheKey = mediaType + ":" + ref
 		if uploaded := u.urls[cacheKey]; uploaded != "" {
 			return uploaded, nil
 		}
 		if header.Size > maxBytes || header.Size <= 0 {
-			return reject("reference image must be non-empty and at most 20 MiB")
+			return reject(fmt.Sprintf("reference %s must be non-empty and within the %d byte upload limit", mediaType, maxBytes))
 		}
 		file, err := header.Open()
 		if err != nil {
@@ -77,15 +103,15 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		filename = header.Filename
 	} else if dataURL, ok := source["dataUrl"].(string); ok {
 		header, encoded, valid := strings.Cut(dataURL, ",")
-		if !valid || !strings.HasPrefix(strings.ToLower(header), "data:"+"image/") || !strings.HasSuffix(strings.ToLower(header), ";base64") {
-			return reject("reference image must be a base64 image data URL")
+		if !valid || !strings.HasPrefix(strings.ToLower(header), "data:"+mediaType+"/") || !strings.HasSuffix(strings.ToLower(header), ";base64") {
+			return reject("reference media must be a base64 data URL of the expected type")
 		}
-		cacheKey = fmt.Sprintf("%x", sha256.Sum256([]byte(dataURL)))
+		cacheKey = mediaType + ":" + fmt.Sprintf("%x", sha256.Sum256([]byte(dataURL)))
 		if uploaded := u.urls[cacheKey]; uploaded != "" {
 			return uploaded, nil
 		}
 		if len(encoded) > base64.StdEncoding.EncodedLen(int(maxBytes)) {
-			return reject("reference image exceeds the 20 MiB limit")
+			return reject(fmt.Sprintf("reference %s exceeds the %d byte upload limit", mediaType, maxBytes))
 		}
 		var err error
 		data, err = base64.StdEncoding.Strict().DecodeString(encoded)
@@ -102,8 +128,8 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		return reject("too many reference image uploads in one request")
 	}
 	contentType := http.DetectContentType(data)
-	if !strings.HasPrefix(contentType, "image/") {
-		return reject("reference file must contain an image")
+	if !strings.HasPrefix(contentType, mediaType+"/") {
+		return reject("reference file must contain " + mediaType + " media")
 	}
 	*total += int64(len(data))
 	var body bytes.Buffer
@@ -112,11 +138,13 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 	if model == "" {
 		model = u.info.OriginModelName
 	}
-	if err := writer.WriteField("model", model); err != nil {
-		return "", err
-	}
-	if err := writer.WriteField("purpose", "video"); err != nil {
-		return "", err
+	if !async {
+		if err := writer.WriteField("model", model); err != nil {
+			return "", err
+		}
+		if err := writer.WriteField("purpose", "video"); err != nil {
+			return "", err
+		}
 	}
 	partHeader := make(textproto.MIMEHeader)
 	partHeader.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": filename}))
@@ -131,7 +159,11 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 	if err = writer.Close(); err != nil {
 		return "", err
 	}
-	uploadURL := strings.TrimRight(u.info.ChannelBaseUrl, "/") + "/v1/files"
+	baseURL := strings.TrimRight(u.info.ChannelBaseUrl, "/")
+	if async {
+		baseURL = strings.TrimSuffix(baseURL, "/v1")
+	}
+	uploadURL := baseURL + "/v1/files"
 	if err := pluginruntime.ValidateRequestURL(uploadURL, u.info.ChannelBaseUrl, nil); err != nil {
 		return reject("invalid reference upload endpoint")
 	}
@@ -167,13 +199,30 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		return reject("invalid reference image upload response")
 	}
 	var result struct {
-		URL  string `json:"url"`
-		Data struct {
+		URL    string `json:"url"`
+		ID     string `json:"id"`
+		FileID string `json:"file_id"`
+		Data   struct {
 			URL string `json:"url"`
+			ID  string `json:"id"`
 		} `json:"data"`
 	}
 	if common.Unmarshal(reply, &result) != nil {
 		return reject("invalid reference image upload response")
+	}
+	if async {
+		id := result.ID
+		if id == "" {
+			id = result.FileID
+		}
+		if id == "" {
+			id = result.Data.ID
+		}
+		if !generationFileID.MatchString(id) {
+			return reject("reference upload did not return a valid file ID")
+		}
+		u.urls[cacheKey] = id
+		return id, nil
 	}
 	if result.URL == "" {
 		result.URL = result.Data.URL

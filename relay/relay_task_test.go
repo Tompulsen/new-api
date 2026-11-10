@@ -848,6 +848,107 @@ func TestRelayTaskSubmitJSONVideoReservesBeforeUpload(t *testing.T) {
 	}
 }
 
+func TestRelayTaskSubmitAsyncVideoBillingAndRetryBoundary(t *testing.T) {
+	setupRelayChannelDB(t)
+	saveBillingConfig(t)
+	service.InitHttpClient()
+	source, err := plugins.Source("async-compatible")
+	require.NoError(t, err)
+	registry := pluginruntime.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "async-compatible"})
+	require.NoError(t, err)
+	previousRegistry := pluginruntime.DefaultRegistry
+	pluginruntime.DefaultRegistry = registry
+	t.Cleanup(func() { pluginruntime.DefaultRegistry = previousRegistry })
+	const expression = `u("resolution") == "1080p" ? tier("high", u("seconds") * 0.4) : tier("other", u("seconds") * 0.1)`
+	overrides, err := common.Marshal(map[string]string{
+		"async-compatible::wan3.0": expression,
+		"sora::wan3.0":             `tier("wrong-provider", u("seconds") * 99)`,
+	})
+	require.NoError(t, err)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		billing_setting.PluginBillingExprOption: string(overrides),
+		"group_ratio_setting.group_ratio":       `{"default":1}`,
+	}))
+	image := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 24)...)
+	for _, tc := range []struct {
+		name, resolution, wantCode, reply  string
+		wallet, uploadStatus, submitStatus int
+		wantUploads, wantGenerations       int
+		wantQuota                          int
+		noRetry                            bool
+	}{
+		{name: "no funds prevents every upstream request", wallet: 0, wantCode: "insufficient_user_quota"},
+		{name: "upload rejection precedes generation", wallet: 1 << 30, uploadStatus: 400, wantUploads: 1, wantCode: "video_reference_upload_failed"},
+		{name: "successful task uses own plugin price", wallet: 1 << 30, uploadStatus: 201, submitStatus: 202, reply: `{"id":"video-task","status":"created"}`, wantUploads: 1, wantGenerations: 1, wantQuota: 300000},
+		{name: "unknown output tier reserves highest price", resolution: "adaptive", wallet: 1 << 30, uploadStatus: 200, submitStatus: 202, reply: `{"id":"video-task","status":"created"}`, wantUploads: 1, wantGenerations: 1, wantQuota: 1200000},
+		{name: "server failure cannot retry generation", wallet: 1 << 30, uploadStatus: 200, submitStatus: 502, reply: `{"error":"failed"}`, wantUploads: 1, wantGenerations: 1, wantCode: "fail_to_fetch_task", noRetry: true},
+		{name: "rate limit cannot change channel after submit", wallet: 1 << 30, uploadStatus: 200, submitStatus: 429, reply: `{"error":"busy"}`, wantUploads: 1, wantGenerations: 1, wantCode: "fail_to_fetch_task", noRetry: true},
+		{name: "missing task ID cannot retry generation", wallet: 1 << 30, uploadStatus: 200, submitStatus: 202, reply: `{}`, wantUploads: 1, wantGenerations: 1, wantCode: "plugin_submit_response_failed", noRetry: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			billing := &imageReservation{limit: tc.wallet}
+			uploads, generations := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Greater(t, billing.held, 0)
+				switch r.URL.Path {
+				case "/v1/files":
+					uploads++
+					w.WriteHeader(tc.uploadStatus)
+					_, _ = w.Write([]byte(`{"id":"file_abcdefghijklmnop"}`))
+				case "/v1/generations":
+					generations++
+					assert.NotEmpty(t, r.Header.Get("Idempotency-Key"))
+					w.WriteHeader(tc.submitStatus)
+					_, _ = w.Write([]byte(tc.reply))
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			c, info := newTaskSubmitContext(t, "wan3.0", "")
+			resolution := tc.resolution
+			if resolution == "" {
+				resolution = "720p"
+			}
+			c.Set("task_request", map[string]any{
+				"prompt": "waves", "seconds": 6, "resolution": resolution,
+				"images": []any{"data:" + "image/png;base64," + base64.StdEncoding.EncodeToString(image)},
+			})
+			c.Set("channel_type", constant.ChannelTypeTaskPlugin)
+			c.Set("group", "default")
+			c.Set("task_plugin_key", "async-compatible")
+			c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+			info.OriginModelName, info.UserGroup, info.UsingGroup = "wan3.0", "default", "default"
+			info.Billing = billing
+			result, taskErr := RelayTaskSubmit(c, info)
+			assert.Equal(t, tc.wantUploads, uploads)
+			assert.Equal(t, tc.wantGenerations, generations)
+			if tc.wantCode != "" {
+				require.NotNil(t, taskErr)
+				assert.Equal(t, tc.wantCode, taskErr.Code)
+				assert.Equal(t, tc.noRetry, taskErr.NoRetry)
+				assert.Nil(t, result)
+				return
+			}
+			require.Nil(t, taskErr, "%+v", taskErr)
+			require.NotNil(t, result)
+			assert.Equal(t, tc.wantQuota, result.Quota)
+			snapshot := info.TieredBillingSnapshot
+			require.NotNil(t, snapshot)
+			assert.Equal(t, expression, snapshot.ExprString)
+			assert.True(t, snapshot.VideoUsagePending)
+			settled, facts, err := service.EvaluateTaskCompletionUsage(snapshot, map[string]any{"seconds": float64(5), "resolution": "1080p"})
+			require.NoError(t, err)
+			assert.Equal(t, 1000000, settled.ActualQuotaAfterGroup)
+			assert.Equal(t, "1080p", facts["resolution"])
+			_, _, err = service.EvaluateTaskCompletionUsage(snapshot, nil)
+			assert.Error(t, err, "missing actual usage must retain the reservation")
+		})
+	}
+}
+
 func TestRelayTaskSubmitVideoBillingLegacyFallback(t *testing.T) {
 	database := setupRelayChannelDB(t)
 	saveBillingConfig(t)
