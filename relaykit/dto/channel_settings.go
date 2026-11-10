@@ -18,6 +18,7 @@ type ChannelSettings struct {
 	Proxy                     string `json:"proxy"`
 	PassThroughBodyEnabled    bool   `json:"pass_through_body_enabled,omitempty"`
 	ResponsesWebSocketEnabled bool   `json:"responses_websocket_enabled,omitempty"`
+	VideoRequestFormat        string `json:"video_request_format,omitempty"`
 	SystemPrompt              string `json:"system_prompt,omitempty"`
 	SystemPromptOverride      bool   `json:"system_prompt_override,omitempty"`
 	// TaskExtendPluginKeys lists the task plugins a New API channel (type 60)
@@ -35,6 +36,15 @@ type ChannelSettings struct {
 	// TLSInsecureSkipVerify accepts upstream certificates that fail
 	// verification, such as self-signed ones, for this channel only.
 	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
+}
+
+func (s ChannelSettings) ValidateVideoRequestFormat() error {
+	switch s.VideoRequestFormat {
+	case "", "openai", "json":
+		return nil
+	default:
+		return fmt.Errorf("invalid video_request_format: %s", s.VideoRequestFormat)
+	}
 }
 
 // BindsTaskPlugin reports whether the channel is bound to the task plugin,

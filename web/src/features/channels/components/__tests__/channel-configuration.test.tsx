@@ -1140,6 +1140,33 @@ test('model discovery reports failures inline and allows an empty result to fall
   expect(screen.getByRole('button', { name: 'custom-model' })).toBeVisible()
 })
 
+test('request settings save the per-channel JSON video format and display it when reopened', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  const view = render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  const selector = screen.getByRole('combobox', {
+    name: 'Video request format',
+  })
+  await user.click(selector)
+  await user.click(screen.getByRole('option', { name: 'JSON + image URLs' }))
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0][1] as { setting: string }
+  expect(JSON.parse(payload.setting).video_request_format).toBe('json')
+  view.unmount()
+  editingChannel.setting = payload.setting
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  expect(
+    screen.getByRole('combobox', { name: 'Video request format' })
+  ).toHaveTextContent('JSON + image URLs')
+})
+
 test('quick options and detailed settings share changes across tabs and save the same configuration', async () => {
   editingChannel.setting = JSON.stringify({
     pass_through_body_enabled: true,

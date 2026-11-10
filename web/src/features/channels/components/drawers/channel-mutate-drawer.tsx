@@ -234,6 +234,7 @@ import {
 import { ModelRedirectPanel } from '../model-redirect-panel'
 import { ResponsesWebSocketSetting } from '../responses-websocket-setting'
 import { UpstreamModelSelection } from '../upstream-model-selection'
+import { VideoRequestFormatSetting } from '../video-request-format-setting'
 import {
   ChannelConfiguration,
   ChannelConfigurationStatusIndicator,
@@ -305,6 +306,7 @@ const SENSITIVE_FORM_FIELDS = [
   'tls_insecure_skip_verify',
   'pass_through_body_enabled',
   'responses_websocket_enabled',
+  'video_request_format',
   'system_prompt',
   'system_prompt_override',
   'allow_service_tier',
@@ -4781,6 +4783,9 @@ export function ChannelMutateDrawer({
               >
                 <ResponsesWebSocketSetting
                   channelType={currentType}
+                  disabled={sensitiveLocked || isSubmitting}
+                />
+                <VideoRequestFormatSetting
                   disabled={sensitiveLocked || isSubmitting}
                 />
                 {formatFields}

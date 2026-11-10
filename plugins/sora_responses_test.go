@@ -32,6 +32,74 @@ func TestSoraResponsesProtocol(t *testing.T) {
 	})
 }
 
+func TestSoraChannelJSONVideoRequest(t *testing.T) {
+	source, err := builtinplugins.Source("sora")
+	require.NoError(t, err)
+	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{Key: "sora"})
+	require.NoError(t, err)
+	ctx := map[string]any{
+		"model": "client-alias", "upstreamModel": "vendor-video",
+		"baseUrl": "https://video.test", "apiKey": "test-only",
+		"videoRequestFormat": "json",
+		"files":              []any{map[string]any{"ref": "request_file:input_reference", "field": "input_reference"}},
+		"requestBody": map[string]any{
+			"prompt": "waves", "seconds": "6", "size": "720x1280",
+			"metadata": map[string]any{"resolution": "480p", "aspect_ratio": "3:4", "generate_audio": false},
+		},
+	}
+	var request struct {
+		URL, BodyType string
+		Headers       map[string]string
+		Body          map[string]any
+	}
+	require.NoError(t, plugin.Engine.CallInto(t.Context(), &request, "buildSubmitRequest", ctx))
+	assert.Equal(t, "https://video.test/v1/videos", request.URL)
+	assert.Equal(t, "application/json", request.Headers["Content-Type"])
+	assert.NotEqual(t, "multipart", request.BodyType)
+	assert.Equal(t, "vendor-video", request.Body["model"])
+	assert.Equal(t, float64(6), request.Body["duration"])
+	assert.Equal(t, "480P", request.Body["resolution"])
+	assert.Equal(t, "3:4", request.Body["aspect_ratio"])
+	assert.Equal(t, false, request.Body["generate_audio"])
+	assert.NotContains(t, request.Body, "seconds")
+	assert.NotContains(t, request.Body, "input_reference")
+	assert.Equal(t, []any{map[string]any{"__videoUpload": map[string]any{"fileRef": "request_file:input_reference"}}}, request.Body["images"])
+	var facts map[string]any
+	require.NoError(t, plugin.Engine.CallInto(t.Context(), &facts, "extractUsage", ctx))
+	assert.Equal(t, float64(6), facts["seconds"])
+	assert.Equal(t, "480p", facts["resolution"])
+	ctx["requestBody"].(map[string]any)["metadata"].(map[string]any)["last_frame"] = map[string]any{"url": "https://images.test/last.png"}
+	require.NoError(t, plugin.Engine.CallInto(t.Context(), &request, "buildSubmitRequest", ctx))
+	assert.Equal(t, []any{
+		map[string]any{"__videoUpload": map[string]any{"fileRef": "request_file:input_reference"}},
+		"https://images.test/last.png",
+	}, request.Body["images"], "the uploaded first frame must precede the last frame")
+
+	ctx["files"] = []any{}
+	ctx["requestBody"] = map[string]any{
+		"prompt": "waves", "duration": 5,
+		"images":          []any{"https://images.test/first.png", "data:" + "image/png;base64,aW1hZ2U="},
+		"input_reference": "https://images.test/first.png",
+	}
+	require.NoError(t, plugin.Engine.CallInto(t.Context(), &request, "buildSubmitRequest", ctx))
+	assert.Equal(t, []any{
+		"https://images.test/first.png",
+		map[string]any{"__videoUpload": map[string]any{"dataUrl": "data:" + "image/png;base64,aW1hZ2U="}},
+	}, request.Body["images"])
+	assert.Equal(t, "720P", request.Body["resolution"])
+	assert.Equal(t, "16:9", request.Body["aspect_ratio"])
+	assert.Equal(t, float64(5), request.Body["duration"])
+
+	ctx["requestBody"] = map[string]any{"prompt": "waves", "input_reference": map[string]any{"file_id": "file-42"}}
+	_, err = plugin.Engine.Call(t.Context(), "buildSubmitRequest", ctx)
+	require.ErrorContains(t, err, "file IDs are not supported")
+
+	ctx["videoRequestFormat"] = ""
+	ctx["files"] = []any{map[string]any{"ref": "request_file:input_reference", "field": "input_reference"}}
+	require.NoError(t, plugin.Engine.CallInto(t.Context(), &request, "buildSubmitRequest", ctx))
+	assert.Equal(t, "multipart", request.BodyType, "unconfigured channels retain standard file submission")
+}
+
 func TestSoraCompatibleVideoBillingFacts(t *testing.T) {
 	source, err := builtinplugins.Source("sora")
 	require.NoError(t, err)

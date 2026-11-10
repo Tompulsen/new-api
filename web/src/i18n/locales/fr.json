@@ -1,5 +1,10 @@
 {
   "translation": {
+    "Video request format": "Format de requête vidéo",
+    "Standard OpenAI Video": "OpenAI Video standard",
+    "JSON + image URLs": "JSON + URL d’images",
+    "Upload local reference images through /v1/files, then submit JSON with image URLs.": "Importez les images locales via /v1/files, puis envoyez leurs URL dans la requête JSON.",
+    "Use the standard OpenAI Video request format for this channel.": "Utilisez le format standard OpenAI Video pour ce canal.",
     "Video billing": "Tarification vidéo",
     "Video billing templates": "Tarification vidéo",
     "Video channels": "Canaux vidéo",

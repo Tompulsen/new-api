@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/plugins"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
@@ -766,6 +767,83 @@ export function extractUsage() { return {seconds:2}; }
 			}
 			require.NotNil(t, info.TieredBillingSnapshot)
 			assert.Equal(t, tc.expressions["retry-b::declared-model"], info.TieredBillingSnapshot.ExprString)
+		})
+	}
+}
+
+func TestRelayTaskSubmitJSONVideoReservesBeforeUpload(t *testing.T) {
+	setupRelayChannelDB(t)
+	saveBillingConfig(t)
+	service.InitHttpClient()
+	source, err := plugins.Source("sora")
+	require.NoError(t, err)
+	registry := pluginruntime.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "sora"})
+	require.NoError(t, err)
+	previousRegistry := pluginruntime.DefaultRegistry
+	pluginruntime.DefaultRegistry = registry
+	t.Cleanup(func() { pluginruntime.DefaultRegistry = previousRegistry })
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		billing_setting.PluginBillingExprOption: `{"sora::sora-2":"tier(\"base\", u(\"seconds\") * 0.1)"}`,
+		"group_ratio_setting.group_ratio":       `{"default":1}`,
+	}))
+	image := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 24)...)
+	for _, tc := range []struct {
+		name, wantCode string
+		wallet         int
+		uploadStatus   int
+		wantUploads    int
+	}{
+		{name: "insufficient funds prevent upload", wallet: 0, uploadStatus: 200, wantCode: "insufficient_user_quota"},
+		{name: "upload rejection prevents generation", wallet: 1 << 30, uploadStatus: 400, wantUploads: 1, wantCode: "video_reference_upload_failed"},
+		{name: "paid reservation precedes upload and one generation", wallet: 1 << 30, uploadStatus: 200, wantUploads: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			billing := &imageReservation{limit: tc.wallet}
+			uploads, generations := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Greater(t, billing.held, 0, "upstream I/O requires a reservation")
+				if r.URL.Path == "/v1/files" {
+					uploads++
+					w.WriteHeader(tc.uploadStatus)
+					_, _ = w.Write([]byte(`{"url":"https://cdn.example/reference.png"}`))
+					return
+				}
+				assert.Equal(t, "/v1/videos", r.URL.Path)
+				generations++
+				_, _ = w.Write([]byte(`{"id":"upstream-video"}`))
+			}))
+			defer server.Close()
+			c, info := newTaskSubmitContext(t, "sora-2", "")
+			c.Set("task_request", map[string]any{
+				"prompt": "waves", "seconds": 6, "resolution": "720p",
+				"images": []any{"data:" + "image/png;base64," + base64.StdEncoding.EncodeToString(image)},
+			})
+			c.Set("channel_type", constant.ChannelTypeOpenAI)
+			c.Set("group", "default")
+			c.Set("task_plugin_key", "sora")
+			c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+			common.SetContextKey(c, constant.ContextKeyChannelSetting, kitdto.ChannelSettings{VideoRequestFormat: "json"})
+			info.OriginModelName, info.UserGroup, info.UsingGroup = "sora-2", "default", "default"
+			info.Billing = billing
+			result, taskErr := RelayTaskSubmit(c, info)
+			assert.Equal(t, tc.wantUploads, uploads)
+			if tc.wantCode != "" {
+				require.NotNil(t, taskErr)
+				assert.Equal(t, tc.wantCode, taskErr.Code)
+				assert.Zero(t, generations)
+				assert.Nil(t, result)
+				if tc.wantCode == "video_reference_upload_failed" {
+					assert.Equal(t, http.StatusBadRequest, taskErr.StatusCode)
+				}
+				return
+			}
+			require.Nil(t, taskErr, "%+v", taskErr)
+			require.NotNil(t, result)
+			assert.Equal(t, 1, generations)
+			assert.Equal(t, 300000, billing.held)
+			assert.Equal(t, billing.held, result.Quota)
 		})
 	}
 }

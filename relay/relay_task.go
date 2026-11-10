@@ -361,6 +361,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// 8. 构建请求体
 	requestBody, err := adaptor.BuildRequestBody(c, info)
 	if err != nil {
+		var preparationErr interface{ HTTPStatusCode() int }
+		if errors.As(err, &preparationErr) {
+			return nil, service.TaskErrorWrapperLocal(err, "video_reference_upload_failed", preparationErr.HTTPStatusCode())
+		}
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError, common.UpstreamAddresses(c)...)
 	}
 

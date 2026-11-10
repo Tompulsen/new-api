@@ -1,5 +1,10 @@
 {
   "translation": {
+    "Video request format": "视频请求格式",
+    "Standard OpenAI Video": "标准 OpenAI Video",
+    "JSON + image URLs": "JSON + 图片链接",
+    "Upload local reference images through /v1/files, then submit JSON with image URLs.": "通过上游 /v1/files 上传本地参考图，再将图片链接放入 JSON 请求。",
+    "Use the standard OpenAI Video request format for this channel.": "此渠道使用标准 OpenAI Video 请求格式。",
     "Video billing": "视频计费",
     "Video billing templates": "通用视频计费",
     "Video channels": "视频渠道",

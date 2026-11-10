@@ -42,6 +42,7 @@ import {
 } from './advanced-custom'
 import { readTaskExtendPluginKeys } from './channel-plugin-extensions'
 import { supportsResponsesWebSocket } from './responses-websocket'
+import { supportsVideoRequestFormat } from './video-request-format'
 
 // ============================================================================
 // Form Validation Schema
@@ -272,6 +273,7 @@ export const channelFormSchema = z
     tls_insecure_skip_verify: z.boolean().optional(),
     pass_through_body_enabled: z.boolean().optional(),
     responses_websocket_enabled: z.boolean().optional(),
+    video_request_format: z.enum(['openai', 'json']).optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
@@ -467,6 +469,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   tls_insecure_skip_verify: false,
   pass_through_body_enabled: false,
   responses_websocket_enabled: false,
+  video_request_format: 'openai',
   system_prompt: '',
   system_prompt_override: false,
   // Type-specific settings
@@ -515,6 +518,7 @@ export function transformChannelToFormDefaults(
     tls_insecure_skip_verify: false,
     pass_through_body_enabled: false,
     responses_websocket_enabled: false,
+    video_request_format: 'openai' as 'openai' | 'json',
     system_prompt: '',
     system_prompt_override: false,
   }
@@ -538,6 +542,8 @@ export function transformChannelToFormDefaults(
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         responses_websocket_enabled:
           parsed.responses_websocket_enabled === true,
+        video_request_format:
+          parsed.video_request_format === 'json' ? 'json' : 'openai',
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
       }
@@ -680,6 +686,11 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     responses_websocket_enabled:
       supportsResponsesWebSocket(formData.type) &&
       formData.responses_websocket_enabled === true,
+    video_request_format:
+      supportsVideoRequestFormat(formData) &&
+      formData.video_request_format === 'json'
+        ? 'json'
+        : undefined,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
   }

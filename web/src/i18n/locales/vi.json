@@ -1,5 +1,10 @@
 {
   "translation": {
+    "Video request format": "Định dạng yêu cầu video",
+    "Standard OpenAI Video": "OpenAI Video tiêu chuẩn",
+    "JSON + image URLs": "JSON + URL hình ảnh",
+    "Upload local reference images through /v1/files, then submit JSON with image URLs.": "Tải ảnh tham chiếu lên qua /v1/files, sau đó gửi URL ảnh trong yêu cầu JSON.",
+    "Use the standard OpenAI Video request format for this channel.": "Sử dụng định dạng yêu cầu OpenAI Video tiêu chuẩn cho kênh này.",
     "Video billing": "Tính phí video",
     "Video billing templates": "Mẫu tính phí video",
     "Video channels": "Kênh video",

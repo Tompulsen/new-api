@@ -1010,6 +1010,17 @@ func (channel *Channel) ValidateSettings() error {
 	if err := channelParams.ValidateHTTPTransport(); err != nil {
 		return err
 	}
+	if err := channelParams.ValidateVideoRequestFormat(); err != nil {
+		return err
+	}
+	if channelParams.VideoRequestFormat == "json" {
+		supported := channel.Type == constant.ChannelTypeOpenAI || channel.Type == constant.ChannelTypeSora ||
+			(channel.Type == constant.ChannelTypeTaskPlugin && channelParams.TaskPluginKey == "sora") ||
+			(channel.Type == constant.ChannelTypeNewAPI && channelParams.BindsTaskPlugin("sora"))
+		if !supported {
+			return fmt.Errorf("JSON video requests require an OpenAI Video compatible channel")
+		}
+	}
 	channelOtherSettings := &dto.ChannelOtherSettings{}
 	if channel.OtherSettings != "" {
 		err := common.UnmarshalJsonStr(channel.OtherSettings, channelOtherSettings)

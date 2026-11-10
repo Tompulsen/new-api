@@ -50,6 +50,73 @@ func TestChannelValidateSettingsRejectsInvalidHTTPTransport(t *testing.T) {
 	}
 }
 
+func TestVideoRequestFormatDatabaseRoundTrip(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var driver gorm.Dialector
+			switch dialect {
+			case "sqlite":
+				driver = sqlite.Open(filepath.Join(t.TempDir(), "video-settings.db"))
+			case "mysql":
+				dsn := os.Getenv("TEST_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("TEST_MYSQL_DSN is not configured")
+				}
+				driver = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("TEST_POSTGRES_DSN is not configured")
+				}
+				driver = postgres.Open(dsn)
+			}
+			db, err := gorm.Open(driver, &gorm.Config{})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+			table := db.Table("video_request_format_channels").Session(&gorm.Session{})
+			require.NoError(t, table.AutoMigrate(&Channel{}))
+			t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable("video_request_format_channels")) })
+			query := "select version()"
+			if dialect == "sqlite" {
+				query = "select sqlite_version()"
+			}
+			var version string
+			require.NoError(t, db.Raw(query).Scan(&version).Error)
+			t.Logf("database version: %s", version)
+			for _, channelType := range []int{constant.ChannelTypeOpenAI, constant.ChannelTypeSora, constant.ChannelTypeTaskPlugin, constant.ChannelTypeNewAPI} {
+				channel := &Channel{Type: channelType, Name: "video", Key: "test-only"}
+				setting := dto.ChannelSettings{VideoRequestFormat: "json"}
+				if channelType == constant.ChannelTypeTaskPlugin || channelType == constant.ChannelTypeNewAPI {
+					setting.TaskPluginKey = "sora"
+				}
+				channel.SetSetting(setting)
+				require.NoError(t, channel.ValidateSettings())
+				require.NoError(t, table.Create(channel).Error)
+				for range 2 {
+					var loaded Channel
+					require.NoError(t, table.First(&loaded, channel.Id).Error)
+					assert.Equal(t, setting, loaded.GetSetting())
+					require.NoError(t, loaded.ValidateSettings())
+				}
+				setting.VideoRequestFormat = ""
+				channel.SetSetting(setting)
+				require.NoError(t, table.Save(channel).Error)
+				var restored Channel
+				require.NoError(t, table.First(&restored, channel.Id).Error)
+				assert.Empty(t, restored.GetSetting().VideoRequestFormat, "standard transport is restored per channel")
+			}
+			invalid := &Channel{Type: constant.ChannelTypeOpenAI}
+			invalid.SetSetting(dto.ChannelSettings{VideoRequestFormat: "custom"})
+			require.Error(t, invalid.ValidateSettings())
+			invalid.Type = constant.ChannelTypeGemini
+			invalid.SetSetting(dto.ChannelSettings{VideoRequestFormat: "json"})
+			require.Error(t, invalid.ValidateSettings())
+		})
+	}
+}
+
 func TestAdvancedCustomChannelRequiresModelListRouteOnlyWhenUpdateChecksEnabled(t *testing.T) {
 	inferenceRoute := dto.AdvancedCustomRoute{
 		IncomingPath: "/v1/chat/completions",

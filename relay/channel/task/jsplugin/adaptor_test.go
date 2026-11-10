@@ -298,6 +298,181 @@ export function parseSubmitResponse(ctx,r){return {taskId:"1"}} export function 
 	assert.Equal(t, "image-bytes", string(content))
 }
 
+func TestSoraChannelUploadsReferencesBeforeJSONGeneration(t *testing.T) {
+	source, err := plugins.Source("sora")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "sora"})
+	require.NoError(t, err)
+	service.InitHttpClient()
+	image := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 24)...)
+	imageURL := "data:" + "image/png;base64," + base64.StdEncoding.EncodeToString(image)
+	for _, tc := range []struct {
+		name, input, response string
+		status, uploads       int
+		wantError             bool
+	}{
+		{name: "multipart file", input: "file", response: `{"url":"https://cdn.example/reference.png"}`, status: 200, uploads: 1},
+		{name: "base64 references reuse one upload", input: "data", response: `{"data":{"url":"https://cdn.example/reference.png"}}`, status: 201, uploads: 1},
+		{name: "HTTP references pass through", input: "url", uploads: 0},
+		{name: "rejected upload stops generation", input: "file", status: 400, uploads: 1, wantError: true},
+		{name: "upload redirects are not followed", input: "file", status: 307, uploads: 1, wantError: true},
+		{name: "invalid upload URL stops generation", input: "data", response: `{"url":"file:///private/image"}`, status: 200, uploads: 1, wantError: true},
+		{name: "invalid base64 is rejected before upload", input: "invalid", uploads: 0, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			uploads, generations := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "Bearer selected-channel-key", r.Header.Get("Authorization"))
+				switch r.URL.Path {
+				case "/v1/files":
+					uploads++
+					require.NoError(t, r.ParseMultipartForm(1<<20))
+					defer r.MultipartForm.RemoveAll()
+					assert.Equal(t, "mapped-video", r.FormValue("model"))
+					assert.Equal(t, "video", r.FormValue("purpose"))
+					file, header, readErr := r.FormFile("file")
+					require.NoError(t, readErr)
+					defer file.Close()
+					actual, readErr := io.ReadAll(file)
+					require.NoError(t, readErr)
+					assert.Equal(t, image, actual)
+					assert.Equal(t, "image/png", header.Header.Get("Content-Type"))
+					if tc.status == 307 {
+						w.Header().Set("Location", "/must-not-follow")
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, tc.response)
+				case "/v1/videos":
+					generations++
+					assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+					var body map[string]any
+					require.NoError(t, common.DecodeJson(r.Body, &body))
+					assert.Equal(t, "mapped-video", body["model"])
+					assert.Equal(t, float64(6), body["duration"])
+					assert.Equal(t, "480P", body["resolution"])
+					assert.Equal(t, "16:9", body["aspect_ratio"])
+					assert.Equal(t, false, body["generate_audio"])
+					count := 1
+					if tc.input == "data" {
+						count = 2
+					}
+					assert.Equal(t, count, len(body["images"].([]any)))
+					for _, reference := range body["images"].([]any) {
+						assert.Equal(t, "https://cdn.example/reference.png", reference)
+					}
+					_, _ = io.WriteString(w, `{"id":"upstream-video"}`)
+				default:
+					t.Errorf("unexpected upstream request: %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			request := map[string]any{
+				"prompt": "waves", "seconds": "6",
+				"metadata": map[string]any{"resolution": "480p", "aspect_ratio": "16:9", "generate_audio": false},
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			if tc.input == "file" {
+				var input bytes.Buffer
+				writer := multipart.NewWriter(&input)
+				file, createErr := writer.CreateFormFile("input_reference", "ref.png")
+				require.NoError(t, createErr)
+				_, createErr = file.Write(image)
+				require.NoError(t, createErr)
+				require.NoError(t, writer.Close())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", &input)
+				c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+			} else {
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{}`))
+				c.Request.Header.Set("Content-Type", "application/json")
+				request["images"] = []any{"https://cdn.example/reference.png"}
+				if tc.input == "data" {
+					request["images"] = []any{imageURL, imageURL}
+				} else if tc.input == "invalid" {
+					request["images"] = []any{"data:" + "image/png;base64,%%%"}
+				}
+			}
+			c.Set("task_request", request)
+			info := &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelType: constant.ChannelTypeOpenAI, ChannelBaseUrl: server.URL, ApiKey: "selected-channel-key",
+					ChannelSetting: dto.ChannelSettings{VideoRequestFormat: "json"},
+				},
+				TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+			}
+			info.OriginModelName, info.UpstreamModelName = "client-video", "mapped-video"
+			adaptor := New(plugin)
+			adaptor.Init(info)
+			_, err := adaptor.buildSubmit(c, info)
+			require.NoError(t, err)
+			assert.Zero(t, uploads, "descriptor and price preparation must not upload")
+			body, err := adaptor.BuildRequestBody(c, info)
+			if tc.wantError {
+				require.Error(t, err)
+				var uploadErr interface{ HTTPStatusCode() int }
+				require.ErrorAs(t, err, &uploadErr)
+				assert.Equal(t, http.StatusBadRequest, uploadErr.HTTPStatusCode())
+			} else {
+				require.NoError(t, err)
+				response, requestErr := adaptor.DoRequest(c, info, body)
+				require.NoError(t, requestErr)
+				require.NotNil(t, response)
+				response.Body.Close()
+				assert.Equal(t, 1, generations, "generate once after every reference is prepared")
+			}
+			assert.Equal(t, tc.uploads, uploads)
+			if tc.wantError {
+				assert.Zero(t, generations)
+			}
+		})
+	}
+}
+
+func TestSoraJSONReferenceUploadSafety(t *testing.T) {
+	source, err := plugins.Source("sora")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "sora"})
+	require.NoError(t, err)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	image := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 24)...)
+	dataURL := "data:" + "image/png;base64," + base64.StdEncoding.EncodeToString(image)
+	placeholder := map[string]any{"__videoUpload": map[string]any{"dataUrl": dataURL}}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:   &relaycommon.ChannelMeta{ChannelSetting: dto.ChannelSettings{VideoRequestFormat: "json"}},
+		TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+	}
+	uploader := &videoReferenceUploader{adaptor: New(plugin), info: info, urls: make(map[string]string)}
+	for index := range dto.MaxImageN {
+		uploader.urls[fmt.Sprint(index)] = "https://cdn.example/existing.png"
+	}
+	var total int64
+	_, err = uploader.resolve(c, placeholder, nil, maxInlineFileBytes(), &total)
+	require.ErrorContains(t, err, "too many reference image uploads")
+	uploader.urls = make(map[string]string)
+	_, err = uploader.resolve(c, placeholder, nil, int64(len(image)-1), &total)
+	require.Error(t, err, "the host byte limit must reject references before any upload")
+	info.ChannelSetting.VideoRequestFormat = ""
+	_, err = uploader.resolve(c, placeholder, nil, maxInlineFileBytes(), &total)
+	require.ErrorContains(t, err, "require the channel JSON video format")
+
+	legacy, err := pluginruntime.NewRegistry().Register(`
+export const meta={apiVersion:1,key:"sora",name:"Legacy",version:"1.0.0",author:{name:"Test"},models:["video"],fetchMode:"per_task"};
+export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/v1/videos",body:ctx.requestBody};}
+export function parseSubmitResponse(){return {taskId:"video"};}
+export function buildQueryRequest(){return {};}
+export function parseTaskResult(){return {status:"SUCCESS"};}
+`, pluginruntime.Options{})
+	require.NoError(t, err)
+	info.ChannelSetting.VideoRequestFormat = "json"
+	info.ChannelBaseUrl = "https://upstream.example"
+	c.Set("task_request", map[string]any{"prompt": "waves", "duration": 6})
+	adaptor := New(legacy)
+	adaptor.Init(info)
+	_, err = adaptor.buildSubmit(c, info)
+	require.ErrorContains(t, err, "update or restore the built-in Sora plugin", "a client duration field cannot make an old plugin appear compatible")
+}
+
 func TestTaskAdaptorInlinesJSONFilePlaceholders(t *testing.T) {
 	const fileBytes = "image-bytes"
 	encoded := base64.StdEncoding.EncodeToString([]byte(fileBytes))

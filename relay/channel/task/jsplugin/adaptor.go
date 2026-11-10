@@ -37,17 +37,18 @@ import (
 )
 
 type requestDescriptor struct {
-	ResponseType   string            `json:"responseType"`
-	URL            string            `json:"url"`
-	Method         string            `json:"method"`
-	Headers        map[string]string `json:"headers"`
-	Body           any               `json:"body"`
-	Credentialless bool              `json:"credentialless"`
-	Action         string            `json:"action"`
-	Model          string            `json:"model"`
-	RewriteModel   string            `json:"rewriteModel"`
-	BodyType       string            `json:"bodyType"`
-	Parts          []requestPart     `json:"parts"`
+	VideoRequestFormat string            `json:"videoRequestFormat"`
+	ResponseType       string            `json:"responseType"`
+	URL                string            `json:"url"`
+	Method             string            `json:"method"`
+	Headers            map[string]string `json:"headers"`
+	Body               any               `json:"body"`
+	Credentialless     bool              `json:"credentialless"`
+	Action             string            `json:"action"`
+	Model              string            `json:"model"`
+	RewriteModel       string            `json:"rewriteModel"`
+	BodyType           string            `json:"bodyType"`
+	Parts              []requestPart     `json:"parts"`
 
 	// ContentPath and MimeType are read from buildContentRequest only: the
 	// artifact's bytes are a base64 string at that path of the JSON reply.
@@ -62,17 +63,18 @@ type requestDescriptor struct {
 // JSON order returns it: decoded from the JSON.stringify text of the result,
 // with the body kept as that text.
 type orderedRequestDescriptor struct {
-	ResponseType   string            `json:"responseType"`
-	URL            string            `json:"url"`
-	Method         string            `json:"method"`
-	Headers        map[string]string `json:"headers"`
-	Body           json.RawMessage   `json:"body"`
-	Credentialless bool              `json:"credentialless"`
-	Action         string            `json:"action"`
-	Model          string            `json:"model"`
-	RewriteModel   string            `json:"rewriteModel"`
-	BodyType       string            `json:"bodyType"`
-	Parts          []requestPart     `json:"parts"`
+	VideoRequestFormat string            `json:"videoRequestFormat"`
+	ResponseType       string            `json:"responseType"`
+	URL                string            `json:"url"`
+	Method             string            `json:"method"`
+	Headers            map[string]string `json:"headers"`
+	Body               json.RawMessage   `json:"body"`
+	Credentialless     bool              `json:"credentialless"`
+	Action             string            `json:"action"`
+	Model              string            `json:"model"`
+	RewriteModel       string            `json:"rewriteModel"`
+	BodyType           string            `json:"bodyType"`
+	Parts              []requestPart     `json:"parts"`
 
 	ContentPath []any  `json:"contentPath"`
 	MimeType    string `json:"mimeType"`
@@ -413,7 +415,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	}
 	value := descriptor.Body
 	if descriptor.BodyText != nil {
-		if !bytes.Contains(descriptor.BodyText, []byte(`"__fileRef":`)) {
+		if !bytes.Contains(descriptor.BodyText, []byte(`"__fileRef":`)) && !bytes.Contains(descriptor.BodyText, []byte(`"__videoUpload":`)) {
 			return bytes.NewReader(descriptor.BodyText), nil
 		}
 		// File placeholders resolve only in the decoded value, which writes
@@ -422,7 +424,8 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 			return nil, err
 		}
 	}
-	inlined, err := inlineJSONFilePlaceholders(c, value)
+	uploads := &videoReferenceUploader{adaptor: a, info: info, urls: make(map[string]string)}
+	inlined, err := inlineJSONFilePlaceholders(c, value, uploads)
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +444,7 @@ func maxInlineFileBytes() int64 {
 	return int64(limitMB) << 20
 }
 
-func inlineJSONFilePlaceholders(c *gin.Context, body any) (any, error) {
+func inlineJSONFilePlaceholders(c *gin.Context, body any, uploads *videoReferenceUploader) (any, error) {
 	cloned := jsonValue(body)
 	var form *multipart.Form
 	if c != nil && c.Request != nil && strings.Contains(c.GetHeader("Content-Type"), "multipart/form-data") {
@@ -454,17 +457,20 @@ func inlineJSONFilePlaceholders(c *gin.Context, body any) (any, error) {
 	}
 	limit := maxInlineFileBytes()
 	var total int64
-	return replaceJSONFilePlaceholders(cloned, form, limit, &total)
+	return replaceJSONFilePlaceholders(c, cloned, form, limit, &total, uploads)
 }
 
-func replaceJSONFilePlaceholders(value any, form *multipart.Form, limit int64, total *int64) (any, error) {
+func replaceJSONFilePlaceholders(c *gin.Context, value any, form *multipart.Form, limit int64, total *int64, uploads *videoReferenceUploader) (any, error) {
 	switch typed := value.(type) {
 	case map[string]any:
+		if _, isUpload := typed["__videoUpload"]; isUpload {
+			return uploads.resolve(c, typed, form, limit, total)
+		}
 		if _, isPlaceholder := typed["__fileRef"]; isPlaceholder {
 			return encodeFilePlaceholder(typed, form, limit, total)
 		}
 		for key, item := range typed {
-			replaced, err := replaceJSONFilePlaceholders(item, form, limit, total)
+			replaced, err := replaceJSONFilePlaceholders(c, item, form, limit, total, uploads)
 			if err != nil {
 				return nil, err
 			}
@@ -473,7 +479,7 @@ func replaceJSONFilePlaceholders(value any, form *multipart.Form, limit int64, t
 		return typed, nil
 	case []any:
 		for index, item := range typed {
-			replaced, err := replaceJSONFilePlaceholders(item, form, limit, total)
+			replaced, err := replaceJSONFilePlaceholders(c, item, form, limit, total, uploads)
 			if err != nil {
 				return nil, err
 			}
@@ -1613,7 +1619,8 @@ func (a *TaskAdaptor) requestDescriptor(ctx context.Context, hook string, args .
 		return requestDescriptor{}, err
 	}
 	descriptor := requestDescriptor{
-		ResponseType: ordered.ResponseType, URL: ordered.URL, Method: ordered.Method, Headers: ordered.Headers,
+		VideoRequestFormat: ordered.VideoRequestFormat,
+		ResponseType:       ordered.ResponseType, URL: ordered.URL, Method: ordered.Method, Headers: ordered.Headers,
 		Credentialless: ordered.Credentialless, Action: ordered.Action, Model: ordered.Model,
 		RewriteModel: ordered.RewriteModel, BodyType: ordered.BodyType, Parts: ordered.Parts,
 		ContentPath: ordered.ContentPath, MimeType: ordered.MimeType,
@@ -1662,6 +1669,11 @@ func (a *TaskAdaptor) buildSubmit(c *gin.Context, info *relaycommon.RelayInfo) (
 	}
 	if descriptor.ResponseType == "" {
 		descriptor.ResponseType = "json"
+	}
+	if a.plugin.Meta.Key == "sora" && info.HasChannelMeta() && info.ChannelSetting.VideoRequestFormat == "json" && info.Action != "remix" {
+		if descriptor.VideoRequestFormat != "json" || descriptor.BodyType == "multipart" {
+			return nil, fmt.Errorf("the active Sora plugin does not support JSON video requests; update or restore the built-in Sora plugin")
+		}
 	}
 	allowed := a.plugin.Meta.SubmitResponseTypes
 	if len(allowed) == 0 {
@@ -1804,6 +1816,9 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 		}
 	}
 	ctx["requestBody"] = requestBody
+	if a.plugin.Meta.Key == "sora" && info.HasChannelMeta() {
+		ctx["videoRequestFormat"] = info.ChannelSetting.VideoRequestFormat
+	}
 	ctx["requestHeaders"] = requestHeaders
 	ctx["files"] = files
 	ctx["action"] = info.Action

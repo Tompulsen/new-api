@@ -7,7 +7,7 @@ export const meta = {
     en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
-  version: "1.1.3",
+  version: "1.1.4",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
@@ -98,6 +98,76 @@ function requestValues(req, model) {
   return values;
 }
 
+function videoReferenceURL(reference) {
+  let image = reference;
+  if (image && typeof image === "object") image = image.url || image.image_url;
+  if (image && typeof image === "object") image = image.url;
+  if (typeof image !== "string" || !image.trim()) throw new Error("JSON video references require image URLs; file IDs are not supported");
+  return image.trim();
+}
+
+function jsonVideoValues(ctx) {
+  const req = ctx.requestBody || {};
+  const metadata = req.metadata && typeof req.metadata === "object" && !Array.isArray(req.metadata) ? req.metadata : {};
+  const values = Object.assign({}, metadata, req);
+  values.model = ctx.upstreamModel || ctx.model;
+  let duration = values.seconds;
+  if (duration === undefined) duration = values.duration;
+  if (duration === undefined) duration = 4;
+  duration = Number(duration);
+  if (!Number.isFinite(duration) || duration <= 0 || duration > 3600) throw new Error("seconds must be between 1 and 3600");
+  values.duration = duration;
+  const size = /^(\d+)[x:](\d+)$/.exec(trimmed(values.size));
+  const shortEdge = size ? Math.min(Number(size[1]), Number(size[2])) : 720;
+  const resolution = trimmed(values.resolution || values.resolution_name);
+  values.resolution = "720P";
+  if (resolution && resolution.toLowerCase() !== "auto") values.resolution = resolution.replace(/p$/i, "P");
+  else if (shortEdge <= 480) values.resolution = "480P";
+  else if (shortEdge >= 1080) values.resolution = "1080P";
+  let ratio = trimmed(values.aspect_ratio || values.aspectRatio || values.ratio);
+  if (!ratio || ratio === "auto") {
+    ratio = "16:9";
+    if (size && Number(size[1]) > 0 && Number(size[2]) > 0) {
+      let divisor = Number(size[1]),
+        rest = Number(size[2]);
+      while (rest) {
+        const next = divisor % rest;
+        divisor = rest;
+        rest = next;
+      }
+      ratio = Number(size[1]) / divisor + ":" + Number(size[2]) / divisor;
+    }
+  }
+  values.aspect_ratio = ratio;
+  if (values.images !== undefined && !Array.isArray(values.images)) throw new Error("images must be an array");
+  const images = (values.images || []).map(videoReferenceURL);
+  for (const reference of [values.first_frame, values.image, values.input_reference]) {
+    if (reference === undefined || reference === null) continue;
+    const image = videoReferenceURL(reference);
+    if (!images.includes(image)) images.unshift(image);
+  }
+  values.images = images.map(function (image) {
+    if (/^data:image\//i.test(image)) return { __videoUpload: { dataUrl: image } };
+    if (!/^https?:\/\//i.test(image)) throw new Error("reference images must be HTTP or HTTPS URLs");
+    return image;
+  });
+  const files = (ctx.files || []).map(function (file) {
+    return { __videoUpload: { fileRef: file.ref } };
+  });
+  values.images = files.concat(values.images);
+  if (values.last_frame !== undefined && values.last_frame !== null) {
+    const last = videoReferenceURL(values.last_frame);
+    if (!images.includes(last)) {
+      if (/^data:image\//i.test(last)) values.images.push({ __videoUpload: { dataUrl: last } });
+      else if (/^https?:\/\//i.test(last)) values.images.push(last);
+      else throw new Error("reference images must be HTTP or HTTPS URLs");
+    }
+  }
+  for (const key of ["seconds", "size", "image", "input_reference", "metadata", "resolution_name", "ratio", "aspectRatio", "first_frame", "last_frame"])
+    delete values[key];
+  return values;
+}
+
 export function buildSubmitRequest(ctx) {
   const req = ctx.requestBody || {};
   if (!String(req.prompt || "").trim()) throw new Error("field prompt is required");
@@ -106,6 +176,10 @@ export function buildSubmitRequest(ctx) {
   if (action === "remix") {
     headers["Content-Type"] = "application/json";
     return { url: ctx.baseUrl + "/v1/videos/" + ctx.originTaskId + "/remix", method: "POST", headers, body: requestValues(req, ctx.upstreamModel), action };
+  }
+  if (ctx.videoRequestFormat === "json") {
+    headers["Content-Type"] = "application/json";
+    return { url: ctx.baseUrl + "/v1/videos", method: "POST", headers, videoRequestFormat: "json", body: jsonVideoValues(ctx) };
   }
   if ((ctx.files || []).length) {
     const parts = [];
@@ -132,7 +206,7 @@ export function parseSubmitResponse(ctx, resp) {
 
 export function extractUsage(ctx) {
   if (ctx.action === "remix") return {};
-  const req = requestValues(ctx.requestBody, ctx.upstreamModel || ctx.model);
+  const req = ctx.videoRequestFormat === "json" ? jsonVideoValues(ctx) : requestValues(ctx.requestBody, ctx.upstreamModel || ctx.model);
   const seconds = Number(req.seconds === undefined ? (req.duration === undefined ? 4 : req.duration) : req.seconds);
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) throw new Error("seconds must be between 1 and 3600");
   const facts = { seconds, size: req.size || "720x1280" };
