@@ -367,3 +367,106 @@ it('preserves native Sora size prices without treating them as generic video pri
   const draft = await editor.current?.commitDraft()
   expect(draft?.pluginBillingExpr?.sora).toBe(expression)
 })
+
+it.each(['video', 'ordinary'])(
+  'edits the async video provider and preserves the separate Sora price when saving %s mode',
+  async (mode) => {
+    const editor = createRef<ModelPricingEditorPanelHandle>()
+    const soraPrice = 'tier("sora", u("seconds") * 0.8)'
+    render(
+      <ModelPricingEditorPanel
+        ref={editor}
+        editData={{
+          name: 'seedance-2.0-fast-official',
+          billingMode: 'per-request',
+          price: '0.2',
+          pluginBillingExpr: {
+            'async-compatible': 'tier("async", u("seconds") * 0.4)',
+            sora: soraPrice,
+          },
+        }}
+        pluginVariants={[
+          {
+            plugin_key: 'async-compatible',
+            plugin_name: 'Async compatible',
+            usage_schema: schema,
+            configured: 'tier("async", u("seconds") * 0.4)',
+            effective: 'tier("async", u("seconds") * 0.4)',
+            compatible: true,
+          },
+          {
+            plugin_key: 'sora',
+            plugin_name: 'Sora',
+            usage_schema: schema,
+            configured: soraPrice,
+            effective: soraPrice,
+            compatible: true,
+          },
+        ]}
+        videoUsageSchema={schema}
+      />,
+      { wrapper }
+    )
+    expect(screen.getByRole('tab', { name: 'Video billing' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    const user = userEvent.setup()
+    const price = screen.getByRole('textbox', {
+      name: /Video generation unit price:.*720p/,
+    })
+    expect(price).toHaveValue('0.4')
+    if (mode === 'video') {
+      await user.clear(price)
+      await user.type(price, '0.6')
+    } else {
+      await user.click(
+        screen.getByRole('tab', { name: 'Per-request (deprecated)' })
+      )
+    }
+    const draft = await editor.current?.commitDraft()
+    expect(draft?.pluginBillingExpr?.sora).toBe(soraPrice)
+    if (mode === 'video') {
+      expect(draft?.pluginBillingExpr?.['async-compatible']).toContain('0.6')
+    } else {
+      expect(draft?.pluginBillingExpr).not.toHaveProperty('async-compatible')
+    }
+  }
+)
+
+it('creates an async video price without inheriting or replacing an existing Sora override', async () => {
+  const editor = createRef<ModelPricingEditorPanelHandle>()
+  const soraPrice = 'tier("sora", u("seconds") * 0.8)'
+  render(
+    <ModelPricingEditorPanel
+      ref={editor}
+      editData={{
+        name: 'seedance-2.0-fast-official',
+        billingMode: 'per-request',
+        price: '0.2',
+        pluginBillingExpr: { sora: soraPrice },
+      }}
+      pluginVariants={[
+        {
+          plugin_key: 'async-compatible',
+          plugin_name: 'Async compatible',
+          usage_schema: schema,
+          configured: '',
+          effective: '',
+          compatible: false,
+        },
+      ]}
+      videoUsageSchema={schema}
+    />,
+    { wrapper }
+  )
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('tab', { name: 'Video billing' }))
+  expect(await editor.current?.commitDraft()).toBeNull()
+  await user.click(screen.getByRole('tab', { name: 'Per request' }))
+  await user.type(screen.getByLabelText('Per request (USD)'), '0.3')
+  expect((await editor.current?.commitDraft())?.pluginBillingExpr).toEqual({
+    sora: soraPrice,
+    'async-compatible': 'tier("base", 0.3)',
+  })
+})

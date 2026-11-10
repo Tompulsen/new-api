@@ -145,6 +145,30 @@ func pricingByModel(pricings []Pricing) map[string]Pricing {
 	return result
 }
 
+func TestModelPricingSnapshotOffersVideoSchemaWithOnlyAsyncPlugin(t *testing.T) {
+	require.NoError(t, DB.AutoMigrate(&Option{}))
+	previous := jsplugin.DefaultRegistry
+	registry := jsplugin.NewRegistry()
+	jsplugin.DefaultRegistry = registry
+	t.Cleanup(func() { jsplugin.DefaultRegistry = previous })
+	source := strings.ReplaceAll(
+		pricingUsagePluginSource("1.0.0", `{seconds:{type:"number",unit:"second"}}`),
+		"pricing-usage-probe", "async-compatible",
+	)
+	_, err := registry.Register(source, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { registry.Unregister("async-compatible") })
+
+	snapshot, err := GetModelPricingSnapshot([]string{"pricing-usage-model"})
+	require.NoError(t, err)
+	assert.Equal(t, billing_setting.VideoUsageSchema(), snapshot.VideoUsageSchema)
+
+	require.NoError(t, registry.Unregister("async-compatible"))
+	snapshot, err = GetModelPricingSnapshot([]string{"pricing-usage-model"})
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.VideoUsageSchema)
+}
+
 func TestPricingUsageProfilesAndAliases(t *testing.T) {
 	resetPricingEndpointTestTables(t)
 	require.NoError(t, DB.AutoMigrate(&Option{}))

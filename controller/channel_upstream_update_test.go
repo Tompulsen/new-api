@@ -12,6 +12,8 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/plugins"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -416,6 +418,39 @@ func TestFetchNewAPIModelsUsesOpenAIContract(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, []string{"gpt-5", "gpt-5-mini"}, models)
+}
+
+func TestFetchTaskPluginPreviewModelsWithoutChannelCredential(t *testing.T) {
+	registry := jsplugin.NewRegistry()
+	source, err := plugins.Source("async-compatible")
+	require.NoError(t, err)
+	_, err = registry.RegisterFactory(source, jsplugin.Options{Key: "async-compatible"})
+	require.NoError(t, err)
+	previous := jsplugin.DefaultRegistry
+	jsplugin.DefaultRegistry = registry
+	t.Cleanup(func() { jsplugin.DefaultRegistry = previous })
+	for _, pluginKey := range []string{"async-compatible", "missing-plugin"} {
+		body, err := common.Marshal(map[string]any{
+			"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": pluginKey,
+		})
+		require.NoError(t, err)
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/fetch_models", bytes.NewReader(body))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		FetchModels(ctx)
+		var result struct {
+			Success bool     `json:"success"`
+			Data    []string `json:"data"`
+		}
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
+		if pluginKey == "missing-plugin" {
+			assert.False(t, result.Success)
+		} else {
+			assert.True(t, result.Success)
+			assert.Contains(t, result.Data, "seedance-2.0-fast-official")
+		}
+	}
 }
 
 func TestNormalizeModelNames(t *testing.T) {

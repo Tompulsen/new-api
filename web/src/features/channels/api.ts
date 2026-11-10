@@ -605,6 +605,7 @@ export async function fetchModels(data: {
   type: number
   key?: string
   channel_id?: number
+  task_plugin_key?: string
   advanced_custom?: string
   header_override?: string
   proxy?: string

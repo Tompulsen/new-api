@@ -1198,11 +1198,16 @@ export function ChannelMutateDrawer({
     [currentModelsArray, form]
   )
 
-  // Ordinary edits use the saved channel. Advanced Custom retains its existing
-  // preview path, which reuses the saved credential on the server.
+  // Plugin discovery reads the selected manifest; automatic upstream sync
+  // remains limited to providers with a live model-list endpoint.
+  const canFetchModels =
+    MODEL_FETCHABLE_TYPES.has(currentType) ||
+    currentType === CHANNEL_TYPE_TASK_PLUGIN
   const previewModels =
     !isEditing ||
-    (currentType === CHANNEL_TYPE_ADVANCED_CUSTOM && canEditSensitive)
+    ((currentType === CHANNEL_TYPE_ADVANCED_CUSTOM ||
+      currentType === CHANNEL_TYPE_TASK_PLUGIN) &&
+      canEditSensitive)
   const canDiscoverModels = previewModels ? canEditSensitive : canOperateChannel
   const previewKey = isEditing ? undefined : currentKey
   const previewRequest = useMemo<ChannelModelDiscoveryRequest>(
@@ -1212,6 +1217,7 @@ export function ChannelMutateDrawer({
         type: currentType,
         key: previewKey,
         channel_id: isEditing ? channelId || undefined : undefined,
+        task_plugin_key: currentTaskPluginKey,
         base_url: currentBaseUrl || '',
         advanced_custom: currentAdvancedCustom,
         header_override: currentHeaderOverride,
@@ -1223,6 +1229,7 @@ export function ChannelMutateDrawer({
       previewKey,
       isEditing,
       channelId,
+      currentTaskPluginKey,
       currentBaseUrl,
       currentAdvancedCustom,
       currentHeaderOverride,
@@ -1237,7 +1244,7 @@ export function ChannelMutateDrawer({
     enabled:
       open &&
       canDiscoverModels &&
-      MODEL_FETCHABLE_TYPES.has(currentType) &&
+      canFetchModels &&
       (!isEditing || Boolean(channelData?.data)),
     request: previewModels ? previewRequest : savedRequest,
   })
@@ -1250,7 +1257,7 @@ export function ChannelMutateDrawer({
   const fetchDiscoveredModels = discovery.fetch
   const handleFetchModels = useCallback(async () => {
     const type = form.getValues('type')
-    if (!MODEL_FETCHABLE_TYPES.has(type)) {
+    if (!MODEL_FETCHABLE_TYPES.has(type) && type !== CHANNEL_TYPE_TASK_PLUGIN) {
       toast.error(t('This channel type does not support fetching models'))
       return
     }
@@ -1261,6 +1268,7 @@ export function ChannelMutateDrawer({
     if (
       !isEditing &&
       type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
+      type !== CHANNEL_TYPE_TASK_PLUGIN &&
       !form.getValues('key')?.trim()
     ) {
       form.setError('key', {
@@ -3295,7 +3303,7 @@ export function ChannelMutateDrawer({
               )}
             />
 
-            {MODEL_FETCHABLE_TYPES.has(currentType) && (
+            {canFetchModels && (
               <div aria-live='polite' className='mt-4 space-y-3'>
                 {discovery.status === 'loading' && (
                   <LoadingState
@@ -3451,7 +3459,7 @@ export function ChannelMutateDrawer({
                   <FileText className='mr-2 h-4 w-4' aria-hidden='true' />
                   {t('Fill Related Models')}
                 </Button>
-                {MODEL_FETCHABLE_TYPES.has(currentType) && (
+                {canFetchModels && (
                   <>
                     <Button
                       type='button'

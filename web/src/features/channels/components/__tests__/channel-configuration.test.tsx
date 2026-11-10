@@ -1522,6 +1522,67 @@ test('opening and reselecting an existing plugin preserves its saved configurati
   expect(screen.getByLabelText('Priority')).toHaveValue(7)
 })
 
+test('task plugin model discovery uses the selected plugin without requiring a credential and keeps automatic sync hidden', async () => {
+  editingChannel = {
+    ...editingChannel,
+    type: 61,
+    setting: '{"task_plugin_key":"video-a"}',
+  }
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: true, data: ['seedance-2.0-fast-official'] },
+  })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('button', { name: 'Fetch from Upstream' }))
+  expect(
+    await screen.findByRole('checkbox', {
+      name: 'seedance-2.0-fast-official',
+    })
+  ).toBeVisible()
+  expect(post).toHaveBeenCalledWith(
+    '/api/channel/fetch_models',
+    expect.objectContaining({ type: 61, task_plugin_key: 'video-a' }),
+    expect.anything()
+  )
+  await user.click(screen.getByRole('button', { name: 'Change provider' }))
+  await user.click(screen.getByRole('option', { name: /^Video B Plugin/ }))
+  await user.click(screen.getByRole('button', { name: 'Fetch from Upstream' }))
+  expect(post).toHaveBeenLastCalledWith(
+    '/api/channel/fetch_models',
+    expect.objectContaining({ task_plugin_key: 'video-b' }),
+    expect.anything()
+  )
+  await user.click(screen.getByRole('tab', { name: /Routing & Mapping/ }))
+  expect(
+    screen.queryByRole('group', { name: 'Upstream Model Detection Settings' })
+  ).not.toBeInTheDocument()
+})
+
+test('a new task plugin channel can fetch its model catalog before entering a credential', async () => {
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: true, data: ['video-a-1'] },
+  })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness />)
+  await user.click(
+    await screen.findByRole('option', { name: /^Video A Plugin/ })
+  )
+  await user.click(screen.getByRole('button', { name: 'Fetch from Upstream' }))
+  expect(
+    await screen.findByRole('checkbox', { name: 'video-a-1' })
+  ).toBeVisible()
+  expect(post).toHaveBeenCalledWith(
+    '/api/channel/fetch_models',
+    expect.objectContaining({
+      type: 61,
+      task_plugin_key: 'video-a',
+      key: '',
+    }),
+    expect.anything()
+  )
+})
+
 test('an unavailable plugin keeps its identifier and binding when other fields are updated', async () => {
   editingChannel = {
     ...editingChannel,
@@ -2045,15 +2106,15 @@ test('model configuration keeps unchecked candidates searchable and supports cat
   expect(trigger).toBeDisabled()
 })
 
-test('model configuration is available for a plugin channel without upstream discovery and is disabled when its model list is empty', async () => {
+test('model configuration is available alongside plugin catalog discovery and is disabled when its model list is empty', async () => {
   const user = userEvent.setup()
   render(<ConfigurationHarness />)
   await user.click(await screen.findByRole('option', { name: /Video A/ }))
   const trigger = screen.getByRole('button', { name: 'Configure Models' })
   expect(trigger).toBeEnabled()
   expect(
-    screen.queryByRole('button', { name: 'Fetch from Upstream' })
-  ).not.toBeInTheDocument()
+    screen.getByRole('button', { name: 'Fetch from Upstream' })
+  ).toBeEnabled()
   await user.click(trigger)
   const dialog = within(
     screen.getByRole('dialog', { name: 'Configure Models' })

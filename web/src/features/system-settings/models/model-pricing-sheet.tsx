@@ -270,13 +270,18 @@ export const ModelPricingEditorPanel = forwardRef<
   if (editData?.billingMode !== 'tiered_expr' && hasLegacyPricing) {
     initialPricingMode = hasValue(editData?.price) ? 'per-request' : 'per-token'
   }
+  const videoPluginKey = pluginVariants?.some(
+    (variant) => variant.plugin_key === 'async-compatible' && !variant.stale
+  )
+    ? 'async-compatible'
+    : 'sora'
   const initialVideoExpression =
     videoUsageSchema &&
     taskExpressionCompatible(
-      editData?.pluginBillingExpr?.sora ?? '',
+      editData?.pluginBillingExpr?.[videoPluginKey] ?? '',
       videoUsageSchema
     )
-      ? (editData?.pluginBillingExpr?.sora ?? '')
+      ? (editData?.pluginBillingExpr?.[videoPluginKey] ?? '')
       : ''
   const initialBillingExpr =
     editData?.billingExpr ||
@@ -349,7 +354,7 @@ export const ModelPricingEditorPanel = forwardRef<
   const ordinaryVariants = pluginVariants?.filter(
     (variant) =>
       !(
-        variant.plugin_key === 'sora' &&
+        variant.plugin_key === videoPluginKey &&
         videoUsageSchema &&
         taskExpressionCompatible(
           variant.configured || variant.effective,
@@ -749,8 +754,8 @@ export const ModelPricingEditorPanel = forwardRef<
   const buildSubmitData = useCallback(
     (values: ModelPricingFormValues) => {
       const expressions = { ...pluginExpressions }
-      if (pricingMode === 'video') expressions.sora = videoExpression
-      else if (initialVideoExpression) delete expressions.sora
+      if (pricingMode === 'video') expressions[videoPluginKey] = videoExpression
+      else if (initialVideoExpression) delete expressions[videoPluginKey]
       const data: ModelRatioData = {
         name: values.name.trim(),
         ...(pricingMode === 'video' ||
@@ -786,6 +791,7 @@ export const ModelPricingEditorPanel = forwardRef<
       pluginVariants,
       videoExpression,
       initialVideoExpression,
+      videoPluginKey,
     ]
   )
 

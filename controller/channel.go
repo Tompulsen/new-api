@@ -1381,6 +1381,7 @@ func equalStringPtr(a, b *string) bool {
 
 type fetchModelsRequest struct {
 	ChannelID      int     `json:"channel_id"`
+	TaskPluginKey  string  `json:"task_plugin_key"`
 	BaseURL        *string `json:"base_url"`
 	Type           int     `json:"type"`
 	Key            string  `json:"key"`
@@ -1469,7 +1470,10 @@ func FetchModels(c *gin.Context) {
 	}
 
 	var channel *model.Channel
-	if req.Type == constant.ChannelTypeAdvancedCustom || req.ChannelID > 0 {
+	if req.Type == constant.ChannelTypeTaskPlugin {
+		channel = &model.Channel{Type: req.Type}
+		channel.SetSetting(dto.ChannelSettings{TaskPluginKey: strings.TrimSpace(req.TaskPluginKey)})
+	} else if req.Type == constant.ChannelTypeAdvancedCustom || req.ChannelID > 0 {
 		var err error
 		channel, err = buildAdvancedCustomModelPreviewChannel(req)
 		if err != nil {

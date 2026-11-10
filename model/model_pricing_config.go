@@ -266,8 +266,11 @@ func GetModelPricingSnapshot(names []string) (*ModelPricingSnapshot, error) {
 	sort.Strings(names)
 	result := &ModelPricingSnapshot{Entries: make([]ModelPricingEntry, 0, len(names)), Options: make(map[string]string), EmptyVersion: ModelPricingVersion(PricingValues{})}
 	generation := jsplugin.DefaultRegistry.Generation()
-	if _, available := generation.Get("sora"); available {
-		result.VideoUsageSchema = billing_setting.VideoUsageSchema()
+	for _, key := range []string{"sora", "async-compatible"} {
+		if _, available := generation.Get(key); available {
+			result.VideoUsageSchema = billing_setting.VideoUsageSchema()
+			break
+		}
 	}
 	for _, name := range names {
 		configured := modelPricingValues(values, name)
