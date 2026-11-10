@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -147,7 +146,7 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		}
 	}
 	partHeader := make(textproto.MIMEHeader)
-	partHeader.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": filename}))
+	partHeader.Set("Content-Disposition", multipart.FileContentDisposition("file", filename))
 	partHeader.Set("Content-Type", contentType)
 	part, err := writer.CreatePart(partHeader)
 	if err != nil {

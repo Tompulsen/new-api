@@ -222,8 +222,20 @@ func TestAsyncCompatibleUploadsBeforeGeneration(t *testing.T) {
 					require.NoError(t, r.ParseMultipartForm(1<<20))
 					defer r.MultipartForm.RemoveAll()
 					assert.Empty(t, r.MultipartForm.Value, "the native file endpoint accepts only file")
-					file, _, err := r.FormFile("file")
+					file, header, err := r.FormFile("file")
 					require.NoError(t, err)
+					// The upstream rejects otherwise valid unquoted multipart parameters.
+					if !strings.HasPrefix(header.Header.Get("Content-Disposition"), `form-data; name="file"; filename="`) {
+						file.Close()
+						http.Error(w, `{"error":{"code":"missing_file"}}`, http.StatusBadRequest)
+						return
+					}
+					assert.Equal(t, "image/png", header.Header.Get("Content-Type"))
+					if tc.input == "file" {
+						assert.Equal(t, "ref.png", header.Filename)
+					} else {
+						assert.Equal(t, "reference", header.Filename)
+					}
 					actual, err := io.ReadAll(file)
 					file.Close()
 					require.NoError(t, err)
