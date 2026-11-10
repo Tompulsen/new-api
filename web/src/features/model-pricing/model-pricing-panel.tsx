@@ -96,7 +96,12 @@ export function ModelPricingPanel(props: {
         {
           model_name: entry.model_name,
           expected_version: entry.version,
-          pricing: draft ? pricingFromDraft(draft) : {},
+          pricing: draft
+            ? {
+                ...(draft.billingMode === 'video' ? entry.configured : {}),
+                ...pricingFromDraft(draft),
+              }
+            : {},
           reset,
         },
       ])
@@ -165,6 +170,7 @@ export function ModelPricingPanel(props: {
         editData={editData}
         usageSchema={entry.usage_schema}
         pluginVariants={entry.plugin_variants}
+        videoUsageSchema={query.data?.video_usage_schema}
         onDirtyChange={props.onDirtyChange}
         onSave={() => persist()}
         isSaving={save.isPending}

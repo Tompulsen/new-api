@@ -214,6 +214,11 @@ export function pricingRow(
 }
 
 export function pricingFromDraft(data: ModelRatioData): PricingValues {
+  if (data.billingMode === 'video') {
+    return {
+      'billing_setting.plugin_billing_expr': data.pluginBillingExpr ?? {},
+    }
+  }
   const values: PricingValues = {
     ...(data.pluginBillingExpr === undefined
       ? {}
@@ -252,6 +257,15 @@ export function applyPricingDraft(
   names: string[] = [data.name]
 ): PricingOptions {
   const values = pricingFromDraft(data)
+  if (data.billingMode === 'video') {
+    if (!names.includes(data.name)) return options
+    const next = applyPricingValues(options, values, [data.name])
+    return {
+      ...options,
+      'billing_setting.plugin_billing_expr':
+        next['billing_setting.plugin_billing_expr'],
+    }
+  }
   if (names.length === 1 && names[0] === data.name) {
     return applyPricingValues(options, values, names)
   }

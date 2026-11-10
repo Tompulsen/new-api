@@ -28,6 +28,68 @@ import {
 } from '../pricing'
 
 describe('shared model pricing', () => {
+  it('does not persist builtin ordinary defaults when only a video provider price changes', () => {
+    const before = pricingOptions({
+      BillingMode: '{"example":"tiered_expr"}',
+      BillingExpr: '{"example":"tier(\\"builtin\\", p * 2)"}',
+    })
+    const snapshot: ModelPricingConfig = {
+      options: before,
+      empty_version: 'empty',
+      entries: [
+        {
+          model_name: 'example',
+          version: 'empty',
+          configured: {},
+          effective: {
+            'billing_setting.billing_mode': 'tiered_expr',
+            'billing_setting.billing_expr': 'tier("builtin", p * 2)',
+          },
+        },
+      ],
+    }
+    const after = applyPricingDraft(before, {
+      name: 'example',
+      billingMode: 'video',
+      pluginBillingExpr: { sora: 'tier("base", 0.3)' },
+    })
+    expect(buildPricingChanges(snapshot, before, after)).toEqual([
+      {
+        model_name: 'example',
+        expected_version: 'empty',
+        pricing: {
+          'billing_setting.plugin_billing_expr': { sora: 'tier("base", 0.3)' },
+        },
+      },
+    ])
+  })
+
+  it('changes only the video provider price when video billing is selected', () => {
+    const before = pricingOptions({
+      ModelPrice: '{"example":0.2}',
+      BillingMode: '{"example":"ratio","builtin":"tiered_expr"}',
+      BillingExpr: '{"builtin":"tier(\\"base\\", p * 2)"}',
+      PluginBillingExpr: '{"xai::example":"tier(\\"base\\", 0.5)"}',
+    })
+    const videoPrice = 'tier("base", u("seconds") * 0.3)'
+    const draft = {
+      name: 'example',
+      billingMode: 'video' as const,
+      pluginBillingExpr: { xai: 'tier("base", 0.5)', sora: videoPrice },
+    }
+    expect(pricingFromDraft(draft)).toEqual({
+      'billing_setting.plugin_billing_expr': draft.pluginBillingExpr,
+    })
+    const after = applyPricingDraft(before, draft)
+    expect(after).toEqual({
+      ...before,
+      'billing_setting.plugin_billing_expr': JSON.stringify({
+        'xai::example': 'tier("base", 0.5)',
+        'sora::example': videoPrice,
+      }),
+    })
+  })
+
   it('preserves explicit zero prices and cache-write configuration', () => {
     expect(
       pricingFromDraft({

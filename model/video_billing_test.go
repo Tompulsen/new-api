@@ -85,7 +85,6 @@ export function parseTaskResult(){return {};}
 				common.SetMainDatabaseType(previousType)
 				initCol()
 				require.NoError(t, updateOptionMap(billing_setting.VideoBillingOption, previousRaw))
-				videoBillingCache.Store(nil)
 				assert.NoError(t, sqlDB.Close())
 			})
 			require.NoError(t, db.AutoMigrate(&Option{}, &Channel{}, &Ability{}, &Model{}, &Vendor{}))
@@ -102,7 +101,8 @@ export function parseTaskResult(){return {};}
 			require.NoError(t, db.Create(channel).Error)
 			const expression = `u("resolution") == "480p" ? tier("480p", u("seconds") * 0.05) : u("resolution") == "720p" ? tier("720p", u("seconds") * 0.075) : tier("1080p", u("seconds") * 0.1)`
 			draft := PricingValues{billing_setting.PluginBillingExprOption: map[string]any{"sora": expression}}
-			require.ErrorContains(t, ValidateModelPricing("minimax_h3", draft), "does not declare")
+			require.NoError(t, ValidateModelPricing("minimax_h3", draft), "a model price must not require a separate channel association")
+			assert.False(t, HasVideoBillingModel("minimax_h3"))
 			before, err := GetVideoBillingConfig()
 			require.NoError(t, err)
 			require.NoError(t, UpdateVideoBillingBindings(VideoBillingBindings{ChannelIDs: []int{channel.Id}, Models: []string{}}, before.Version))
@@ -115,19 +115,32 @@ export function parseTaskResult(){return {};}
 			snapshot, err := GetModelPricingSnapshot([]string{"minimax_h3"})
 			require.NoError(t, err)
 			require.Len(t, snapshot.Entries, 1)
-			require.Len(t, snapshot.Entries[0].PluginVariants, 1)
-			assert.Equal(t, billing_setting.VideoUsageSchema(), snapshot.Entries[0].PluginVariants[0].UsageSchema)
-			videoBillingCache.Store(nil)
 			require.NoError(t, UpdateModelPricing([]ModelPricingChange{{
 				ModelName: "minimax_h3", ExpectedVersion: snapshot.Entries[0].Version, Pricing: draft,
 			}}))
 			selectedExpr, exists := billing_setting.ResolveTaskBillingExpr("sora", "minimax_h3", "vendor-alias")
 			assert.True(t, exists)
 			assert.Equal(t, expression, selectedExpr)
+			assert.True(t, HasVideoBillingModel("minimax_h3"))
+			snapshot, err = GetModelPricingSnapshot([]string{"minimax_h3"})
+			require.NoError(t, err)
+			require.Len(t, snapshot.Entries[0].PluginVariants, 1)
+			assert.Equal(t, billing_setting.VideoUsageSchema(), snapshot.Entries[0].PluginVariants[0].UsageSchema)
+			assert.False(t, snapshot.Entries[0].PluginVariants[0].Stale)
+
+			otherChannel := &Channel{Id: 84302, Type: constant.ChannelTypeOpenAI, Name: "other video channel", Models: "other-video", Status: 1}
+			require.NoError(t, db.Create(otherChannel).Error)
+			bindings, err := GetVideoBillingConfig()
+			require.NoError(t, err)
+			require.NoError(t, UpdateVideoBillingBindings(VideoBillingBindings{ChannelIDs: []int{otherChannel.Id}}, bindings.Version))
+			assert.True(t, HasVideoBillingModel("minimax_h3"), "switching discovery channels must not disable a saved model price")
+			snapshot, err = GetModelPricingSnapshot([]string{"minimax_h3"})
+			require.NoError(t, err)
+			assert.False(t, snapshot.Entries[0].PluginVariants[0].Stale)
+			assert.Equal(t, expression, snapshot.Entries[0].PluginVariants[0].Configured)
 
 			require.NoError(t, db.Model(channel).Update("models", "minimax_h3,future-video").Error)
-			videoBillingCache.Store(nil)
-			assert.True(t, HasVideoBillingModel("future-video"))
+			assert.False(t, HasVideoBillingModel("future-video"), "discovery must not enable billing without a model price")
 			require.NoError(t, ValidateModelPricing("future-video", draft))
 			newSnapshot, err := GetModelPricingSnapshot([]string{"future-video", "minimax_h3"})
 			require.NoError(t, err)
@@ -139,7 +152,6 @@ export function parseTaskResult(){return {};}
 			require.NoError(t, err)
 			assert.Empty(t, afterConflict.Entries[0].Configured, "conflicts must roll back the entire batch")
 			require.NoError(t, db.Model(channel).Update("models", "minimax_h3,future-video,native-video-billing").Error)
-			videoBillingCache.Store(nil)
 			assert.True(t, VideoBillingRequiresProviderPrice(jsplugin.DefaultRegistry.Generation(), "native-video-billing"))
 			assert.False(t, VideoBillingRequiresProviderPrice(jsplugin.DefaultRegistry.Generation(), "future-video"))
 			assert.False(t, jsplugin.DefaultRegistry.Generation().SharedModel("native-video-billing"), "billing must detect the added provider without changing routing")
@@ -153,10 +165,18 @@ export function parseTaskResult(){return {};}
 			nativeSnapshot, err = GetModelPricingSnapshot([]string{"native-video-billing"})
 			require.NoError(t, err)
 			for _, variant := range nativeSnapshot.Entries[0].PluginVariants {
-				if variant.PluginKey == "sora" {
-					assert.False(t, variant.Compatible, "a native price must not be silently inherited")
-				}
+				assert.NotEqual(t, "sora", variant.PluginKey, "channel selection must not add an unconfigured video provider")
 			}
+
+			current, err := GetModelPricingSnapshot([]string{"minimax_h3"})
+			require.NoError(t, err)
+			require.NoError(t, UpdateModelPricing([]ModelPricingChange{{
+				ModelName: "minimax_h3", ExpectedVersion: current.Entries[0].Version, Pricing: PricingValues{},
+			}}))
+			assert.False(t, HasVideoBillingModel("minimax_h3"), "removing a provider price must disable generic video billing immediately")
+			require.ErrorIs(t, UpdateModelPricing([]ModelPricingChange{{
+				ModelName: "minimax_h3", ExpectedVersion: current.Entries[0].Version, Pricing: draft,
+			}}), ErrModelPricingConflict)
 
 			for _, tc := range []struct {
 				resolution string

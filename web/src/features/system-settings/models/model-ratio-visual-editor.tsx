@@ -788,6 +788,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
             <ModelPricingEditorPanel
               ref={editorPanelRef}
               editData={editData}
+              videoUsageSchema={pricingConfig.data?.video_usage_schema}
               pluginVariants={
                 pricingConfig.data?.entries.find(
                   (entry) => entry.model_name === editData?.name
@@ -838,6 +839,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
           open={sheetOpen}
           onOpenChange={setSheetOpen}
           editData={editData}
+          videoUsageSchema={pricingConfig.data?.video_usage_schema}
           pluginVariants={
             pricingConfig.data?.entries.find(
               (entry) => entry.model_name === editData?.name

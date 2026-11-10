@@ -54,9 +54,10 @@ type ModelPricingPluginVariant struct {
 }
 
 type ModelPricingSnapshot struct {
-	Entries      []ModelPricingEntry `json:"entries"`
-	Options      map[string]string   `json:"options"`
-	EmptyVersion string              `json:"empty_version"`
+	Entries          []ModelPricingEntry                  `json:"entries"`
+	Options          map[string]string                    `json:"options"`
+	EmptyVersion     string                               `json:"empty_version"`
+	VideoUsageSchema map[string]jsplugin.UsageFieldSchema `json:"video_usage_schema,omitempty"`
 }
 
 var ErrModelPricingConflict = errors.New("model pricing changed; reload before saving")
@@ -265,6 +266,9 @@ func GetModelPricingSnapshot(names []string) (*ModelPricingSnapshot, error) {
 	sort.Strings(names)
 	result := &ModelPricingSnapshot{Entries: make([]ModelPricingEntry, 0, len(names)), Options: make(map[string]string), EmptyVersion: ModelPricingVersion(PricingValues{})}
 	generation := jsplugin.DefaultRegistry.Generation()
+	if _, available := generation.Get("sora"); available {
+		result.VideoUsageSchema = billing_setting.VideoUsageSchema()
+	}
 	for _, name := range names {
 		configured := modelPricingValues(values, name)
 		entry := ModelPricingEntry{ModelName: name, Version: ModelPricingVersion(configured), Configured: configured,
@@ -485,6 +489,17 @@ func validateModelPricingWithBindings(name string, values, previous PricingValue
 		return errors.New("model name is required")
 	}
 	generation := jsplugin.DefaultRegistry.Generation()
+	// The proposed provider price enables its schema in the same atomic save.
+	videoModels = maps.Clone(videoModels)
+	if videoModels == nil {
+		videoModels = make(map[string]bool)
+	}
+	delete(videoModels, name)
+	if proposed, ok := values[billing_setting.PluginBillingExprOption].(map[string]any); ok {
+		if expression, ok := proposed["sora"].(string); ok && billing_setting.TaskExprCompatible(expression, billing_setting.VideoUsageSchema()) {
+			videoModels[name] = true
+		}
+	}
 	previousVariants, _ := previous[billing_setting.PluginBillingExprOption].(map[string]any)
 	variants := map[string]any{}
 	if value, exists := values[billing_setting.PluginBillingExprOption]; exists {

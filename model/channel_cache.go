@@ -25,7 +25,6 @@ var channel2advancedCustomConfig map[int]*kitdto.AdvancedCustomConfig
 var channelSyncLock sync.RWMutex
 
 func InitChannelCache() {
-	videoBillingCache.Store(nil)
 	if !common.MemoryCacheEnabled {
 		InvalidatePricingCache()
 		rebuildTaskAliasView()

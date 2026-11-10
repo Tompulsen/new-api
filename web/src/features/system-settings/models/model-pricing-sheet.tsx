@@ -80,7 +80,10 @@ import {
 import { PricingCurrencySelector } from '@/features/model-pricing/pricing-currency-selector'
 import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
 import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
-import { pluginExpressionsEqual } from '@/features/pricing/lib/plugin-pricing'
+import {
+  pluginExpressionsEqual,
+  taskExpressionCompatible,
+} from '@/features/pricing/lib/plugin-pricing'
 import {
   createDefaultTaskVisualConfig,
   generateTaskExprFromConfig,
@@ -113,6 +116,7 @@ import { formatPricingNumber } from './pricing-format'
 import { TaskPluginPricingEditor } from './task-plugin-pricing-editor'
 import { TaskUsagePricingEditor } from './task-usage-pricing-editor'
 import { TieredPricingEditor } from './tiered-pricing-editor'
+import { VideoPricingEditor } from './video-pricing-editor'
 
 export type { ModelRatioData } from './model-pricing-core'
 
@@ -123,6 +127,7 @@ type ModelPricingSheetProps = {
   onSave?: () => void | Promise<void>
   isSaving?: boolean
   usageSchema?: BillingUsageSchema
+  videoUsageSchema?: BillingUsageSchema
   pluginVariants?: ModelPricingPluginVariant[]
   onDirtyChange?: (dirty: boolean) => void
 }
@@ -153,6 +158,7 @@ export const ModelPricingSheet = forwardRef<
     onSave,
     isSaving,
     usageSchema,
+    videoUsageSchema,
     pluginVariants,
     onDirtyChange,
   },
@@ -176,6 +182,7 @@ export const ModelPricingSheet = forwardRef<
           ref={ref}
           editData={editData}
           usageSchema={usageSchema}
+          videoUsageSchema={videoUsageSchema}
           pluginVariants={pluginVariants}
           onDirtyChange={onDirtyChange}
           onSave={onSave}
@@ -197,6 +204,7 @@ export const ModelPricingEditorPanel = forwardRef<
     onSave,
     isSaving,
     usageSchema,
+    videoUsageSchema,
     pluginVariants,
     onDirtyChange,
     embedded = false,
@@ -236,6 +244,7 @@ export const ModelPricingEditorPanel = forwardRef<
     meta: { errorToast: false },
   })
   const [requestRuleExpr, setRequestRuleExpr] = useState('')
+  const [videoExpression, setVideoExpression] = useState('')
   const [pluginExpressions, setPluginExpressions] = useState<
     Record<string, string>
   >({})
@@ -261,9 +270,18 @@ export const ModelPricingEditorPanel = forwardRef<
   if (editData?.billingMode !== 'tiered_expr' && hasLegacyPricing) {
     initialPricingMode = hasValue(editData?.price) ? 'per-request' : 'per-token'
   }
+  const initialVideoExpression =
+    videoUsageSchema &&
+    taskExpressionCompatible(
+      editData?.pluginBillingExpr?.sora ?? '',
+      videoUsageSchema
+    )
+      ? (editData?.pluginBillingExpr?.sora ?? '')
+      : ''
   const initialBillingExpr =
     editData?.billingExpr ||
     (initialPricingMode === 'tiered_expr' ? DEFAULT_TOKEN_BILLING_EXPR : '')
+  if (initialVideoExpression) initialPricingMode = 'video'
   const { models: pricingModels } = usePricingData()
 
   const form = useForm<ModelPricingFormValues>({
@@ -328,16 +346,34 @@ export const ModelPricingEditorPanel = forwardRef<
       ),
     [pricingModels]
   )
-  const taskUsageSchema =
-    usageSchema ??
-    pluginVariants?.find((variant) => !variant.stale)?.usage_schema ??
-    usageSchemaByModel.get(watchedValues.name.trim())
+  const ordinaryVariants = pluginVariants?.filter(
+    (variant) =>
+      !(
+        variant.plugin_key === 'sora' &&
+        videoUsageSchema &&
+        taskExpressionCompatible(
+          variant.configured || variant.effective,
+          videoUsageSchema
+        )
+      )
+  )
+  const taskUsageSchema = initialVideoExpression
+    ? ordinaryVariants?.find((variant) => !variant.stale)?.usage_schema
+    : (usageSchema ??
+      ordinaryVariants?.find((variant) => !variant.stale)?.usage_schema ??
+      usageSchemaByModel.get(watchedValues.name.trim()))
   const taskUsageExamples =
     usageExamplesByModel.get(watchedValues.name.trim()) ??
     pluginVariants?.find((variant) => !variant.stale)?.usage_examples
   const usesTaskPricing =
     ordinaryPricingModel !== watchedValues.name &&
-    usesTaskModelPricing(editData, taskUsageSchema, pluginVariants)
+    usesTaskModelPricing(
+      editData
+        ? { ...editData, pluginBillingExpr: pluginExpressions }
+        : editData,
+      taskUsageSchema,
+      ordinaryVariants
+    )
   const defaultTaskBillingExpr = useMemo(
     () =>
       taskUsageSchema
@@ -359,6 +395,7 @@ export const ModelPricingEditorPanel = forwardRef<
     conversionGeneration.current += 1
     setConversionReason('')
     setPluginExpressions(editData?.pluginBillingExpr ?? {})
+    setVideoExpression(initialVideoExpression)
     setOrdinaryPricingModel(null)
     setWasConverted(false)
     setConversionPreview(null)
@@ -401,10 +438,17 @@ export const ModelPricingEditorPanel = forwardRef<
     setLaneEnabled(nextLaneState.enabled)
     setEditorReloadToken((token) => token + 1)
     autoSwitchedForRef.current = null
-  }, [editData, form, initialPricingMode, initialBillingExpr])
+  }, [
+    editData,
+    form,
+    initialPricingMode,
+    initialBillingExpr,
+    initialVideoExpression,
+  ])
 
   useEffect(() => {
     if (!editData) return
+    if (initialVideoExpression) return
     if (editData.billingMode === 'tiered_expr') return
     if (editData.price || editData.ratio) return
 
@@ -414,7 +458,7 @@ export const ModelPricingEditorPanel = forwardRef<
 
     setPricingMode('tiered_expr')
     autoSwitchedForRef.current = editData.name
-  }, [editData, taskUsageSchema])
+  }, [editData, taskUsageSchema, initialVideoExpression])
 
   useEffect(() => {
     onDirtyChange?.(
@@ -422,6 +466,7 @@ export const ModelPricingEditorPanel = forwardRef<
         pricingMode !== initialPricingMode ||
         billingExpr !== initialBillingExpr ||
         requestRuleExpr !== (editData?.requestRuleExpr ?? '') ||
+        videoExpression !== initialVideoExpression ||
         !pluginExpressionsEqual(pluginExpressions, editData?.pluginBillingExpr)
     )
   }, [
@@ -434,6 +479,8 @@ export const ModelPricingEditorPanel = forwardRef<
     initialPricingMode,
     initialBillingExpr,
     pluginExpressions,
+    videoExpression,
+    initialVideoExpression,
   ])
 
   const setFormValue = (field: keyof ModelPricingFormValues, value: string) => {
@@ -639,6 +686,13 @@ export const ModelPricingEditorPanel = forwardRef<
   }, [editData, laneEnabled, lanePrices, pricingMode, promptPrice, t])
 
   const validatePricingValues = useCallback(() => {
+    if (pricingMode === 'video') {
+      if (!videoExpression.trim()) {
+        handleServerError(new Error(t('Billing expression is required')))
+        return false
+      }
+      return true
+    }
     if (
       pricingMode === 'per-token' &&
       ((toNumberOrNull(promptPrice) === 0 &&
@@ -682,16 +736,28 @@ export const ModelPricingEditorPanel = forwardRef<
     }
 
     return true
-  }, [form, laneEnabled, lanePrices, pricingMode, promptPrice, t])
+  }, [
+    form,
+    laneEnabled,
+    lanePrices,
+    pricingMode,
+    promptPrice,
+    t,
+    videoExpression,
+  ])
 
   const buildSubmitData = useCallback(
     (values: ModelPricingFormValues) => {
+      const expressions = { ...pluginExpressions }
+      if (pricingMode === 'video') expressions.sora = videoExpression
+      else if (initialVideoExpression) delete expressions.sora
       const data: ModelRatioData = {
         name: values.name.trim(),
-        ...(editData?.pluginBillingExpr ||
+        ...(pricingMode === 'video' ||
+        editData?.pluginBillingExpr ||
         pluginVariants?.length ||
         Object.keys(pluginExpressions).length
-          ? { pluginBillingExpr: pluginExpressions }
+          ? { pluginBillingExpr: expressions }
           : {}),
         billingMode: pricingMode,
         price: values.price || '',
@@ -718,6 +784,8 @@ export const ModelPricingEditorPanel = forwardRef<
       pluginExpressions,
       editData,
       pluginVariants,
+      videoExpression,
+      initialVideoExpression,
     ]
   )
 
@@ -822,7 +890,7 @@ export const ModelPricingEditorPanel = forwardRef<
     )
     setPluginExpressions((current) => {
       const next = { ...current }
-      for (const variant of pluginVariants ?? []) {
+      for (const variant of ordinaryVariants ?? []) {
         if (!variant.stale && !Object.hasOwn(next, variant.plugin_key)) {
           next[variant.plugin_key] = inheritedExpression
         }
@@ -946,7 +1014,7 @@ export const ModelPricingEditorPanel = forwardRef<
 
                 <TaskPluginPricingEditor
                   key={`${editorReloadToken}:${watchedValues.name}`}
-                  variants={pluginVariants ?? []}
+                  variants={ordinaryVariants ?? []}
                   expressions={pluginExpressions}
                   onChange={setPluginExpressions}
                   modelExpression={combineBillingExpr(
@@ -976,50 +1044,60 @@ export const ModelPricingEditorPanel = forwardRef<
                       <TabsTrigger value='per-request'>
                         {t('Per-request (deprecated)')}
                       </TabsTrigger>
+                      {videoUsageSchema && (
+                        <TabsTrigger value='video'>
+                          {t('Video billing')}
+                        </TabsTrigger>
+                      )}
                     </TabsList>
 
-                    {pricingMode !== 'tiered_expr' && (
-                      <Alert className='border-amber-500/40 bg-amber-500/10 p-4 text-amber-900 dark:text-amber-100'>
-                        <AlertTriangle aria-hidden='true' className='size-5' />
-                        <AlertDescription className='space-y-3 text-sm text-inherit'>
-                          <p className='font-medium'>
-                            {t(
-                              'Legacy pricing is deprecated. Convert the current prices to an expression draft, then save to apply it.'
-                            )}
-                          </p>
-                          <Button
-                            type='button'
-                            className='w-full sm:w-auto'
-                            disabled={
-                              conversion.isPending ||
-                              Boolean(billingExpr.trim())
-                            }
-                            onClick={() => void convertPricing()}
-                          >
-                            {conversion.isPending
-                              ? t('Preparing conversion...')
-                              : t('Convert to expression')}
-                          </Button>
-                          {billingExpr.trim() && (
-                            <p>
+                    {pricingMode !== 'tiered_expr' &&
+                      pricingMode !== 'video' && (
+                        <Alert className='border-amber-500/40 bg-amber-500/10 p-4 text-amber-900 dark:text-amber-100'>
+                          <AlertTriangle
+                            aria-hidden='true'
+                            className='size-5'
+                          />
+                          <AlertDescription className='space-y-3 text-sm text-inherit'>
+                            <p className='font-medium'>
                               {t(
-                                'An expression draft already exists. Open the Expression tab to keep editing it.'
+                                'Legacy pricing is deprecated. Convert the current prices to an expression draft, then save to apply it.'
                               )}
                             </p>
+                            <Button
+                              type='button'
+                              className='w-full sm:w-auto'
+                              disabled={
+                                conversion.isPending ||
+                                Boolean(billingExpr.trim())
+                              }
+                              onClick={() => void convertPricing()}
+                            >
+                              {conversion.isPending
+                                ? t('Preparing conversion...')
+                                : t('Convert to expression')}
+                            </Button>
+                            {billingExpr.trim() && (
+                              <p>
+                                {t(
+                                  'An expression draft already exists. Open the Expression tab to keep editing it.'
+                                )}
+                              </p>
+                            )}
+                            {conversionReason && (
+                              <p role='status'>{t(conversionReason)}</p>
+                            )}
+                          </AlertDescription>
+                        </Alert>
+                      )}
+                    {pricingMode !== 'video' &&
+                      (pricingMode !== 'tiered_expr' || wasConverted) && (
+                        <p className='text-muted-foreground text-xs'>
+                          {t(
+                            'After conversion, expression reservation and rounding rules apply. Effective unit prices are preserved; individual rounded charges may differ.'
                           )}
-                          {conversionReason && (
-                            <p role='status'>{t(conversionReason)}</p>
-                          )}
-                        </AlertDescription>
-                      </Alert>
-                    )}
-                    {(pricingMode !== 'tiered_expr' || wasConverted) && (
-                      <p className='text-muted-foreground text-xs'>
-                        {t(
-                          'After conversion, expression reservation and rounding rules apply. Effective unit prices are preserved; individual rounded charges may differ.'
-                        )}
-                      </p>
-                    )}
+                        </p>
+                      )}
 
                     <TabsContent
                       value='per-token'
@@ -1177,53 +1255,66 @@ export const ModelPricingEditorPanel = forwardRef<
                         {expressionEditor}
                       </FieldGroup>
                     </TabsContent>
+                    {videoUsageSchema && (
+                      <TabsContent value='video' className='min-w-0 pt-0'>
+                        <VideoPricingEditor
+                          key={`${editorReloadToken}:${watchedValues.name}:video`}
+                          currency={currency}
+                          expression={videoExpression}
+                          schema={videoUsageSchema}
+                          onChange={setVideoExpression}
+                        />
+                      </TabsContent>
+                    )}
                   </Tabs>
                 </TaskPluginPricingEditor>
               </FieldGroup>
 
-              <aside
-                aria-label={t('Preview')}
-                className='bg-muted/20 min-w-0 rounded-lg border @min-[960px]/pricing-editor:sticky @min-[960px]/pricing-editor:top-0'
-              >
-                <div className='border-b px-3 py-2'>
-                  <div className='text-sm font-medium'>
-                    {!usesTaskPricing && pluginVariants?.length ? (
-                      <>{t('Ordinary OpenAI')} · </>
-                    ) : null}
-                    {t('Preview')}
+              {pricingMode !== 'video' && (
+                <aside
+                  aria-label={t('Preview')}
+                  className='bg-muted/20 min-w-0 rounded-lg border @min-[960px]/pricing-editor:sticky @min-[960px]/pricing-editor:top-0'
+                >
+                  <div className='border-b px-3 py-2'>
+                    <div className='text-sm font-medium'>
+                      {!usesTaskPricing && pluginVariants?.length ? (
+                        <>{t('Ordinary OpenAI')} · </>
+                      ) : null}
+                      {t('Preview')}
+                    </div>
                   </div>
-                </div>
-                <div className='divide-y'>
-                  {pricingMode === 'per-token' && !effectivePreview && (
-                    <p
-                      className='text-muted-foreground px-3 py-2 text-xs'
-                      role='status'
-                    >
-                      {pricePreview.isError
-                        ? t('Failed to load model pricing')
-                        : t('Loading...')}
-                    </p>
-                  )}
-                  {(pricingMode !== 'per-token' || effectivePreview) &&
-                    previewRows.map((row) => (
-                      <div key={row.key} className='grid gap-1 px-3 py-2.5'>
-                        <span className='text-muted-foreground text-xs'>
-                          {row.label}
-                        </span>
-                        <span
-                          className={cn(
-                            'min-w-0 text-sm',
-                            row.multiline
-                              ? 'font-mono text-xs leading-5 break-words whitespace-pre-wrap'
-                              : 'truncate'
-                          )}
-                        >
-                          {row.value}
-                        </span>
-                      </div>
-                    ))}
-                </div>
-              </aside>
+                  <div className='divide-y'>
+                    {pricingMode === 'per-token' && !effectivePreview && (
+                      <p
+                        className='text-muted-foreground px-3 py-2 text-xs'
+                        role='status'
+                      >
+                        {pricePreview.isError
+                          ? t('Failed to load model pricing')
+                          : t('Loading...')}
+                      </p>
+                    )}
+                    {(pricingMode !== 'per-token' || effectivePreview) &&
+                      previewRows.map((row) => (
+                        <div key={row.key} className='grid gap-1 px-3 py-2.5'>
+                          <span className='text-muted-foreground text-xs'>
+                            {row.label}
+                          </span>
+                          <span
+                            className={cn(
+                              'min-w-0 text-sm',
+                              row.multiline
+                                ? 'font-mono text-xs leading-5 break-words whitespace-pre-wrap'
+                                : 'truncate'
+                            )}
+                          >
+                            {row.value}
+                          </span>
+                        </div>
+                      ))}
+                  </div>
+                </aside>
+              )}
             </div>
           </div>
           {showActions && (

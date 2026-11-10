@@ -32,6 +32,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/abema/go-mp4"
 	"github.com/gin-gonic/gin"
@@ -154,6 +155,19 @@ func TestVideoCompletionMeasuresMissingUsage(t *testing.T) {
 }
 
 func TestCompatibleVideoBillingUsesAssociatedSchemaForCustomDimensions(t *testing.T) {
+	savedSettings := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		savedSettings[key] = value
+		return nil
+	}))
+	t.Cleanup(func() { require.NoError(t, config.GlobalConfig.LoadFromDB(savedSettings)) })
+	expressions := billing_setting.GetPluginBillingExprCopy()
+	expressions["sora::custom-billing-video"] = `tier("base", u("seconds") * 0.1)`
+	encoded, err := common.Marshal(expressions)
+	require.NoError(t, err)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		billing_setting.PluginBillingExprOption: string(encoded),
+	}))
 	previousDB := model.DB
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)

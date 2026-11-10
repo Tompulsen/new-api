@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -35,15 +32,6 @@ type VideoBillingConfig struct {
 	Models   []string                             `json:"models"`
 	Schema   map[string]jsplugin.UsageFieldSchema `json:"usage_schema"`
 }
-
-type videoBillingView struct {
-	raw       string
-	expiresAt time.Time
-	models    map[string]bool
-}
-
-var videoBillingCache atomic.Pointer[videoBillingView]
-var videoBillingMu sync.Mutex
 
 func videoBillingRaw() string {
 	common.OptionMapRWMutex.RLock()
@@ -117,38 +105,19 @@ func GetVideoBillingConfig() (*VideoBillingConfig, error) {
 }
 
 func HasVideoBillingModel(name string) bool {
-	return videoBillingModels()[name]
+	expression, exists := billing_setting.GetPluginBillingExpr("sora", name)
+	return exists && billing_setting.TaskExprCompatible(expression, billing_setting.VideoUsageSchema())
 }
 
 func videoBillingModels() map[string]bool {
-	if DB == nil {
-		return nil
+	models := make(map[string]bool)
+	for key, expression := range billing_setting.GetPluginBillingExprCopy() {
+		plugin, name, valid := billing_setting.SplitPluginBillingExprKey(key)
+		if valid && plugin == "sora" && billing_setting.TaskExprCompatible(expression, billing_setting.VideoUsageSchema()) {
+			models[name] = true
+		}
 	}
-	raw := videoBillingRaw()
-	if raw == "" {
-		return nil
-	}
-	view := videoBillingCache.Load()
-	if view != nil && view.raw == raw && time.Now().Before(view.expiresAt) {
-		return view.models
-	}
-	videoBillingMu.Lock()
-	defer videoBillingMu.Unlock()
-	view = videoBillingCache.Load()
-	if view != nil && view.raw == raw && time.Now().Before(view.expiresAt) {
-		return view.models
-	}
-	cfg, err := GetVideoBillingConfig()
-	if err != nil {
-		common.SysError(fmt.Sprintf("load video billing bindings: %s", err))
-		return nil
-	}
-	view = &videoBillingView{raw: raw, expiresAt: time.Now().Add(time.Minute), models: make(map[string]bool)}
-	for _, model := range cfg.Models {
-		view.models[model] = true
-	}
-	videoBillingCache.Store(view)
-	return view.models
+	return models
 }
 
 // This metadata index never participates in route or channel selection.
@@ -188,13 +157,6 @@ func taskPricingUsage(plugin *jsplugin.LoadedPlugin, videoModels map[string]bool
 func VideoBillingRequiresProviderPrice(generation *jsplugin.RoutingGeneration, names ...string) bool {
 	if generation == nil {
 		generation = jsplugin.DefaultRegistry.Generation()
-	}
-	bound := false
-	for _, name := range names {
-		bound = bound || HasVideoBillingModel(name)
-	}
-	if !bound {
-		return false
 	}
 	for _, name := range names {
 		for _, plugin := range generation.PluginsByModel(name) {
@@ -263,7 +225,6 @@ func UpdateVideoBillingBindings(bindings VideoBillingBindings, expectedVersion s
 	if err := updateOptionMap(billing_setting.VideoBillingOption, string(encoded)); err != nil {
 		return err
 	}
-	videoBillingCache.Store(nil)
 	InvalidatePricingCache()
 	return nil
 }
