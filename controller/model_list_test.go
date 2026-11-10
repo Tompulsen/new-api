@@ -11,8 +11,11 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/plugins"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -319,6 +322,69 @@ func TestListModelsIncludesTieredBillingModel(t *testing.T) {
 	require.True(t, ok)
 	require.Empty(t, missingExprPricing.BillingMode)
 	require.Empty(t, missingExprPricing.BillingExpr)
+}
+
+func TestListModelsIncludesPluginOnlyPricesAndPreservesTokenScope(t *testing.T) {
+	withSelfUseModeDisabled(t)
+	withTieredBillingConfig(t, map[string]string{}, map[string]string{})
+	db := setupModelListControllerTestDB(t)
+	previous := jsplugin.DefaultRegistry
+	registry := jsplugin.NewRegistry()
+	jsplugin.DefaultRegistry = registry
+	t.Cleanup(func() { jsplugin.DefaultRegistry = previous })
+	for _, key := range []string{"async-compatible", "sora"} {
+		source, err := plugins.Source(key)
+		require.NoError(t, err)
+		_, err = registry.RegisterFactory(source, jsplugin.Options{Key: key})
+		require.NoError(t, err)
+	}
+	const name = "seedance-2.0-fast-official"
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "video", Model: name, ChannelId: 1, Enabled: true},
+		{Group: "video", Model: "zz-unpriced-model", ChannelId: 1, Enabled: true},
+	}).Error)
+	for _, tc := range []struct {
+		name, plugin, expression, group string
+		restricted, disabled, want      bool
+	}{
+		{name: "async price", plugin: "async-compatible", expression: `tier("base", u("seconds") * 0.4)`, group: "video", want: true},
+		{name: "generic video price", plugin: "sora", expression: `tier("base", u("seconds") * 0.4)`, group: "video", want: true},
+		{name: "explicit zero", plugin: "async-compatible", expression: `tier("base", 0)`, group: "video", want: true},
+		{name: "empty price", plugin: "async-compatible", expression: " ", group: "video"},
+		{name: "invalid syntax", plugin: "async-compatible", expression: "invalid(", group: "video"},
+		{name: "incompatible usage", plugin: "async-compatible", expression: `u("missing") * 0.4`, group: "video"},
+		{name: "unavailable provider", plugin: "removed-plugin", expression: `tier("base", 0.4)`, group: "video"},
+		{name: "disabled providers", plugin: "async-compatible", expression: `tier("base", 0.4)`, group: "video", disabled: true},
+		{name: "other group", plugin: "async-compatible", expression: `tier("base", 0.4)`, group: "default"},
+		{name: "token excludes model", plugin: "async-compatible", expression: `tier("base", 0.4)`, group: "video", restricted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := billing_setting.PluginBillingExprKey(tc.plugin, name)
+			encoded, err := common.Marshal(map[string]string{key: tc.expression})
+			require.NoError(t, err)
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+				billing_setting.PluginBillingExprOption: string(encoded),
+			}))
+			registry.SetEnabled(!tc.disabled)
+			t.Cleanup(func() { registry.SetEnabled(true) })
+			model.InvalidatePricingCache()
+
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(ctx, constant.ContextKeyTokenGroup, tc.group)
+			common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, tc.restricted)
+			common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{"zz-unpriced-model": true})
+			ListModels(ctx, constant.ChannelTypeOpenAI)
+
+			ids := decodeListModelsResponse(t, recorder)
+			_, found := ids[name]
+			assert.Equal(t, tc.want, found)
+			assert.NotContains(t, ids, "zz-unpriced-model")
+			assert.NotContains(t, ids, key)
+		})
+	}
 }
 
 func TestListModelsUsesAdvancedCustomEndpointTypesFromPricingCache(t *testing.T) {

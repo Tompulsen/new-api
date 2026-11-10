@@ -285,11 +285,22 @@ func HasModelBillingConfig(modelName string) bool {
 	if _, ok, _ := ratio_setting.GetModelRatio(modelName); ok {
 		return true
 	}
-	if billing_setting.GetBillingMode(modelName) != billing_setting.BillingModeTieredExpr {
-		return false
+	if billing_setting.GetBillingMode(modelName) == billing_setting.BillingModeTieredExpr {
+		if expr, ok := billing_setting.GetBillingExpr(modelName); ok && strings.TrimSpace(expr) != "" {
+			return true
+		}
 	}
-	expr, ok := billing_setting.GetBillingExpr(modelName)
-	return ok && strings.TrimSpace(expr) != ""
+	for _, plugin := range model.TaskPricingPlugins(jsplugin.DefaultRegistry.Generation(), modelName) {
+		expression, exists := billing_setting.GetPluginBillingExpr(plugin.Meta.Key, modelName)
+		if !exists {
+			continue
+		}
+		schema, _ := model.TaskPricingUsage(plugin, modelName)
+		if billing_setting.TaskExprCompatible(expression, schema) {
+			return true
+		}
+	}
+	return false
 }
 
 // HasPriceOrRatioEntry reports whether name has a configured price, ratio, or
