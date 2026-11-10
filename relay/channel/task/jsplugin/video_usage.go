@@ -138,8 +138,13 @@ func measureMP4Video(data []byte) (map[string]any, error) {
 		facts["seconds"] = seconds
 	}
 	shortEdge := min(video.GetWidth(), video.GetHeight())
-	if shortEdge == 480 || shortEdge == 720 || shortEdge == 1080 {
-		facts["resolution"] = fmt.Sprintf("%.0fp", shortEdge)
+	switch {
+	case shortEdge <= 480:
+		facts["resolution"] = "480p"
+	case shortEdge < 1080:
+		facts["resolution"] = "720p"
+	default:
+		facts["resolution"] = "1080p"
 	}
 	return facts, nil
 }

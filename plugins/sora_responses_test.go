@@ -87,7 +87,17 @@ func TestSoraCompatibleVideoBillingFacts(t *testing.T) {
 		{"portrait dimensions", `{"duration":5,"width":1080,"height":1920}`, "1080p", 5},
 		{"nested output", `{"video":{"duration_seconds":4.5,"width":854,"height":480}}`, "480p", 4.5},
 		{"resolution name", `{"seconds":6,"resolution_name":"720P"}`, "720p", 6},
-		{"unknown dimensions are not guessed", `{"size":"1792x1024"}`, "", 0},
+		{"below 480 uses lowest tier", `{"size":"640x360"}`, "480p", 0},
+		{"480 boundary uses lowest tier", `{"size":"854x480"}`, "480p", 0},
+		{"above 480 uses middle tier", `{"width":854,"height":481}`, "720p", 0},
+		{"720 boundary uses middle tier", `{"size":"1280x720"}`, "720p", 0},
+		{"nonstandard portrait uses middle tier", `{"size":"768:1366"}`, "720p", 0},
+		{"1024 short edge uses middle tier", `{"size":"1792x1024"}`, "720p", 0},
+		{"below 1080 uses middle tier", `{"size":"1920x1079"}`, "720p", 0},
+		{"above 1080 uses highest tier", `{"size":"3840x2160"}`, "1080p", 0},
+		{"zero dimensions do not invent resolution", `{"width":0,"height":480}`, "", 0},
+		{"negative dimensions do not invent resolution", `{"width":-1,"height":480}`, "", 0},
+		{"oversized dimensions do not invent resolution", `{"width":65536,"height":480}`, "", 0},
 		{"invalid duration is not billed", `{"seconds":3601}`, "", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

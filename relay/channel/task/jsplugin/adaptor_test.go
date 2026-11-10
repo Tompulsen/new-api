@@ -41,7 +41,8 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestVideoCompletionMeasuresMissingUsage(t *testing.T) {
+func videoUsageMP4(t *testing.T, width, height uint32) []byte {
+	t.Helper()
 	file, err := os.CreateTemp(t.TempDir(), "generated-*.mp4")
 	require.NoError(t, err)
 	writer := mp4.NewWriter(file)
@@ -49,7 +50,7 @@ func TestVideoCompletionMeasuresMissingUsage(t *testing.T) {
 	require.NoError(t, err)
 	for _, header := range []mp4.IImmutableBox{
 		&mp4.Mvhd{Timescale: 1000, DurationV0: 6500},
-		&mp4.Tkhd{TrackID: 1, DurationV0: 6500, Width: 1920 << 16, Height: 1080 << 16},
+		&mp4.Tkhd{TrackID: 1, DurationV0: 6500, Width: width << 16, Height: height << 16},
 	} {
 		if header.GetType() == mp4.BoxTypeTkhd() {
 			_, err = writer.StartBox(&mp4.BoxInfo{Type: mp4.BoxTypeTrak()})
@@ -71,7 +72,11 @@ func TestVideoCompletionMeasuresMissingUsage(t *testing.T) {
 	require.NoError(t, file.Close())
 	video, err := os.ReadFile(file.Name())
 	require.NoError(t, err)
+	return video
+}
 
+func TestVideoCompletionMeasuresMissingUsage(t *testing.T) {
+	video := videoUsageMP4(t, 1920, 1080)
 	fetchSetting := system_setting.GetFetchSetting()
 	previousSetting := *fetchSetting
 	fetchSetting.AllowPrivateIp = true
@@ -91,6 +96,14 @@ func TestVideoCompletionMeasuresMissingUsage(t *testing.T) {
 		cancel       bool
 	}{
 		{"MP4 actual dimensions and fractional duration", "SUCCESS", video, nil, map[string]any{"seconds": 6.5, "resolution": "1080p"}, 1, false},
+		{"below 480 uses lowest tier", "SUCCESS", videoUsageMP4(t, 640, 360), nil, map[string]any{"seconds": 6.5, "resolution": "480p"}, 1, false},
+		{"480 boundary uses lowest tier", "SUCCESS", videoUsageMP4(t, 854, 480), nil, map[string]any{"seconds": 6.5, "resolution": "480p"}, 1, false},
+		{"above 480 uses middle tier", "SUCCESS", videoUsageMP4(t, 854, 481), nil, map[string]any{"seconds": 6.5, "resolution": "720p"}, 1, false},
+		{"720 boundary uses middle tier", "SUCCESS", videoUsageMP4(t, 1280, 720), nil, map[string]any{"seconds": 6.5, "resolution": "720p"}, 1, false},
+		{"nonstandard portrait uses middle tier", "SUCCESS", videoUsageMP4(t, 768, 1366), nil, map[string]any{"seconds": 6.5, "resolution": "720p"}, 1, false},
+		{"1024 short edge uses middle tier", "SUCCESS", videoUsageMP4(t, 1792, 1024), nil, map[string]any{"seconds": 6.5, "resolution": "720p"}, 1, false},
+		{"below 1080 uses middle tier", "SUCCESS", videoUsageMP4(t, 1920, 1079), nil, map[string]any{"seconds": 6.5, "resolution": "720p"}, 1, false},
+		{"above 1080 uses highest tier", "SUCCESS", videoUsageMP4(t, 3840, 2160), nil, map[string]any{"seconds": 6.5, "resolution": "1080p"}, 1, false},
 		{"reported duration takes precedence", "SUCCESS", video, map[string]any{"seconds": float64(6)}, map[string]any{"seconds": float64(6), "resolution": "1080p"}, 1, false},
 		{"complete reported facts skip download", "SUCCESS", nil, map[string]any{"seconds": float64(6), "resolution": "720p"}, map[string]any{"seconds": float64(6), "resolution": "720p"}, 0, false},
 		{"queued tasks skip download", "IN_PROGRESS", nil, nil, nil, 0, false},
