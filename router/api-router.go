@@ -24,6 +24,8 @@ func SetApiRouter(router *gin.Engine) {
 	anonymousRequestBodyLimit := middleware.AnonymousRequestBodyLimit()
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
+		apiRouter.GET("/community-sso/lottery", middleware.CommunitySSOExchangeRateLimit(), middleware.DisableCache(), controller.CommunityLotteryCredit)
+		apiRouter.POST("/community-sso/lottery", middleware.CommunitySSOExchangeRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.CommunityLotteryCredit)
 		apiRouter.GET("/community-sso/config", middleware.DisableCache(), controller.CommunitySSOConfig)
 		apiRouter.POST("/studio-sso/authorize", middleware.UserAuth(), middleware.UserCriticalRateLimit("studio-sso"), middleware.DisableCache(), anonymousRequestBodyLimit, controller.StudioSSOAuthorize)
 		apiRouter.POST("/studio-sso/token", middleware.CommunitySSOExchangeRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.StudioSSOToken)
