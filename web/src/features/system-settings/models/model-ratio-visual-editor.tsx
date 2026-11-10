@@ -67,7 +67,9 @@ import {
 import {
   buildModelSnapshots,
   getSnapshotSignature,
-  isBasePricingUnset,
+  getPricingDisplayMode,
+  hasPluginPricing,
+  isPricingUnset,
   type ModelRow,
 } from './model-pricing-snapshots'
 import {
@@ -301,7 +303,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
         }
       })
       .filter((row) => !row.isDraftDeleted)
-      .filter((row) => filterMode !== 'unset' || isBasePricingUnset(row.saved))
+      .filter((row) => filterMode !== 'unset' || isPricingUnset(row.saved))
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [
     candidateModelNames,
@@ -339,16 +341,16 @@ const ModelRatioVisualEditorComponent = forwardRef<
       [TASK_PRICING_MODE_FILTER]: 0,
     }
     for (const model of models) {
+      const displayMode = getPricingDisplayMode(model)
       const mode =
-        model.billingMode === 'per-request' ||
-        model.billingMode === 'tiered_expr'
-          ? model.billingMode
+        displayMode === 'per-request' || displayMode === 'tiered_expr'
+          ? displayMode
           : 'per-token'
       counts[mode] += 1
       if (
         taskModelNames.has(model.name) &&
-        model.billingMode === 'tiered_expr' &&
-        Boolean(model.billingExpr)
+        displayMode === 'tiered_expr' &&
+        (Boolean(model.billingExpr) || hasPluginPricing(model))
       ) {
         counts[TASK_PRICING_MODE_FILTER] += 1
       }

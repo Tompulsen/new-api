@@ -64,9 +64,23 @@ export type ModelRow = ModelPricingSnapshot & {
 export const hasPricingValue = (value?: string) =>
   value !== undefined && value !== ''
 
-export const isBasePricingUnset = (snapshot?: ModelPricingSnapshot) =>
+export const hasPluginPricing = (snapshot?: ModelPricingSnapshot) =>
+  Object.values(snapshot?.pluginBillingExpr ?? {}).some(
+    (expression) => expression.trim() !== ''
+  )
+
+// Display plugin-only prices without changing the persisted ordinary mode.
+export const getPricingDisplayMode = (snapshot: ModelPricingSnapshot) =>
+  snapshot.billingMode !== 'tiered_expr' &&
+  !hasPricingValue(snapshot.price) &&
+  !hasPricingValue(snapshot.ratio) &&
+  hasPluginPricing(snapshot)
+    ? 'tiered_expr'
+    : (snapshot.billingMode ?? 'per-token')
+
+export const isPricingUnset = (snapshot?: ModelPricingSnapshot) =>
   !snapshot ||
-  (snapshot.billingMode !== 'tiered_expr' &&
+  (getPricingDisplayMode(snapshot) !== 'tiered_expr' &&
     !hasPricingValue(snapshot.price) &&
     !hasPricingValue(snapshot.ratio))
 
@@ -112,10 +126,11 @@ export const getPriceSummary = (
   row: ModelPricingSnapshot,
   t: (key: string) => string
 ) => {
-  if (row.billingMode === 'tiered_expr') {
+  const mode = getPricingDisplayMode(row)
+  if (mode === 'tiered_expr') {
     return getExpressionSummary(row, t)
   }
-  if (row.billingMode === 'per-request') {
+  if (mode === 'per-request') {
     return row.price ? `$${row.price} / ${t('request')}` : t('Unset price')
   }
 
@@ -129,12 +144,13 @@ export const getPriceDetail = (
   row: ModelPricingSnapshot,
   t: (key: string) => string
 ) => {
-  if (row.billingMode === 'tiered_expr') {
+  const mode = getPricingDisplayMode(row)
+  if (mode === 'tiered_expr') {
     return row.requestRuleExpr
       ? t('Includes request rules')
       : t('Expression based')
   }
-  if (row.billingMode === 'per-request') {
+  if (mode === 'per-request') {
     return t('Fixed request price')
   }
 

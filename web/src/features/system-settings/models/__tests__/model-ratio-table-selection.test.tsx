@@ -50,6 +50,8 @@ type EditorFixture = {
   billingMode?: string
   billingExpr?: string
   pluginBillingExpr?: string
+  filterMode?: 'all' | 'unset'
+  candidateModelNames?: string[]
 }
 
 async function renderEditor(fixture: EditorFixture = {}) {
@@ -107,6 +109,8 @@ async function renderEditor(fixture: EditorFixture = {}) {
         billingMode={billingMode}
         billingExpr={billingExpr}
         pluginBillingExpr={pluginBillingExpr}
+        filterMode={fixture.filterMode}
+        candidateModelNames={fixture.candidateModelNames}
         onChange={vi.fn()}
         onSave={vi.fn()}
         isSaving={false}
@@ -118,6 +122,63 @@ async function renderEditor(fixture: EditorFixture = {}) {
   await waitFor(() => expect(queryClient.isFetching()).toBe(0))
   return view
 }
+
+it('excludes plugin-priced and explicitly free models from unset prices while keeping empty and missing prices', async () => {
+  await renderEditor({
+    filterMode: 'unset',
+    candidateModelNames: [
+      'seedance-2.0-fast-official',
+      'free-video',
+      'empty-video',
+      'missing-video',
+    ],
+    pluginBillingExpr: JSON.stringify({
+      'async-compatible::seedance-2.0-fast-official':
+        'tier("base", u("seconds") * 0.4)',
+      'async-compatible::free-video': 'tier("base", 0)',
+      'async-compatible::empty-video': ' ',
+    }),
+  })
+  expect(
+    screen.queryByRole('row', { name: /seedance-2\.0-fast-official/ })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('row', { name: /free-video/ })
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('row', { name: /empty-video/ })).toBeVisible()
+  expect(screen.getByRole('row', { name: /missing-video/ })).toBeVisible()
+})
+
+it('shows a plugin-only price as an expression without changing its saved ordinary mode', async () => {
+  await renderEditor({
+    taskModels: ['seedance-2.0-fast-official'],
+    pluginBillingExpr: JSON.stringify({
+      'async-compatible::seedance-2.0-fast-official':
+        'tier("base", u("seconds") * 0.4)',
+    }),
+  })
+  const row = screen.getByRole('row', {
+    name: /seedance-2\.0-fast-official/,
+  })
+  expect(within(row).getByText('Expression')).toBeVisible()
+  expect(
+    within(row).queryByText('Per-token (deprecated)')
+  ).not.toBeInTheDocument()
+  expect(within(row).queryByText('Unset price')).not.toBeInTheDocument()
+  const user = userEvent.setup()
+  const filter = screen
+    .getAllByRole('button', { name: 'Mode' })
+    .find((button) => button.getAttribute('aria-haspopup') === 'dialog')
+  if (!filter) throw new Error('Mode filter not found')
+  await user.click(filter)
+  await user.click(
+    await screen.findByRole('option', { name: /Expression - Task pricing/ })
+  )
+  expect(row).toBeInTheDocument()
+  expect(
+    screen.queryByRole('row', { name: /gpt-4\.1-mini/ })
+  ).not.toBeInTheDocument()
+})
 
 // A drag-select ends with mousedown/mouseup inside the row and the browser
 // then fires `click` on the row. Only that final `click` is dispatched here so

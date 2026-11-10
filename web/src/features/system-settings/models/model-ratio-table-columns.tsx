@@ -26,6 +26,8 @@ import { Checkbox } from '@/components/ui/checkbox'
 import {
   getModeLabel,
   getModeVariant,
+  getPricingDisplayMode,
+  hasPluginPricing,
   getPriceDetail,
   getPriceSummary,
   type ModelRow,
@@ -94,8 +96,8 @@ export function buildModelRatioColumns({
         const issues = pricingIssues?.get(row.original.name)
         const isTaskModel = Boolean(taskModelNames?.has(row.original.name))
         const hasConfiguredTaskPricing =
-          row.original.billingMode === 'tiered_expr' &&
-          Boolean(row.original.billingExpr)
+          getPricingDisplayMode(row.original) === 'tiered_expr' &&
+          (Boolean(row.original.billingExpr) || hasPluginPricing(row.original))
         // A price that needs attention must not look configured.
         const showTaskPricingBadge =
           !issues && isTaskModel && hasConfiguredTaskPricing
@@ -163,14 +165,15 @@ export function buildModelRatioColumns({
       enableHiding: false,
     },
     {
-      accessorKey: 'billingMode',
+      id: 'billingMode',
+      accessorFn: getPricingDisplayMode,
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title={t('Mode')} />
       ),
       cell: ({ row }) => (
         <StatusBadge
-          label={t(getModeLabel(row.original.billingMode))}
-          variant={getModeVariant(row.original.billingMode)}
+          label={t(getModeLabel(getPricingDisplayMode(row.original)))}
+          variant={getModeVariant(getPricingDisplayMode(row.original))}
           copyable={false}
           showDot={false}
           className='-ml-1.5 px-0'
@@ -186,8 +189,8 @@ export function buildModelRatioColumns({
         }
         return (
           Boolean(taskModelNames?.has(row.original.name)) &&
-          row.original.billingMode === 'tiered_expr' &&
-          Boolean(row.original.billingExpr)
+          getPricingDisplayMode(row.original) === 'tiered_expr' &&
+          (Boolean(row.original.billingExpr) || hasPluginPricing(row.original))
         )
       },
       meta: { label: t('Mode') },

@@ -18,6 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, it } from 'vitest'
 
+import {
+  getPricingDisplayMode,
+  isPricingUnset,
+} from '@/features/system-settings/models/model-pricing-snapshots'
+
 import { buildPricingChanges, type ModelPricingConfig } from '../api'
 import {
   applyPriceSyncSelections,
@@ -28,6 +33,42 @@ import {
 } from '../pricing'
 
 describe('shared model pricing', () => {
+  it('keeps plugin-only prices in their original mode while displaying them as configured expressions', () => {
+    const row = {
+      ...pricingRow('seedance-2.0-fast-official', {
+        'billing_setting.plugin_billing_expr': {
+          'async-compatible': 'tier("base", u("seconds") * 0.4)',
+        },
+      }),
+      hasConflict: false,
+    }
+    const saved = structuredClone(row)
+    expect(getPricingDisplayMode(row)).toBe('tiered_expr')
+    expect(isPricingUnset(row)).toBe(false)
+    expect(row.billingMode).toBe('per-token')
+    expect(row).toEqual(saved)
+  })
+
+  it.each([
+    { values: { ModelPrice: 0 }, mode: 'per-request' },
+    { values: { ModelRatio: 0 }, mode: 'per-token' },
+  ])(
+    'preserves an explicit zero ordinary price with plugin prices ($mode)',
+    ({ values, mode }) => {
+      const row = {
+        ...pricingRow('mixed-model', {
+          ...values,
+          'billing_setting.plugin_billing_expr': {
+            'async-compatible': 'tier("base", 0.4)',
+          },
+        }),
+        hasConflict: false,
+      }
+      expect(getPricingDisplayMode(row)).toBe(mode)
+      expect(isPricingUnset(row)).toBe(false)
+    }
+  )
+
   it('does not persist builtin ordinary defaults when only a video provider price changes', () => {
     const before = pricingOptions({
       BillingMode: '{"example":"tiered_expr"}',
