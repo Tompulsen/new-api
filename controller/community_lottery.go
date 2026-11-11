@@ -43,7 +43,7 @@ func CommunityLotteryCredit(c *gin.Context) {
 		communitySSOError(c, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	replayed, err := model.CreditCommunityLottery(request.UserID, request.Reference, request.Cents)
+	receipt, replayed, err := model.CreditCommunityLottery(request.UserID, request.Reference, request.Cents)
 	if err != nil {
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, model.ErrLotteryCreditConflict) {
@@ -55,5 +55,9 @@ func CommunityLotteryCredit(c *gin.Context) {
 		communitySSOError(c, status, "lottery_credit_failed")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"credited": true, "reference": request.Reference, "user_id": request.UserID, "amount_cents": request.Cents, "replayed": replayed})
+	var snapshot any
+	if receipt.LotteryCredit != nil {
+		snapshot = gin.H{"id": receipt.Id, "quota_added": receipt.LotteryCredit.QuotaAdded, "quota_per_usd": receipt.LotteryCredit.QuotaPerUSD}
+	}
+	c.JSON(http.StatusOK, gin.H{"credited": true, "reference": receipt.TradeNo, "user_id": receipt.UserId, "amount_cents": receipt.Amount, "replayed": replayed, "receipt": snapshot})
 }
