@@ -197,6 +197,7 @@ func main() {
 		BuildFS:   buildFS,
 		IndexPage: indexPage,
 	})
+	service.StartVideoReferenceCleanup(context.Background())
 	var port = os.Getenv("PORT")
 	if port == "" {
 		port = strconv.Itoa(*common.Port)

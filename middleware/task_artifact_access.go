@@ -116,7 +116,8 @@ func redactTaskArtifactAccessQuery() gin.HandlerFunc {
 			strings.HasSuffix(path, "/content")
 		isLegacyVideoContent := strings.HasPrefix(path, "/v1/videos/") &&
 			strings.HasSuffix(path, "/content")
-		if !isArtifactContent && !isLegacyVideoContent {
+		isVideoReference := strings.HasPrefix(path, "/v1/video-references/")
+		if !isArtifactContent && !isLegacyVideoContent && !isVideoReference {
 			c.Next()
 			return
 		}
@@ -219,6 +220,36 @@ func TokenOrTaskArtifactAccessAuth(taskParam, artifactParam string) gin.HandlerF
 
 func IsTaskArtifactAccess(c *gin.Context) bool {
 	return c != nil && c.GetBool(TaskArtifactAccessContextKey)
+}
+
+func VideoReferenceAccessAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		access := c.GetString(taskArtifactAccessRawContextKey)
+		invalid := c.GetBool(taskArtifactAccessInvalidContextKey)
+		if value, present, malformed := popTaskArtifactAccessQuery(c.Request); present {
+			if access != "" {
+				invalid = true
+			}
+			access = value
+			invalid = invalid || malformed
+		}
+		id, ip := c.Param("reference_id"), c.ClientIP()
+		if invalid || !service.VerifyVideoReferenceAccess(access, id, time.Now()) {
+			if !taskArtifactAnonymousLimiter.invalidAttempt(time.Now(), ip) {
+				writeTaskArtifactAccessLimited(c)
+				return
+			}
+			writeTaskArtifactAccessNotFound(c)
+			return
+		}
+		release, ok := taskArtifactAnonymousLimiter.acquire(ip, "sd-reference:"+id, "reference-image")
+		if !ok {
+			writeTaskArtifactAccessLimited(c)
+			return
+		}
+		defer release()
+		c.Next()
+	}
 }
 
 func writeTaskArtifactAccessNotFound(c *gin.Context) {

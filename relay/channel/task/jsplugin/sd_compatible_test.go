@@ -1,8 +1,16 @@
 package jsplugin
 
 import (
+	"bytes"
+	"encoding/base64"
+	"image"
+	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path"
 	"strings"
 	"testing"
 
@@ -10,6 +18,8 @@ import (
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/plugins"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -95,7 +105,7 @@ func TestSDCompatibleVideoContract(t *testing.T) {
 	for _, invalid := range []map[string]any{
 		{"seconds": 0}, {"seconds": -1}, {"seconds": 3601}, {"seconds": 5.5}, {"duration": true},
 		{"metadata": map[string]any{"duration": 1e30}},
-		{"images": []any{"data:image/png;base64,AAAA"}},
+		{"images": []any{"data:text/html;base64,AAAA"}},
 		{"input_reference": "file_abcdefghijklmnop"}, {"images": []any{"blob:private"}},
 		{"images": []any{"https://user:secret@private.example/ref.png"}},
 		{"images": []any{map[string]any{"__videoUpload": map[string]any{"dataUrl": "private"}}}},
@@ -119,7 +129,9 @@ func TestSDCompatibleVideoContract(t *testing.T) {
 		assert.Equal(t, "client-alias", intent["model"])
 		assert.Equal(t, "image_to_video", intent["action"])
 	})
-	t.Run("local attachments reject before generation or upload", func(t *testing.T) {
+	t.Run("local attachments validate without writing or uploading", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("VIDEO_REFERENCE_DIR", dir)
 		c := newMultipartFileContext(t, "input_reference", "ref.png", "image/png", []byte("image"))
 		c.Set("task_request", map[string]any{"prompt": "waves", "seconds": "5"})
 		info := &relaycommon.RelayInfo{
@@ -130,9 +142,17 @@ func TestSDCompatibleVideoContract(t *testing.T) {
 		adaptor := New(plugin)
 		adaptor.Init(info)
 		failure := adaptor.ValidateRequestAndSetAction(c, info)
-		require.NotNil(t, failure)
-		assert.Equal(t, http.StatusBadRequest, failure.StatusCode)
-		assert.Contains(t, failure.Message, "public HTTP(S) image URLs")
+		require.Nil(t, failure)
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Empty(t, entries)
+	})
+	t.Run("attachments over 20 MiB reject before storage", func(t *testing.T) {
+		_, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+			"baseUrl": "https://upstream.example", "model": "sd2.0-mini-720p", "requestBody": map[string]any{"prompt": "waves"},
+			"files": []any{map[string]any{"field": "input_reference", "ref": "request_file:input_reference", "size": (20 << 20) + 1}},
+		})
+		require.ErrorContains(t, err, "20 MiB")
 	})
 	t.Run("query status failure details and missing IDs", func(t *testing.T) {
 		require.NoError(t, plugin.Engine.CallInto(t.Context(), &descriptor, "buildQueryRequest", map[string]any{
@@ -175,6 +195,92 @@ func TestSDCompatibleVideoContract(t *testing.T) {
 		data, err := common.Marshal(content)
 		require.NoError(t, err)
 		assert.NotContains(t, string(data), "selected-key")
+	})
+}
+
+func TestSDCompatibleReferencesBecomeTemporaryURLs(t *testing.T) {
+	source, err := plugins.Source("sd-compatible")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "sd-compatible"})
+	require.NoError(t, err)
+	previousAddress, previousSecret := system_setting.TaskPublicAddress, common.CryptoSecret
+	system_setting.TaskPublicAddress, common.CryptoSecret = "https://gateway.example", "sd-reference-test-secret"
+	t.Cleanup(func() { system_setting.TaskPublicAddress, common.CryptoSecret = previousAddress, previousSecret })
+	var imageBytes bytes.Buffer
+	require.NoError(t, png.Encode(&imageBytes, image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	for _, input := range []string{"multipart", "base64"} {
+		t.Run(input, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("VIDEO_REFERENCE_DIR", dir)
+			c := newMultipartFileContext(t, "input_reference", "ref.png", "image/png", imageBytes.Bytes())
+			body := map[string]any{"prompt": "waves", "seconds": 5}
+			if input == "base64" {
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader("{}"))
+				c.Request.Header.Set("Content-Type", "application/json")
+				data := "data:image/png;base64," + base64.StdEncoding.EncodeToString(imageBytes.Bytes())
+				body["images"] = []any{data, data}
+			}
+			c.Set("task_request", body)
+			info := &relaycommon.RelayInfo{
+				ChannelMeta:   &relaycommon.ChannelMeta{ChannelBaseUrl: "https://must-not-be-contacted.example", ApiKey: "private-key"},
+				TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+			}
+			info.OriginModelName, info.UpstreamModelName = "sd2.0-mini-720p", "sd2.0-mini-720p"
+			adaptor := New(plugin)
+			adaptor.Init(info)
+			_, err := adaptor.buildSubmit(c, info)
+			require.NoError(t, err)
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			assert.Empty(t, entries, "preparation before reservation must not persist images")
+			request, err := adaptor.BuildRequestBody(c, info)
+			require.NoError(t, err)
+			var actual map[string]any
+			require.NoError(t, common.DecodeJson(request, &actual))
+			images := actual["images"].([]any)
+			require.Len(t, images, 1)
+			link, err := url.Parse(images[0].(string))
+			require.NoError(t, err)
+			assert.Equal(t, "gateway.example", link.Host)
+			assert.NotContains(t, link.String(), "private-key")
+			file, mime, err := service.OpenVideoReference(path.Base(link.Path))
+			require.NoError(t, err)
+			defer file.Close()
+			stored, err := io.ReadAll(file)
+			require.NoError(t, err)
+			assert.Equal(t, imageBytes.Bytes(), stored)
+			assert.Equal(t, "image/png", mime)
+			entries, err = os.ReadDir(dir)
+			require.NoError(t, err)
+			assert.Len(t, entries, 1)
+			assert.NotContains(t, actual, "input_reference")
+		})
+	}
+	t.Run("a later invalid image removes earlier prepared images", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("VIDEO_REFERENCE_DIR", dir)
+		c := newMultipartFileContext(t, "input_reference", "unused.png", "image/png", nil)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader("{}"))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set("task_request", map[string]any{
+			"prompt": "waves",
+			"images": []any{
+				"data:" + "image/png;base64," + base64.StdEncoding.EncodeToString(imageBytes.Bytes()),
+				"data:" + "image/png;base64," + base64.StdEncoding.EncodeToString([]byte("not an image")),
+			},
+		})
+		info := &relaycommon.RelayInfo{
+			ChannelMeta:   &relaycommon.ChannelMeta{ChannelBaseUrl: "https://must-not-be-contacted.example"},
+			TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+		}
+		info.OriginModelName, info.UpstreamModelName = "sd2.0-mini-720p", "sd2.0-mini-720p"
+		adaptor := New(plugin)
+		adaptor.Init(info)
+		_, err := adaptor.BuildRequestBody(c, info)
+		require.ErrorContains(t, err, "must contain image media")
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Empty(t, entries)
 	})
 }
 

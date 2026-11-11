@@ -39,12 +39,25 @@ type videoReferenceUploader struct {
 
 var generationFileID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{16,100}$`)
 
+func (u *videoReferenceUploader) discard() {
+	if u == nil || u.adaptor.plugin.Meta.Key != "sd-compatible" {
+		return
+	}
+	for _, link := range u.urls {
+		if err := service.RemoveVideoReference(link); err != nil {
+			common.SysError("could not remove an unused video reference image")
+		}
+	}
+	clear(u.urls)
+}
+
 func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]any, form *multipart.Form, limit int64, total *int64) (string, error) {
 	reject := func(message string) (string, error) {
 		return "", &videoReferenceError{message: message, status: http.StatusBadRequest}
 	}
 	async := u.adaptor.plugin.Meta.Key == "async-compatible"
-	if !u.info.HasChannelMeta() || (!async && (u.adaptor.plugin.Meta.Key != "sora" || u.info.ChannelSetting.VideoRequestFormat != "json")) {
+	sd := u.adaptor.plugin.Meta.Key == "sd-compatible"
+	if !u.info.HasChannelMeta() || (!async && !sd && (u.adaptor.plugin.Meta.Key != "sora" || u.info.ChannelSetting.VideoRequestFormat != "json")) {
 		return reject("video reference uploads require the channel JSON video format")
 	}
 	source, ok := placeholder["__videoUpload"].(map[string]any)
@@ -131,6 +144,14 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		return reject("reference file must contain " + mediaType + " media")
 	}
 	*total += int64(len(data))
+	if sd {
+		link, err := service.StoreVideoReference(c.Request.Context(), data)
+		if err != nil {
+			return "", &videoReferenceError{message: err.Error(), status: http.StatusBadRequest}
+		}
+		u.urls[cacheKey] = link
+		return link, nil
+	}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	model := u.info.UpstreamModelName

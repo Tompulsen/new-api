@@ -4,12 +4,11 @@ export const meta = {
   name: "SD兼容",
   icon: "text:SD",
   description: {
-    en: "SD video generation with public reference image URLs",
-    zh: "SD 视频生成，支持公网图片链接作为参考图",
+    en: "SD video generation",
+    zh: "SD 视频生成",
   },
-  version: "1.0.0",
+  version: "1.0.1",
   author: { name: "QuantumNous" },
-  baseUrl: "https://api.kunrouai.com",
   models: ["sd2.0-fast-480p", "sd2.0-fast-720p", "sd2.0-mini-480p", "sd2.0-mini-720p"],
   fetchMode: "per_task",
   upstreams: ["vendor"],
@@ -44,21 +43,31 @@ function selected(req, keys) {
   }
 }
 
-function referenceURL(value) {
+function rejectClientPlaceholders(value) {
+  if (!value || typeof value !== "object") return;
+  for (const key of Object.keys(value)) {
+    if (key === "__fileRef" || key === "__videoUpload") throw new Error("attach reference images instead of supplying host file placeholders");
+    rejectClientPlaceholders(value[key]);
+  }
+}
+
+function reference(value) {
   if (object(value)) value = value.url === undefined ? value.image_url : value.url;
   if (object(value)) value = value.url;
   const url = trimmed(value);
+  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(url)) {
+    if (url.length > 4 * Math.ceil(20971520 / 3) + 128) throw new Error("reference image exceeds the 20 MiB limit");
+    return { __videoUpload: { dataUrl: url } };
+  }
   if (url.length > 8192 || !/^https?:\/\/[^/?#@\s]+(?:[/?#][^\s]*)?$/i.test(url))
-    throw new Error("SD reference images require public HTTP(S) image URLs; local files and base64 uploads are not supported by the upstream API");
+    throw new Error("reference image must be an HTTP(S) URL or a base64 image data URL");
   return url;
 }
 
 function videoRequest(req, files, model) {
   if (!object(req)) throw new Error("request body must be an object");
   if (req.metadata !== undefined && !object(req.metadata)) throw new Error("metadata must be an object");
-  // The documented SD endpoint has no file upload contract.
-  if ((files || []).length)
-    throw new Error("SD reference images require public HTTP(S) image URLs; local files and base64 uploads are not supported by the upstream API");
+  rejectClientPlaceholders(req);
   if (!trimmed(req.prompt)) throw new Error("prompt is required");
   const duration = selected(req, ["seconds", "duration"]);
   if (duration !== undefined && typeof duration !== "string" && typeof duration !== "number") throw new Error("seconds must be a positive integer");
@@ -92,13 +101,13 @@ function videoRequest(req, files, model) {
     lastFrames = [];
   for (const name of ["first_frame", "image", "input_reference"]) {
     const value = selected(req, [name]);
-    if (value !== undefined) firstFrames.push(referenceURL(value));
+    if (value !== undefined) firstFrames.push(reference(value));
   }
   for (const name of ["images", "reference_images"]) {
     const values = selected(req, [name]);
     if (values !== undefined) {
       if (!Array.isArray(values)) throw new Error(name + " must be an array");
-      for (const value of values) images.push(referenceURL(value));
+      for (const value of values) images.push(reference(value));
     }
   }
   const content = selected(req, ["content"]);
@@ -106,7 +115,7 @@ function videoRequest(req, files, model) {
     if (!Array.isArray(content)) throw new Error("content must be an array");
     for (const item of content) {
       if (!object(item) || item.type !== "image_url") throw new Error("SD content supports image_url references only");
-      const url = referenceURL(item.image_url);
+      const url = reference(item.image_url);
       if (item.role === "first_frame") firstFrames.push(url);
       else if (item.role === "last_frame") lastFrames.push(url);
       else if (!item.role || item.role === "reference_image" || item.role === "middle_frame") images.push(url);
@@ -114,16 +123,28 @@ function videoRequest(req, files, model) {
     }
   }
   const last = selected(req, ["last_frame"]);
-  if (last !== undefined) lastFrames.push(referenceURL(last));
-  const endings = new Set(lastFrames);
-  const unique = Array.from(
-    new Set(
-      firstFrames
-        .concat(images)
-        .filter((url) => !endings.has(url))
-        .concat(lastFrames)
-    )
-  );
+  if (last !== undefined) lastFrames.push(reference(last));
+  for (const file of files || []) {
+    if (file.size <= 0 || file.size > 20971520) throw new Error("reference image must be non-empty and at most 20 MiB");
+    const field = file.field.replace(/\[\]$/, "");
+    const value = { __videoUpload: { fileRef: file.ref } };
+    if (field === "first_frame" || field === "input_reference" || field === "image") firstFrames.push(value);
+    else if (field === "last_frame") lastFrames.push(value);
+    else if (field === "images" || field === "reference_images") images.push(value);
+    else throw new Error("unexpected reference image field: " + file.field);
+  }
+  const endings = new Set(lastFrames.map((value) => JSON.stringify(value)));
+  const seen = new Set();
+  const unique = firstFrames
+    .concat(images)
+    .filter((value) => !endings.has(JSON.stringify(value)))
+    .concat(lastFrames)
+    .filter((value) => {
+      const key = JSON.stringify(value);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   if (unique.length > 128) throw new Error("too many reference images");
   const body = { model, prompt: req.prompt, seconds: String(seconds), ratio, aspect_ratio: ratio, resolution };
   if (unique.length) body.images = unique;

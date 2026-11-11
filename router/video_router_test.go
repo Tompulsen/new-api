@@ -1,19 +1,82 @@
 package router
 
 import (
+	"bytes"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/plugins"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestVideoReferenceRouteServesOnlySignedUnexpiredImages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("VIDEO_REFERENCE_DIR", t.TempDir())
+	previousAddress, previousSecret, previousWriter := system_setting.TaskPublicAddress, common.CryptoSecret, common.LogWriter
+	system_setting.TaskPublicAddress, common.CryptoSecret = "https://gateway.example", "router-sd-reference-secret"
+	var logs bytes.Buffer
+	common.LogWriter = &logs
+	t.Cleanup(func() {
+		system_setting.TaskPublicAddress, common.CryptoSecret, common.LogWriter = previousAddress, previousSecret, previousWriter
+	})
+	var imageBytes bytes.Buffer
+	require.NoError(t, png.Encode(&imageBytes, image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	link, err := service.StoreVideoReference(t.Context(), imageBytes.Bytes())
+	require.NoError(t, err)
+	parsed, err := url.Parse(link)
+	require.NoError(t, err)
+	engine := gin.New()
+	middleware.SetUpLogger(engine)
+	SetVideoRouter(engine)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(method, parsed.RequestURI(), nil))
+		require.Equal(t, http.StatusOK, recorder.Code)
+		assert.Equal(t, "image/png", recorder.Header().Get("Content-Type"))
+		assert.Equal(t, "private, no-store", recorder.Header().Get("Cache-Control"))
+		assert.Equal(t, "nosniff", recorder.Header().Get("X-Content-Type-Options"))
+		if method == http.MethodGet {
+			assert.Equal(t, imageBytes.Bytes(), recorder.Body.Bytes())
+		} else {
+			assert.Empty(t, recorder.Body.Bytes())
+		}
+	}
+	assert.NotContains(t, logs.String(), parsed.Query().Get("access"))
+	assert.NotContains(t, logs.String(), "access=")
+	expiredID := strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10) + "-" + strings.Repeat("a", 32)
+	expiredAccess, err := service.IssueTaskArtifactAccess("sd-reference:"+expiredID, "reference-image")
+	require.NoError(t, err)
+	for _, target := range []string{
+		parsed.Path,
+		parsed.Path + "?access=invalid",
+		parsed.RequestURI() + "&access=duplicate",
+		parsed.RequestURI() + "tampered",
+		"/v1/video-references/" + expiredID + "?access=" + expiredAccess,
+		strings.Replace(parsed.RequestURI(), path.Base(parsed.Path), path.Base(parsed.Path)[:11]+strings.Repeat("b", 32), 1),
+	} {
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		assert.Equal(t, http.StatusNotFound, recorder.Code, target)
+		assert.NotEqual(t, imageBytes.Bytes(), recorder.Body.Bytes())
+	}
+}
 
 func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 	gin.SetMode(gin.TestMode)

@@ -9,7 +9,6 @@ export const meta = {
   },
   version: "1.0.0",
   author: { name: "QuantumNous" },
-  baseUrl: "https://zhiyingai.xyz",
   models: [
     "seedance-2.0-official",
     "seedance-2.0-fast-official",

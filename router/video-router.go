@@ -8,6 +8,10 @@ import (
 )
 
 func SetVideoRouter(router *gin.Engine) {
+	references := router.Group("/v1/video-references", middleware.RouteTag("relay"), middleware.VideoReferenceAccessAuth())
+	references.GET("/:reference_id", controller.GetVideoReference)
+	references.HEAD("/:reference_id", controller.GetVideoReference)
+
 	videoSharedRouter := router.Group("/v1")
 	videoSharedRouter.Use(middleware.RouteTag("relay"))
 	videoSharedRouter.Use(middleware.TokenAuth())

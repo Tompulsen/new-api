@@ -27,7 +27,7 @@ export interface FetchResponse {status: number; headers: Record<string, string>;
 declare global {const utils: HostUtils;}
 export type FileReference = Readonly<{ref: string; field: string; filename: string; mimeType: string; size: number}>;
 export type FilePlaceholder = Readonly<{__fileRef: string; encoding: "base64" | "dataUrl"; mimeType?: string; maxBytes?: number}>;
-/** Upload to the selected channel's /v1/files after reservation. Sora JSON mode returns URLs (image, 20 MiB); async-compatible returns file IDs (image 16 MiB, video/audio 64 MiB). Total bounded by MAX_FILE_DOWNLOAD_MB. */
+/** Resolve after reservation. Sora JSON uploads images (20 MiB); async-compatible uploads file IDs (image 16 MiB, video/audio 64 MiB); sd-compatible stores images (20 MiB) as gateway URLs valid for one hour. Total bounded by MAX_FILE_DOWNLOAD_MB. */
 export type VideoUploadPlaceholder = Readonly<{__videoUpload: Readonly<({fileRef: string; dataUrl?: never} | {dataUrl: string; fileRef?: never}) & {/** async-compatible only; defaults to image. */ mediaType?: "image" | "video" | "audio"}>}>;
 export type DecodedBody =
   | Readonly<{kind: "json"; value: JSONValue}>

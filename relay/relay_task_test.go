@@ -1,9 +1,15 @@
 package relay
 
 import (
+	"bytes"
 	"encoding/base64"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path"
 	"strconv"
 	"strings"
 	"testing"
@@ -24,6 +30,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -953,6 +960,12 @@ func TestRelayTaskSubmitSDCompatibleBillingAndRetryBoundary(t *testing.T) {
 	setupRelayChannelDB(t)
 	saveBillingConfig(t)
 	service.InitHttpClient()
+	previousAddress := system_setting.TaskPublicAddress
+	system_setting.TaskPublicAddress = "https://gateway.example"
+	t.Cleanup(func() { system_setting.TaskPublicAddress = previousAddress })
+	var referenceBytes bytes.Buffer
+	require.NoError(t, png.Encode(&referenceBytes, image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	localReference := "data:" + "image/png;base64," + base64.StdEncoding.EncodeToString(referenceBytes.Bytes())
 	source, err := plugins.Source("sd-compatible")
 	require.NoError(t, err)
 	registry := pluginruntime.NewRegistry()
@@ -974,14 +987,17 @@ func TestRelayTaskSubmitSDCompatibleBillingAndRetryBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		name, reply, wantCode string
 		wallet, status        int
-		noRetry               bool
+		noRetry, localImage   bool
 	}{
 		{name: "reserve before generation using SD price", wallet: 1 << 30, status: 202, reply: `{"id":"sd-task","status":"queued"}`},
-		{name: "no funds prevents generation", wallet: 0, wantCode: "insufficient_user_quota"},
+		{name: "local image is stored after reservation", wallet: 1 << 30, status: 202, reply: `{"id":"sd-task","status":"queued"}`, localImage: true},
+		{name: "no funds prevents storage and generation", wallet: 0, wantCode: "insufficient_user_quota", localImage: true},
 		{name: "ambiguous submission cannot create another paid task", wallet: 1 << 30, status: 502, reply: `{}`, wantCode: "fail_to_fetch_task", noRetry: true},
 		{name: "accepted reply without ID cannot retry generation", wallet: 1 << 30, status: 200, reply: `{}`, wantCode: "plugin_submit_response_failed", noRetry: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("VIDEO_REFERENCE_DIR", dir)
 			billing := &imageReservation{limit: tc.wallet}
 			generations := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -993,17 +1009,32 @@ func TestRelayTaskSubmitSDCompatibleBillingAndRetryBoundary(t *testing.T) {
 				require.NoError(t, common.DecodeJson(r.Body, &actual))
 				assert.Equal(t, "5", actual["seconds"])
 				assert.Equal(t, "9:16", actual["ratio"])
-				assert.Equal(t, []any{"https://images.example/ref.png"}, actual["images"])
+				if tc.localImage {
+					images := actual["images"].([]any)
+					require.Len(t, images, 1)
+					link, err := url.Parse(images[0].(string))
+					require.NoError(t, err)
+					assert.Equal(t, "gateway.example", link.Host)
+					file, _, err := service.OpenVideoReference(path.Base(link.Path))
+					require.NoError(t, err)
+					file.Close()
+				} else {
+					assert.Equal(t, []any{"https://images.example/ref.png"}, actual["images"])
+				}
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.reply))
 			}))
 			defer server.Close()
 			c, info := newTaskSubmitContext(t, "sd2.0-mini-720p", "")
+			reference := "https://images.example/ref.png"
+			if tc.localImage {
+				reference = localReference
+			}
 			c.Set("task_request", map[string]any{
 				"prompt": "waves", "seconds": 5,
 				"metadata": map[string]any{
 					"aspect_ratio": "9:16", "resolution": "720p",
-					"images": []any{"https://images.example/ref.png"},
+					"images": []any{reference},
 				},
 			})
 			c.Set("channel_type", constant.ChannelTypeTaskPlugin)
@@ -1016,6 +1047,9 @@ func TestRelayTaskSubmitSDCompatibleBillingAndRetryBoundary(t *testing.T) {
 			result, taskErr := RelayTaskSubmit(c, info)
 			if tc.wallet == 0 {
 				assert.Zero(t, generations)
+				entries, err := os.ReadDir(dir)
+				require.NoError(t, err)
+				assert.Empty(t, entries)
 			} else {
 				assert.Equal(t, 1, generations)
 			}

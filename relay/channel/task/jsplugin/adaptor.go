@@ -135,12 +135,13 @@ const maxTaskArtifacts = 64
 const maxTaskPluginPersistedJSONBytes = 1 << 20
 
 type TaskAdaptor struct {
-	plugin         *pluginruntime.LoadedPlugin
-	info           *relaycommon.RelayInfo
-	submit         *requestDescriptor
-	routeRequest   *pluginruntime.RouteRequestContext
-	requestHeaders map[string]string
-	files          []map[string]any
+	plugin           *pluginruntime.LoadedPlugin
+	info             *relaycommon.RelayInfo
+	submit           *requestDescriptor
+	routeRequest     *pluginruntime.RouteRequestContext
+	requestHeaders   map[string]string
+	files            []map[string]any
+	referenceUploads *videoReferenceUploader
 	// hookRequestBody is hookRequestSource as hooks receive it.
 	hookRequestSource map[string]any
 	hookRequestBody   any
@@ -425,6 +426,12 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		}
 	}
 	uploads := &videoReferenceUploader{adaptor: a, info: info, urls: make(map[string]string)}
+	prepared := false
+	defer func() {
+		if !prepared {
+			uploads.discard()
+		}
+	}()
 	inlined, err := inlineJSONFilePlaceholders(c, value, uploads)
 	if err != nil {
 		return nil, err
@@ -433,6 +440,13 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if err != nil {
 		return nil, err
 	}
+	if a.plugin.Meta.Key == "sd-compatible" {
+		if err := c.Request.Context().Err(); err != nil {
+			return nil, err
+		}
+		a.referenceUploads = uploads
+	}
+	prepared = true
 	return bytes.NewReader(body), nil
 }
 
@@ -558,6 +572,10 @@ func encodeFilePlaceholder(placeholder map[string]any, form *multipart.Form, lim
 }
 
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, body io.Reader) (*http.Response, error) {
+	if a.referenceUploads != nil && c.Request.Context().Err() != nil {
+		a.referenceUploads.discard()
+		return nil, c.Request.Context().Err()
+	}
 	wasStream := info.IsStream
 	info.IsStream = false
 	defer func() { info.IsStream = wasStream }()
