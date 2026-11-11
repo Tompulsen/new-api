@@ -270,11 +270,12 @@ export const ModelPricingEditorPanel = forwardRef<
   if (editData?.billingMode !== 'tiered_expr' && hasLegacyPricing) {
     initialPricingMode = hasValue(editData?.price) ? 'per-request' : 'per-token'
   }
-  const videoPluginKey = pluginVariants?.some(
-    (variant) => variant.plugin_key === 'async-compatible' && !variant.stale
-  )
-    ? 'async-compatible'
-    : 'sora'
+  const videoPluginKey =
+    ['async-compatible', 'sd-compatible'].find((key) =>
+      pluginVariants?.some(
+        (variant) => variant.plugin_key === key && !variant.stale
+      )
+    ) ?? 'sora'
   const initialVideoExpression =
     videoUsageSchema &&
     taskExpressionCompatible(

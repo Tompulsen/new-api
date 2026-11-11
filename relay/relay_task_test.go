@@ -949,6 +949,95 @@ func TestRelayTaskSubmitAsyncVideoBillingAndRetryBoundary(t *testing.T) {
 	}
 }
 
+func TestRelayTaskSubmitSDCompatibleBillingAndRetryBoundary(t *testing.T) {
+	setupRelayChannelDB(t)
+	saveBillingConfig(t)
+	service.InitHttpClient()
+	source, err := plugins.Source("sd-compatible")
+	require.NoError(t, err)
+	registry := pluginruntime.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "sd-compatible"})
+	require.NoError(t, err)
+	previousRegistry := pluginruntime.DefaultRegistry
+	pluginruntime.DefaultRegistry = registry
+	t.Cleanup(func() { pluginruntime.DefaultRegistry = previousRegistry })
+	const expression = `u("resolution") == "1080p" ? tier("high", u("seconds") * 0.4) : tier("other", u("seconds") * 0.1)`
+	overrides, err := common.Marshal(map[string]string{
+		"sd-compatible::sd2.0-mini-720p": expression,
+		"sora::sd2.0-mini-720p":          `tier("wrong-provider", u("seconds") * 99)`,
+	})
+	require.NoError(t, err)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		billing_setting.PluginBillingExprOption: string(overrides),
+		"group_ratio_setting.group_ratio":       `{"default":1}`,
+	}))
+	for _, tc := range []struct {
+		name, reply, wantCode string
+		wallet, status        int
+		noRetry               bool
+	}{
+		{name: "reserve before generation using SD price", wallet: 1 << 30, status: 202, reply: `{"id":"sd-task","status":"queued"}`},
+		{name: "no funds prevents generation", wallet: 0, wantCode: "insufficient_user_quota"},
+		{name: "ambiguous submission cannot create another paid task", wallet: 1 << 30, status: 502, reply: `{}`, wantCode: "fail_to_fetch_task", noRetry: true},
+		{name: "accepted reply without ID cannot retry generation", wallet: 1 << 30, status: 200, reply: `{}`, wantCode: "plugin_submit_response_failed", noRetry: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			billing := &imageReservation{limit: tc.wallet}
+			generations := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				generations++
+				assert.Equal(t, 250000, billing.held)
+				assert.Equal(t, "/v1/tasks/sora", r.URL.Path)
+				assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+				var actual map[string]any
+				require.NoError(t, common.DecodeJson(r.Body, &actual))
+				assert.Equal(t, "5", actual["seconds"])
+				assert.Equal(t, "9:16", actual["ratio"])
+				assert.Equal(t, []any{"https://images.example/ref.png"}, actual["images"])
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.reply))
+			}))
+			defer server.Close()
+			c, info := newTaskSubmitContext(t, "sd2.0-mini-720p", "")
+			c.Set("task_request", map[string]any{
+				"prompt": "waves", "seconds": 5,
+				"metadata": map[string]any{
+					"aspect_ratio": "9:16", "resolution": "720p",
+					"images": []any{"https://images.example/ref.png"},
+				},
+			})
+			c.Set("channel_type", constant.ChannelTypeTaskPlugin)
+			c.Set("group", "default")
+			c.Set("task_plugin_key", "sd-compatible")
+			c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+			info.OriginModelName, info.UserGroup, info.UsingGroup = "sd2.0-mini-720p", "default", "default"
+			info.Billing = billing
+			result, taskErr := RelayTaskSubmit(c, info)
+			if tc.wallet == 0 {
+				assert.Zero(t, generations)
+			} else {
+				assert.Equal(t, 1, generations)
+			}
+			if tc.wantCode != "" {
+				require.NotNil(t, taskErr)
+				assert.Equal(t, tc.wantCode, taskErr.Code)
+				assert.Equal(t, tc.noRetry, taskErr.NoRetry)
+				return
+			}
+			require.Nil(t, taskErr, "%+v", taskErr)
+			require.NotNil(t, result)
+			assert.Equal(t, 250000, result.Quota)
+			require.NotNil(t, info.TieredBillingSnapshot)
+			assert.True(t, info.TieredBillingSnapshot.VideoUsagePending)
+			assert.Equal(t, expression, info.TieredBillingSnapshot.ExprString)
+			settled, _, err := service.EvaluateTaskCompletionUsage(info.TieredBillingSnapshot, map[string]any{"seconds": 6.5, "resolution": "1080p"})
+			require.NoError(t, err)
+			assert.Equal(t, 1300000, settled.ActualQuotaAfterGroup)
+		})
+	}
+}
+
 func TestRelayTaskSubmitVideoBillingLegacyFallback(t *testing.T) {
 	database := setupRelayChannelDB(t)
 	saveBillingConfig(t)

@@ -368,9 +368,14 @@ it('preserves native Sora size prices without treating them as generic video pri
   expect(draft?.pluginBillingExpr?.sora).toBe(expression)
 })
 
-it.each(['video', 'ordinary'])(
-  'edits the async video provider and preserves the separate Sora price when saving %s mode',
-  async (mode) => {
+it.each([
+  ['async-compatible', 'video'],
+  ['async-compatible', 'ordinary'],
+  ['sd-compatible', 'video'],
+  ['sd-compatible', 'ordinary'],
+])(
+  'edits %s and preserves the separate Sora price when saving %s mode',
+  async (pluginKey, mode) => {
     const editor = createRef<ModelPricingEditorPanelHandle>()
     const soraPrice = 'tier("sora", u("seconds") * 0.8)'
     render(
@@ -381,13 +386,13 @@ it.each(['video', 'ordinary'])(
           billingMode: 'per-request',
           price: '0.2',
           pluginBillingExpr: {
-            'async-compatible': 'tier("async", u("seconds") * 0.4)',
+            [pluginKey]: 'tier("async", u("seconds") * 0.4)',
             sora: soraPrice,
           },
         }}
         pluginVariants={[
           {
-            plugin_key: 'async-compatible',
+            plugin_key: pluginKey,
             plugin_name: 'Async compatible',
             usage_schema: schema,
             configured: 'tier("async", u("seconds") * 0.4)',
@@ -427,46 +432,49 @@ it.each(['video', 'ordinary'])(
     const draft = await editor.current?.commitDraft()
     expect(draft?.pluginBillingExpr?.sora).toBe(soraPrice)
     if (mode === 'video') {
-      expect(draft?.pluginBillingExpr?.['async-compatible']).toContain('0.6')
+      expect(draft?.pluginBillingExpr?.[pluginKey]).toContain('0.6')
     } else {
-      expect(draft?.pluginBillingExpr).not.toHaveProperty('async-compatible')
+      expect(draft?.pluginBillingExpr).not.toHaveProperty(pluginKey)
     }
   }
 )
 
-it('creates an async video price without inheriting or replacing an existing Sora override', async () => {
-  const editor = createRef<ModelPricingEditorPanelHandle>()
-  const soraPrice = 'tier("sora", u("seconds") * 0.8)'
-  render(
-    <ModelPricingEditorPanel
-      ref={editor}
-      editData={{
-        name: 'seedance-2.0-fast-official',
-        billingMode: 'per-request',
-        price: '0.2',
-        pluginBillingExpr: { sora: soraPrice },
-      }}
-      pluginVariants={[
-        {
-          plugin_key: 'async-compatible',
-          plugin_name: 'Async compatible',
-          usage_schema: schema,
-          configured: '',
-          effective: '',
-          compatible: false,
-        },
-      ]}
-      videoUsageSchema={schema}
-    />,
-    { wrapper }
-  )
-  const user = userEvent.setup()
-  await user.click(screen.getByRole('tab', { name: 'Video billing' }))
-  expect(await editor.current?.commitDraft()).toBeNull()
-  await user.click(screen.getByRole('tab', { name: 'Per request' }))
-  await user.type(screen.getByLabelText('Per request (USD)'), '0.3')
-  expect((await editor.current?.commitDraft())?.pluginBillingExpr).toEqual({
-    sora: soraPrice,
-    'async-compatible': 'tier("base", 0.3)',
-  })
-})
+it.each(['async-compatible', 'sd-compatible'])(
+  'creates a %s video price without inheriting or replacing an existing Sora override',
+  async (pluginKey) => {
+    const editor = createRef<ModelPricingEditorPanelHandle>()
+    const soraPrice = 'tier("sora", u("seconds") * 0.8)'
+    render(
+      <ModelPricingEditorPanel
+        ref={editor}
+        editData={{
+          name: 'seedance-2.0-fast-official',
+          billingMode: 'per-request',
+          price: '0.2',
+          pluginBillingExpr: { sora: soraPrice },
+        }}
+        pluginVariants={[
+          {
+            plugin_key: pluginKey,
+            plugin_name: 'Async compatible',
+            usage_schema: schema,
+            configured: '',
+            effective: '',
+            compatible: false,
+          },
+        ]}
+        videoUsageSchema={schema}
+      />,
+      { wrapper }
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('tab', { name: 'Video billing' }))
+    expect(await editor.current?.commitDraft()).toBeNull()
+    await user.click(screen.getByRole('tab', { name: 'Per request' }))
+    await user.type(screen.getByLabelText('Per request (USD)'), '0.3')
+    expect((await editor.current?.commitDraft())?.pluginBillingExpr).toEqual({
+      sora: soraPrice,
+      [pluginKey]: 'tier("base", 0.3)',
+    })
+  }
+)

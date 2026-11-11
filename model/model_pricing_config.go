@@ -266,7 +266,7 @@ func GetModelPricingSnapshot(names []string) (*ModelPricingSnapshot, error) {
 	sort.Strings(names)
 	result := &ModelPricingSnapshot{Entries: make([]ModelPricingEntry, 0, len(names)), Options: make(map[string]string), EmptyVersion: ModelPricingVersion(PricingValues{})}
 	generation := jsplugin.DefaultRegistry.Generation()
-	for _, key := range []string{"sora", "async-compatible"} {
+	for _, key := range []string{"sora", "async-compatible", "sd-compatible"} {
 		if _, available := generation.Get(key); available {
 			result.VideoUsageSchema = billing_setting.VideoUsageSchema()
 			break

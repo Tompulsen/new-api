@@ -369,9 +369,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (submitted *Ta
 	}
 
 	// 9. 发送请求
-	if pluginKey == "async-compatible" {
+	if pluginKey == "async-compatible" || pluginKey == "sd-compatible" {
 		// A lost reply may already have created a paid job; changing channel
-		// or uploading new file IDs would defeat upstream idempotency.
+		// or rebuilding references could create another paid job.
 		defer func() {
 			if taskErr != nil {
 				taskErr.NoRetry = true

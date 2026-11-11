@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "async-compatible", "doubao", "google", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
+var expectedKeys = []string{"alibaba", "async-compatible", "doubao", "google", "hailuo", "jimeng", "kling", "sd-compatible", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -173,7 +173,7 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 					break
 				}
 			}
-			if key == "async-compatible" {
+			if key == "async-compatible" || key == "sd-compatible" {
 				assert.False(t, foundResponses, "the asynchronous compatibility plugin serves video only")
 			} else {
 				require.True(t, foundResponses, "openai_responses claim must be present")
@@ -203,7 +203,7 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
 	bodyOverrides := map[string]map[string]any{}
 	for _, key := range expectedKeys {
-		if key == "async-compatible" {
+		if key == "async-compatible" || key == "sd-compatible" {
 			continue
 		}
 		t.Run(key, func(t *testing.T) {
