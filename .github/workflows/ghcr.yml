@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source commit or ref to publish (defaults to this revision)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -21,9 +26,16 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Set build version
-        run: printf 'main-%.12s\n' "$GITHUB_SHA" > VERSION
+        id: revision
+        run: |
+          revision="$(git rev-parse HEAD)"
+          printf 'main-%.12s\n' "$revision" > VERSION
+          printf 'sha=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+          printf 'version=main-%.12s\n' "$revision" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -41,14 +53,23 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: |
-            ghcr.io/tompulsen/new-api:latest
-            ghcr.io/tompulsen/new-api:sha-${{ github.sha }}
+          tags: ghcr.io/tompulsen/new-api:sha-${{ steps.revision.outputs.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/Tompulsen/new-api
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=latest
+            org.opencontainers.image.revision=${{ steps.revision.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.revision.outputs.version }}
           cache-from: type=gha,scope=new-api-ghcr
           cache-to: type=gha,scope=new-api-ghcr,mode=max
           provenance: mode=max
           sbom: true
+
+      - name: Update latest for current main
+        if: steps.revision.outputs.sha == github.sha
+        env:
+          SOURCE_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          current_main="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$current_main" = "$SOURCE_SHA" ]; then
+            docker buildx imagetools create --tag ghcr.io/tompulsen/new-api:latest \
+              "ghcr.io/tompulsen/new-api:sha-$SOURCE_SHA"
+          fi
