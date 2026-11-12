@@ -33,6 +33,14 @@ var accessTokenExemptRoutes = []string{
 	"GET /api/home_page_content",
 	"GET /api/ratio_config",
 	"GET /api/user/groups",
+	"GET /api/community-sso/config",
+
+	// SSO exchanges validate their own grants or dedicated server credentials.
+	"GET /api/community-sso/lottery",
+	"POST /api/community-sso/lottery",
+	"POST /api/community-sso/token",
+	"GET /api/community-sso/userinfo",
+	"POST /api/studio-sso/token",
 
 	// Anonymous account entry points.
 	"GET /api/verification",
@@ -140,6 +148,20 @@ func TestAccessTokenRouteRulesCoverEveryDashboardRoute(t *testing.T) {
 		require.True(t, ok, key)
 		assert.Equal(t, "scope", rule.Kind(), key)
 		assert.Equal(t, service.AccessTokenScopeOf(permission), rule.Scope(), key)
+	}
+	for _, key := range []string{"POST /api/community-sso/authorize", "POST /api/studio-sso/authorize"} {
+		rule, ok := middleware.AccessTokenRouteRule(key)
+		require.True(t, ok, key)
+		assert.Equal(t, "session", rule.Kind(), key)
+	}
+	for key, scope := range map[string]string{
+		"GET /api/option/video_billing": "option:read",
+		"PUT /api/option/video_billing": "option:write",
+	} {
+		rule, ok := middleware.AccessTokenRouteRule(key)
+		require.True(t, ok, key)
+		assert.Equal(t, "scope", rule.Kind(), key)
+		assert.Equal(t, scope, rule.Scope(), key)
 	}
 }
 

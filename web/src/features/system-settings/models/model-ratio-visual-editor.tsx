@@ -50,7 +50,9 @@ import { Button } from '@/components/ui/button'
 import { useModelPricing } from '@/features/model-pricing/api'
 import {
   applyPricingDraft,
+  PRICING_KEYS,
   pricingOptions,
+  pricingRows,
 } from '@/features/model-pricing/pricing'
 import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
 import { splitPluginBillingExprKey } from '@/features/pricing/lib/plugin-pricing'
@@ -59,14 +61,17 @@ import { useMediaQuery } from '@/hooks'
 import { safeJsonParse } from '../utils/json-parser'
 import type { PricingMode } from './model-pricing-core'
 import {
+  ModelPricingIssueDetails,
+  ModelPricingIssueSummary,
+} from './model-pricing-issue-alerts'
+import {
   ModelPricingEditorPanel,
   type ModelPricingEditorPanelHandle,
   ModelPricingSheet,
   type ModelRatioData,
 } from './model-pricing-sheet'
 import {
-  buildModelSnapshots,
-  getSnapshotSignature,
+  buildModelRow,
   getPricingDisplayMode,
   hasPluginPricing,
   isPricingUnset,
@@ -77,6 +82,7 @@ import {
   PRICE_ATTENTION_FILTER,
   TASK_PRICING_MODE_FILTER,
 } from './model-ratio-table-columns'
+import { PriceChangeCard } from './price-change-diff'
 import { type ModelPricingIssue, useModelPricingIssues } from './pricing-issues'
 
 type ModelRatioVisualEditorProps = {
@@ -108,10 +114,13 @@ type ModelRatioVisualEditorProps = {
   onChange: (field: string, value: string) => void
   onSave: () => void | Promise<void>
   isSaving: boolean
+  /** Whether the open editor holds edits not yet committed to the draft. */
+  onEditorDirtyChange?: (dirty: boolean) => void
 }
 
 export type ModelRatioVisualEditorHandle = {
   commitOpenEditor: () => Promise<boolean>
+  closeEditor: () => void
 }
 
 const STORAGE_KEY = 'model-ratio-column-visibility'
@@ -149,6 +158,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
     onChange,
     onSave,
     isSaving,
+    onEditorDirtyChange,
   },
   ref
 ) {
@@ -158,14 +168,17 @@ const ModelRatioVisualEditorComponent = forwardRef<
   const [sheetOpen, setSheetOpen] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
   const [editData, setEditData] = useState<ModelRatioData | null>(null)
+  const [panelDirty, setPanelDirty] = useState(false)
   const pricingConfig = useModelPricing(
     editData?.name ? [editData.name] : [],
     Boolean(editData?.name)
   )
   const pricingIssuesQuery = useModelPricingIssues()
   const [sorting, setSorting] = useState<SortingState>([])
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+  const [columnFiltersOverride, setColumnFiltersOverride] =
+    useState<ColumnFiltersState | null>(null)
   const [globalFilter, setGlobalFilter] = useState('')
+  const [toolbarVersion, setToolbarVersion] = useState(0)
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const editorPanelRef = useRef<ModelPricingEditorPanelHandle>(null)
   // Read through a ref so the table column definitions (and therefore every
@@ -243,36 +256,72 @@ const ModelRatioVisualEditorComponent = forwardRef<
     return byModel
   }, [pricingIssuesQuery.data])
 
-  const models = useMemo(() => {
-    const savedRows = buildModelSnapshots({
-      modelPrice: savedModelPrice,
-      modelRatio: savedModelRatio,
-      cacheRatio: savedCacheRatio,
-      createCacheRatio: savedCreateCacheRatio,
-      completionRatio: savedCompletionRatio,
-      imageRatio: savedImageRatio,
-      audioRatio: savedAudioRatio,
-      audioCompletionRatio: savedAudioCompletionRatio,
-      billingMode: savedBillingMode,
-      billingExpr: savedBillingExpr,
-      pluginBillingExpr: savedPluginBillingExpr,
-    })
-    const draftRows = buildModelSnapshots({
+  const savedOptions = useMemo(
+    () =>
+      pricingOptions({
+        ModelPrice: savedModelPrice,
+        ModelRatio: savedModelRatio,
+        CompletionRatio: savedCompletionRatio,
+        CacheRatio: savedCacheRatio,
+        CreateCacheRatio: savedCreateCacheRatio,
+        ImageRatio: savedImageRatio,
+        AudioRatio: savedAudioRatio,
+        AudioCompletionRatio: savedAudioCompletionRatio,
+        BillingMode: savedBillingMode,
+        BillingExpr: savedBillingExpr,
+        PluginBillingExpr: savedPluginBillingExpr,
+      }),
+    [
+      savedModelPrice,
+      savedModelRatio,
+      savedCompletionRatio,
+      savedCacheRatio,
+      savedCreateCacheRatio,
+      savedImageRatio,
+      savedAudioRatio,
+      savedAudioCompletionRatio,
+      savedBillingMode,
+      savedBillingExpr,
+      savedPluginBillingExpr,
+    ]
+  )
+  const draftOptions = useMemo(
+    () =>
+      pricingOptions({
+        ModelPrice: modelPrice,
+        ModelRatio: modelRatio,
+        CompletionRatio: completionRatio,
+        CacheRatio: cacheRatio,
+        CreateCacheRatio: createCacheRatio,
+        ImageRatio: imageRatio,
+        AudioRatio: audioRatio,
+        AudioCompletionRatio: audioCompletionRatio,
+        BillingMode: billingMode,
+        BillingExpr: billingExpr,
+        PluginBillingExpr: pluginBillingExpr,
+      }),
+    [
       modelPrice,
       modelRatio,
+      completionRatio,
       cacheRatio,
       createCacheRatio,
-      completionRatio,
       imageRatio,
       audioRatio,
       audioCompletionRatio,
       billingMode,
       billingExpr,
       pluginBillingExpr,
-    })
+    ]
+  )
 
-    const savedByName = new Map(savedRows.map((row) => [row.name, row]))
-    const draftByName = new Map(draftRows.map((row) => [row.name, row]))
+  const models = useMemo(() => {
+    const savedByName = new Map(
+      pricingRows(savedOptions).map((row) => [row.name, row])
+    )
+    const draftByName = new Map(
+      pricingRows(draftOptions).map((row) => [row.name, row])
+    )
     // A plugin model that was never priced has no saved row; list it so its
     // pricing issue can be seen and fixed here.
     const modelNames =
@@ -284,53 +333,25 @@ const ModelRatioVisualEditorComponent = forwardRef<
             ...pricingIssues.keys(),
           ])
 
-    return [...modelNames]
-      .map((name) => {
-        const saved = savedByName.get(name)
-        const draft = draftByName.get(name)
-        const displayed = saved ??
-          draft ?? { name, billingMode: 'per-token', hasConflict: false }
-        const savedSignature = getSnapshotSignature(saved)
-        const draftSignature = getSnapshotSignature(draft)
-
-        return {
-          ...displayed,
-          saved,
-          draft,
-          isDraftChanged: savedSignature !== draftSignature,
-          isDraftDeleted: Boolean(saved && !draft),
-          isDraftNew: Boolean(!saved && draft),
-        }
-      })
-      .filter((row) => !row.isDraftDeleted)
-      .filter((row) => filterMode !== 'unset' || isPricingUnset(row.saved))
-      .sort((a, b) => a.name.localeCompare(b.name))
+    return (
+      [...modelNames]
+        .map((name) =>
+          buildModelRow(name, savedByName.get(name), draftByName.get(name))
+        )
+        // A pending deletion stays listed with its undo action until saved.
+        .filter(
+          (row) =>
+            filterMode !== 'unset' ||
+            (!row.isDraftDeleted && isPricingUnset(row.saved))
+        )
+        .sort((a, b) => a.name.localeCompare(b.name))
+    )
   }, [
     candidateModelNames,
     filterMode,
     pricingIssues,
-    savedModelPrice,
-    savedModelRatio,
-    savedCacheRatio,
-    savedCreateCacheRatio,
-    savedCompletionRatio,
-    savedImageRatio,
-    savedAudioRatio,
-    savedAudioCompletionRatio,
-    savedBillingMode,
-    savedBillingExpr,
-    savedPluginBillingExpr,
-    modelPrice,
-    modelRatio,
-    cacheRatio,
-    createCacheRatio,
-    completionRatio,
-    imageRatio,
-    audioRatio,
-    audioCompletionRatio,
-    billingMode,
-    billingExpr,
-    pluginBillingExpr,
+    savedOptions,
+    draftOptions,
   ])
 
   const modeCounts = useMemo(() => {
@@ -361,9 +382,36 @@ const ModelRatioVisualEditorComponent = forwardRef<
     () => models.filter((model) => pricingIssues.has(model.name)).length,
     [models, pricingIssues]
   )
+  const defaultColumnFilters = useMemo<ColumnFiltersState>(
+    () =>
+      filterMode === 'all' && attentionCount > 0
+        ? [{ id: 'name', value: [PRICE_ATTENTION_FILTER] }]
+        : [],
+    [filterMode, attentionCount]
+  )
+  const columnFilters = columnFiltersOverride ?? defaultColumnFilters
+  const handleColumnFiltersChange = useCallback<OnChangeFn<ColumnFiltersState>>(
+    (updater) => {
+      setColumnFiltersOverride((previous) =>
+        typeof updater === 'function'
+          ? updater(previous ?? defaultColumnFilters)
+          : updater
+      )
+      setPagination((previous) => ({ ...previous, pageIndex: 0 }))
+    },
+    [defaultColumnFilters]
+  )
+  const showingAttention = columnFilters.some(
+    (filter) =>
+      filter.id === 'name' &&
+      Array.isArray(filter.value) &&
+      filter.value.includes(PRICE_ATTENTION_FILTER)
+  )
 
   const handleEdit = useCallback(
     (model: ModelRow) => {
+      // A pending deletion has no draft to edit; it offers undo instead.
+      if (model.isDraftDeleted) return
       const editableModel = model.draft ?? model.saved ?? model
       let editBillingMode: PricingMode = 'per-token'
       if (editableModel.billingMode === 'tiered_expr') {
@@ -391,6 +439,18 @@ const ModelRatioVisualEditorComponent = forwardRef<
     },
     [isMobile]
   )
+
+  const closeEditor = useCallback(() => {
+    setEditData(null)
+    setEditorOpen(false)
+    setSheetOpen(false)
+  }, [])
+
+  // The panel does not report when it closes, so only an open one counts.
+  const editorShown = isMobile ? sheetOpen : editorOpen
+  useEffect(() => {
+    onEditorDirtyChange?.(editorShown && panelDirty)
+  }, [editorShown, panelDirty, onEditorDirtyChange])
 
   const handleAdd = useCallback(() => {
     setEditData(null)
@@ -500,13 +560,10 @@ const ModelRatioVisualEditorComponent = forwardRef<
         JSON.stringify(billingExprMap, null, 2)
       )
 
-      if (editingModelNameRef.current === name) {
-        setEditData(null)
-        setEditorOpen(false)
-        setSheetOpen(false)
-      }
+      if (editingModelNameRef.current === name) closeEditor()
     },
     [
+      closeEditor,
       modelPrice,
       modelRatio,
       cacheRatio,
@@ -522,17 +579,61 @@ const ModelRatioVisualEditorComponent = forwardRef<
     ]
   )
 
+  // Puts one model's saved price, provider prices included, back into the
+  // draft. An open editor shows the saved price again.
+  const handleRestore = useCallback(
+    (name: string) => {
+      for (const key of PRICING_KEYS) {
+        const draft = safeJsonParse<Record<string, unknown>>(
+          draftOptions[key],
+          { fallback: {}, silent: true }
+        )
+        const saved = safeJsonParse<Record<string, unknown>>(
+          savedOptions[key],
+          { fallback: {}, silent: true }
+        )
+        for (const entry of new Set([
+          ...Object.keys(draft),
+          ...Object.keys(saved),
+        ])) {
+          const model =
+            key === 'billing_setting.plugin_billing_expr'
+              ? splitPluginBillingExprKey(entry)?.[1]
+              : entry
+          if (model !== name) continue
+          if (Object.hasOwn(saved, entry)) draft[entry] = saved[entry]
+          else delete draft[entry]
+        }
+        onChange(key, JSON.stringify(draft, null, 2))
+      }
+      if (editingModelNameRef.current !== name) return
+      const saved = pricingRows(savedOptions).find((row) => row.name === name)
+      if (saved) handleEdit(buildModelRow(name, saved, saved))
+      else closeEditor()
+    },
+    [draftOptions, savedOptions, onChange, handleEdit, closeEditor]
+  )
+
   const columns = useMemo(
     () =>
       buildModelRatioColumns({
         onDelete: handleDelete,
+        onRestore: handleRestore,
         onEdit: handleEdit,
         deleteDisabled: filterMode === 'unset',
         taskModelNames,
         pricingIssues,
         t,
       }),
-    [handleEdit, handleDelete, filterMode, t, taskModelNames, pricingIssues]
+    [
+      handleEdit,
+      handleDelete,
+      handleRestore,
+      filterMode,
+      t,
+      taskModelNames,
+      pricingIssues,
+    ]
   )
 
   const ensurePageInRange = useCallback((pageCount: number) => {
@@ -556,7 +657,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
     rowSelection,
     enableRowSelection: true,
     onSortingChange: setSorting,
-    onColumnFiltersChange: setColumnFilters,
+    onColumnFiltersChange: handleColumnFiltersChange,
     onGlobalFilterChange: handleGlobalFilterChange,
     onColumnVisibilityChange: setColumnVisibility,
     onPaginationChange: setPagination,
@@ -570,36 +671,10 @@ const ModelRatioVisualEditorComponent = forwardRef<
 
   const persistPricingData = useCallback(
     (data: ModelRatioData, targetNames: string[] = [data.name]) => {
-      const options = pricingOptions({
-        ModelPrice: modelPrice,
-        ModelRatio: modelRatio,
-        CompletionRatio: completionRatio,
-        CacheRatio: cacheRatio,
-        CreateCacheRatio: createCacheRatio,
-        ImageRatio: imageRatio,
-        AudioRatio: audioRatio,
-        AudioCompletionRatio: audioCompletionRatio,
-        BillingMode: billingMode,
-        BillingExpr: billingExpr,
-        PluginBillingExpr: pluginBillingExpr,
-      })
-      const updated = applyPricingDraft(options, data, targetNames)
+      const updated = applyPricingDraft(draftOptions, data, targetNames)
       for (const [key, value] of Object.entries(updated)) onChange(key, value)
     },
-    [
-      modelPrice,
-      modelRatio,
-      completionRatio,
-      cacheRatio,
-      createCacheRatio,
-      imageRatio,
-      audioRatio,
-      audioCompletionRatio,
-      billingMode,
-      billingExpr,
-      pluginBillingExpr,
-      onChange,
-    ]
+    [draftOptions, onChange]
   )
 
   const handleBatchCopy = useCallback(async () => {
@@ -650,8 +725,9 @@ const ModelRatioVisualEditorComponent = forwardRef<
         setEditData(data)
         return true
       },
+      closeEditor,
     }),
-    [editorOpen, persistPricingData]
+    [editorOpen, persistPricingData, closeEditor]
   )
 
   const hasRows = table.getRowModel().rows.length > 0
@@ -667,8 +743,49 @@ const ModelRatioVisualEditorComponent = forwardRef<
       : t('No models with unset prices')
   }
 
+  const editIssues = editData ? pricingIssues.get(editData.name) : undefined
+  const editRow = editData
+    ? models.find((model) => model.name === editData.name)
+    : undefined
+  const changedEditRow = editRow?.isDraftChanged ? editRow : undefined
+  const scrollHeader =
+    changedEditRow || editIssues ? (
+      <>
+        {changedEditRow && (
+          <PriceChangeCard
+            row={changedEditRow}
+            onUndo={() => handleRestore(changedEditRow.name)}
+          />
+        )}
+        {editIssues && <ModelPricingIssueDetails issues={editIssues} />}
+      </>
+    ) : undefined
+
   return (
     <div className='flex min-h-0 flex-1 flex-col gap-4'>
+      {filterMode === 'all' && (
+        <ModelPricingIssueSummary
+          count={attentionCount}
+          showingAttention={showingAttention}
+          onShowAll={() => {
+            setToolbarVersion((version) => version + 1)
+            table.setColumnFilters([])
+            table.setGlobalFilter('')
+            table.setPageIndex(0)
+          }}
+          onReview={() => {
+            const model = models.find((row) => pricingIssues.has(row.name))
+            if (!model) return
+            setToolbarVersion((version) => version + 1)
+            setGlobalFilter('')
+            table.setColumnFilters([
+              { id: 'name', value: [PRICE_ATTENTION_FILTER] },
+            ])
+            table.setPageIndex(0)
+            handleEdit(model)
+          }}
+        />
+      )}
       <div
         role='region'
         aria-label={t('Model prices')}
@@ -676,6 +793,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
       >
         <div className='flex min-h-0 min-w-0 flex-col gap-3'>
           <DataTableToolbar
+            key={toolbarVersion}
             table={table}
             searchPlaceholder={t('Search models...')}
             searchDebounceMs={250}
@@ -774,6 +892,9 @@ const ModelRatioVisualEditorComponent = forwardRef<
                   }
                   onClick={(event) => {
                     const target = event.target as HTMLElement
+                    // Clicks in the portaled row menu bubble here too; Delete
+                    // must not reopen the row it just deleted.
+                    if (!event.currentTarget.contains(target)) return
                     if (target.closest('button, [role="checkbox"]')) return
                     handleEdit(row.original)
                   }}
@@ -791,6 +912,8 @@ const ModelRatioVisualEditorComponent = forwardRef<
               ref={editorPanelRef}
               editData={editData}
               videoUsageSchema={pricingConfig.data?.video_usage_schema}
+              scrollHeader={scrollHeader}
+              onDirtyChange={setPanelDirty}
               pluginVariants={
                 pricingConfig.data?.entries.find(
                   (entry) => entry.model_name === editData?.name
@@ -842,6 +965,8 @@ const ModelRatioVisualEditorComponent = forwardRef<
           onOpenChange={setSheetOpen}
           editData={editData}
           videoUsageSchema={pricingConfig.data?.video_usage_schema}
+          scrollHeader={scrollHeader}
+          onDirtyChange={setPanelDirty}
           pluginVariants={
             pricingConfig.data?.entries.find(
               (entry) => entry.model_name === editData?.name
@@ -893,7 +1018,8 @@ export const ModelRatioVisualEditor = memo(
       prevProps.filterMode === nextProps.filterMode &&
       prevProps.onChange === nextProps.onChange &&
       prevProps.onSave === nextProps.onSave &&
-      prevProps.isSaving === nextProps.isSaving
+      prevProps.isSaving === nextProps.isSaving &&
+      prevProps.onEditorDirtyChange === nextProps.onEditorDirtyChange
     )
   }
 )

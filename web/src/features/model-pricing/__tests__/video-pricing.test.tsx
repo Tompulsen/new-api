@@ -81,6 +81,7 @@ function wrapper(props: { children: React.ReactNode }) {
 
 it('offers an independent video mode, requires an explicit price, and keeps the draft across mode switches', async () => {
   const editor = createRef<ModelPricingEditorPanelHandle>()
+  const dirty = vi.fn()
   render(
     <ModelPricingEditorPanel
       ref={editor}
@@ -90,11 +91,14 @@ it('offers an independent video mode, requires an explicit price, and keeps the 
         price: '0.2',
       }}
       videoUsageSchema={schema}
+      onDirtyChange={dirty}
     />,
     { wrapper }
   )
   const user = userEvent.setup()
+  expect(dirty).toHaveBeenLastCalledWith(false)
   await user.click(screen.getByRole('tab', { name: 'Video billing' }))
+  expect(dirty).toHaveBeenLastCalledWith(true)
   expect(await editor.current?.commitDraft()).toBeNull()
   const price = screen.getByRole('textbox', {
     name: /Video generation unit price:.*480p/,

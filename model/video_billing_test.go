@@ -118,8 +118,9 @@ export function parseTaskResult(){return {};}
 			require.NoError(t, UpdateModelPricing([]ModelPricingChange{{
 				ModelName: "minimax_h3", ExpectedVersion: snapshot.Entries[0].Version, Pricing: draft,
 			}}))
-			selectedExpr, exists := billing_setting.ResolveTaskBillingExpr("sora", "minimax_h3", "vendor-alias")
+			selectedExpr, overridden, exists := billing_setting.ResolveTaskBillingExpr("sora", "minimax_h3", "vendor-alias")
 			assert.True(t, exists)
+			assert.True(t, overridden)
 			assert.Equal(t, expression, selectedExpr)
 			assert.True(t, HasVideoBillingModel("minimax_h3"))
 			snapshot, err = GetModelPricingSnapshot([]string{"minimax_h3"})
