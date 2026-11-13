@@ -21,8 +21,7 @@ func SessionCookieOriginGuard() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		origin, ok := requestBrowserOrigin(c.Request)
-		if !ok || !isAllowedSessionOrigin(c.Request, origin) {
+		if !IsAllowedSessionCookieOrigin(c.Request) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"success": false,
 				"code":    "AUTH_ORIGIN_FORBIDDEN",
@@ -32,6 +31,12 @@ func SessionCookieOriginGuard() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// IsAllowedSessionCookieOrigin checks cookie endpoint origins in all cookie modes.
+func IsAllowedSessionCookieOrigin(request *http.Request) bool {
+	origin, ok := requestBrowserOrigin(request)
+	return ok && isAllowedSessionOrigin(request, origin)
 }
 
 func requestBrowserOrigin(request *http.Request) (string, bool) {

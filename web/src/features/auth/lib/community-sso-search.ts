@@ -30,9 +30,60 @@ export const communitySsoSearchSchema = z.object({
       typeof value === 'number' && Number.isSafeInteger(value) && value > 0
         ? String(value)
         : value,
-    z.string().regex(/^[1-9]\d{0,15}$/).optional()
+    z
+      .string()
+      .regex(/^[1-9]\d{0,15}$/)
+      .optional()
   ),
   state: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   code_challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   code_challenge_method: z.literal('S256'),
 })
+
+export type CommunitySsoConfig = {
+  enabled: boolean
+  community_origin: string
+  studio_origin: string
+  community_origins?: string[]
+  studio_origins?: string[]
+}
+
+export function communitySsoTargetOrigin(
+  search: z.infer<typeof communitySsoSearchSchema>,
+  config: CommunitySsoConfig
+): string | undefined {
+  if (!config.enabled) return undefined
+  const studio = search.scope === 'chat_session'
+  const origins = studio
+    ? (config.studio_origins ?? [config.studio_origin])
+    : (config.community_origins ?? [config.community_origin])
+  const callback = studio
+    ? '/api/new-api/community/callback'
+    : '/api/newapi/callback'
+  if (
+    origins.includes(search.client_id) &&
+    search.redirect_uri === `${search.client_id}${callback}`
+  ) {
+    return search.client_id
+  }
+  return undefined
+}
+
+export function communitySsoCallback(
+  raw: string,
+  search: z.infer<typeof communitySsoSearchSchema>
+): string {
+  const target = new URL(raw)
+  if (
+    target.origin + target.pathname !== search.redirect_uri ||
+    target.username ||
+    target.password ||
+    target.hash ||
+    target.searchParams.getAll('state').length !== 1 ||
+    target.searchParams.get('state') !== search.state ||
+    target.searchParams.getAll('code').length !== 1 ||
+    !/^[A-Za-z0-9_-]{43}$/.test(target.searchParams.get('code') ?? '')
+  )
+    throw new Error('Invalid callback')
+  return target.href
+}

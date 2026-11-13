@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"mime"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,8 +26,12 @@ func StudioSSOAuthorize(c *gin.Context) {
 		Method       string `json:"code_challenge_method"`
 		Subject      string `json:"expected_subject"`
 	}
-	origin := ssoOrigin("STUDIO_SSO_ORIGIN")
-	if origin == "" || c.ShouldBindJSON(&request) != nil || request.ClientID != origin || request.RedirectURI != origin+"/api/new-api/community/callback" || request.ResponseType != "code" || request.Scope != "chat_session" || request.Method != "S256" || !communitySSOOpaque.MatchString(request.State) || !communitySSOOpaque.MatchString(request.Challenge) {
+	if c.ShouldBindJSON(&request) != nil {
+		communitySSOError(c, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	origin := request.ClientID
+	if !slices.Contains(ssoOrigins("STUDIO_SSO"), origin) || request.RedirectURI != origin+"/api/new-api/community/callback" || request.ResponseType != "code" || request.Scope != "chat_session" || request.Method != "S256" || !communitySSOOpaque.MatchString(request.State) || !communitySSOOpaque.MatchString(request.Challenge) {
 		communitySSOError(c, 400, "invalid_request")
 		return
 	}
@@ -45,6 +51,16 @@ func StudioSSOAuthorize(c *gin.Context) {
 
 func StudioSSOToken(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
+	mediaType, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		communitySSOError(c, http.StatusUnsupportedMediaType, "invalid_request")
+		return
+	}
+	// Exchanging a grant writes a browser cookie, including in insecure cookie mode.
+	if !middleware.IsAllowedSessionCookieOrigin(c.Request) {
+		communitySSOError(c, http.StatusForbidden, "invalid_request")
+		return
+	}
 	var request struct {
 		GrantType   string `json:"grant_type"`
 		ClientID    string `json:"client_id"`
@@ -53,8 +69,12 @@ func StudioSSOToken(c *gin.Context) {
 		Verifier    string `json:"code_verifier"`
 		Subject     string `json:"expected_subject"`
 	}
-	origin := ssoOrigin("STUDIO_SSO_ORIGIN")
-	if origin == "" || c.ShouldBindJSON(&request) != nil || request.GrantType != "authorization_code" || request.ClientID != origin || request.RedirectURI != origin+"/api/new-api/community/callback" {
+	if c.ShouldBindJSON(&request) != nil {
+		communitySSOError(c, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	origin := request.ClientID
+	if !slices.Contains(ssoOrigins("STUDIO_SSO"), origin) || request.GrantType != "authorization_code" || request.RedirectURI != origin+"/api/new-api/community/callback" {
 		communitySSOError(c, 400, "invalid_request")
 		return
 	}

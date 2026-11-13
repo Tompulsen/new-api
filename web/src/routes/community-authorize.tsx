@@ -21,7 +21,12 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
-import { communitySsoSearchSchema } from '@/features/auth/lib/community-sso-search'
+import {
+  communitySsoSearchSchema,
+  communitySsoTargetOrigin,
+  communitySsoCallback,
+  type CommunitySsoConfig,
+} from '@/features/auth/lib/community-sso-search'
 import { api, resolveAuthentication } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -37,11 +42,7 @@ export const Route = createFileRoute('/community-authorize')({
     const { data } = await api.get('/api/community-sso/config', {
       skipErrorHandler: true,
     })
-    return data as {
-      enabled: boolean
-      community_origin: string
-      studio_origin: string
-    }
+    return data as CommunitySsoConfig
   },
   component: CommunityAuthorize,
 })
@@ -76,16 +77,9 @@ function CommunityAuthorize() {
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
   const studio = search.scope === 'chat_session'
-  const targetOrigin = studio ? config.studio_origin : config.community_origin
-  const callback = studio
-    ? '/api/new-api/community/callback'
-    : '/api/newapi/callback'
+  const targetOrigin = communitySsoTargetOrigin(search, config)
   const accountMatches = !studio || String(user?.id) === search.expected_subject
-  const valid =
-    Boolean(targetOrigin) &&
-    config.enabled &&
-    targetOrigin === search.client_id &&
-    search.redirect_uri === `${targetOrigin}${callback}`
+  const valid = Boolean(targetOrigin)
   async function authorize() {
     if (!valid || !accountMatches || busy) return
     setBusy(true)
@@ -96,11 +90,7 @@ function CommunityAuthorize() {
         search,
         { skipErrorHandler: true }
       )
-      const target = new URL(data.redirect_uri)
-      if (target.origin !== targetOrigin || target.pathname !== callback) {
-        throw new Error('Invalid callback')
-      }
-      window.location.assign(target.href)
+      window.location.assign(communitySsoCallback(data.redirect_uri, search))
     } catch {
       setFailed(true)
       setBusy(false)

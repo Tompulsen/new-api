@@ -5,8 +5,10 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
@@ -19,13 +21,30 @@ func communitySSOOrigin() string {
 }
 
 func ssoOrigin(environment string) string {
-	raw := os.Getenv(environment)
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
-		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+	return ssoOriginValue(os.Getenv(environment))
+}
+
+func ssoOriginValue(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.ForceQuery || strings.Contains(raw, "#") {
 		return ""
 	}
-	return u.Scheme + "://" + u.Host
+	origin, err := common.NormalizeOrigin(raw)
+	if err != nil || !strings.HasPrefix(origin, "https://") {
+		return ""
+	}
+	return origin
+}
+
+func ssoOrigins(prefix string) []string {
+	origins := []string{}
+	for raw := range strings.SplitSeq(os.Getenv(prefix+"_ORIGIN")+","+os.Getenv(prefix+"_ALLOWED_ORIGINS"), ",") {
+		origin := ssoOriginValue(raw)
+		if origin != "" && !slices.Contains(origins, origin) {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
 }
 
 func communitySSOError(c *gin.Context, status int, reason string) {
@@ -37,7 +56,7 @@ func communitySSOError(c *gin.Context, status int, reason string) {
 func CommunitySSOConfig(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	origin := communitySSOOrigin()
-	c.JSON(http.StatusOK, gin.H{"enabled": origin != "", "community_origin": origin, "studio_origin": ssoOrigin("STUDIO_SSO_ORIGIN")})
+	c.JSON(http.StatusOK, gin.H{"enabled": len(ssoOrigins("COMMUNITY_SSO")) > 0, "community_origin": origin, "studio_origin": ssoOrigin("STUDIO_SSO_ORIGIN"), "community_origins": ssoOrigins("COMMUNITY_SSO"), "studio_origins": ssoOrigins("STUDIO_SSO")})
 }
 
 func CommunitySSOAuthorize(c *gin.Context) {
@@ -51,8 +70,12 @@ func CommunitySSOAuthorize(c *gin.Context) {
 		Challenge    string `json:"code_challenge"`
 		Method       string `json:"code_challenge_method"`
 	}
-	origin := communitySSOOrigin()
-	if origin == "" || c.ShouldBindJSON(&request) != nil || request.ClientID != origin ||
+	if c.ShouldBindJSON(&request) != nil {
+		communitySSOError(c, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	origin := request.ClientID
+	if !slices.Contains(ssoOrigins("COMMUNITY_SSO"), origin) ||
 		request.RedirectURI != origin+"/api/newapi/callback" || request.ResponseType != "code" ||
 		request.Scope != "identity" || request.Method != "S256" || !communitySSOOpaque.MatchString(request.State) || !communitySSOOpaque.MatchString(request.Challenge) {
 		communitySSOError(c, http.StatusBadRequest, "invalid_request")
@@ -82,9 +105,12 @@ func CommunitySSOToken(c *gin.Context) {
 		Code        string `json:"code"`
 		Verifier    string `json:"code_verifier"`
 	}
-	origin := communitySSOOrigin()
-	if origin == "" || c.ShouldBindJSON(&request) != nil || request.GrantType != "authorization_code" ||
-		request.ClientID != origin || request.RedirectURI != origin+"/api/newapi/callback" {
+	if c.ShouldBindJSON(&request) != nil {
+		communitySSOError(c, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	origin := request.ClientID
+	if !slices.Contains(ssoOrigins("COMMUNITY_SSO"), origin) || request.GrantType != "authorization_code" || request.RedirectURI != origin+"/api/newapi/callback" {
 		communitySSOError(c, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -103,10 +129,13 @@ func CommunitySSOUserinfo(c *gin.Context) {
 		communitySSOError(c, http.StatusUnauthorized, "invalid_token")
 		return
 	}
-	identity, err := model.ConsumeCommunityIdentity(strings.TrimPrefix(auth, "Bearer "), communitySSOOrigin())
-	if err != nil {
-		communitySSOError(c, http.StatusUnauthorized, "invalid_token")
-		return
+	// Failed audience checks roll back consumption; only an explicitly allowed grant can succeed.
+	for _, origin := range ssoOrigins("COMMUNITY_SSO") {
+		identity, err := model.ConsumeCommunityIdentity(strings.TrimPrefix(auth, "Bearer "), origin)
+		if err == nil {
+			c.JSON(http.StatusOK, identity)
+			return
+		}
 	}
-	c.JSON(http.StatusOK, identity)
+	communitySSOError(c, http.StatusUnauthorized, "invalid_token")
 }

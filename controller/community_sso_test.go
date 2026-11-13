@@ -195,3 +195,91 @@ func TestCommunitySSOServerExchangeBudget(t *testing.T) {
 		require.Equal(t, 200, r.Code)
 	}
 }
+
+func TestCommunitySSOMultipleOriginsStayIsolated(t *testing.T) {
+	const added = "https://zaiduyu.top"
+	for _, origin := range []string{communityTestOrigin, added} {
+		t.Run(origin, func(t *testing.T) {
+			user, identity := setupCommunitySSOTest(t)
+			t.Setenv("COMMUNITY_SSO_ORIGIN", communityTestOrigin)
+			t.Setenv("COMMUNITY_SSO_ALLOWED_ORIGINS", added)
+			body := communityTestRequest()
+			body["client_id"], body["redirect_uri"] = origin, origin+"/api/newapi/callback"
+			r := communityTestCall(t, body, identity, CommunitySSOAuthorize)
+			require.Equal(t, 200, r.Code, r.Body.String())
+			var grant map[string]string
+			require.NoError(t, common.Unmarshal(r.Body.Bytes(), &grant))
+			callback, err := url.Parse(grant["redirect_uri"])
+			require.NoError(t, err)
+			other := added
+			if origin == added {
+				other = communityTestOrigin
+			}
+			exchange := map[string]string{"grant_type": "authorization_code", "client_id": other, "redirect_uri": other + "/api/newapi/callback", "code": callback.Query().Get("code"), "code_verifier": communityTestVerifier}
+			require.Equal(t, 400, communityTestCall(t, exchange, identity, CommunitySSOToken).Code)
+			exchange["client_id"], exchange["redirect_uri"] = origin, origin+"/api/newapi/callback"
+			r = communityTestCall(t, exchange, identity, CommunitySSOToken)
+			require.Equal(t, 200, r.Code, r.Body.String())
+			var tokens map[string]any
+			require.NoError(t, common.Unmarshal(r.Body.Bytes(), &tokens))
+			require.Equal(t, 400, communityTestCall(t, exchange, identity, CommunitySSOToken).Code)
+			for attempt := range 2 {
+				response := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(response)
+				c.Request = httptest.NewRequest("GET", "/userinfo", nil)
+				c.Request.Header.Set("Authorization", "Bearer "+tokens["access_token"].(string))
+				CommunitySSOUserinfo(c)
+				if attempt == 0 {
+					require.Equal(t, 200, response.Code, response.Body.String())
+					var claims map[string]string
+					require.NoError(t, common.Unmarshal(response.Body.Bytes(), &claims))
+					require.Equal(t, strconv.Itoa(user.Id), claims["sub"])
+				} else {
+					require.Equal(t, 401, response.Code)
+				}
+			}
+		})
+	}
+}
+
+func TestCommunitySSOExplicitAllowlistAndRemoval(t *testing.T) {
+	_, identity := setupCommunitySSOTest(t)
+	t.Setenv("COMMUNITY_SSO_ORIGIN", communityTestOrigin)
+	t.Setenv("COMMUNITY_SSO_ALLOWED_ORIGINS", "https://zaiduyu.top,https://*.example,http://unsafe.example,https://path.example/path,https://user@info.example,https://query.example?x=1")
+	t.Setenv("STUDIO_SSO_ALLOWED_ORIGINS", "https://studio-only.example")
+	for _, origin := range []string{"https://evil.example", "https://zaiduyu.top.evil.example", "https://studio-only.example", "https://*.example", "http://unsafe.example", "https://path.example", "https://info.example", "https://query.example"} {
+		body := communityTestRequest()
+		body["client_id"], body["redirect_uri"] = origin, origin+"/api/newapi/callback"
+		require.Equal(t, 400, communityTestCall(t, body, identity, CommunitySSOAuthorize).Code, origin)
+	}
+	body := communityTestRequest()
+	body["client_id"] = "https://zaiduyu.top"
+	require.Equal(t, 400, communityTestCall(t, body, identity, CommunitySSOAuthorize).Code)
+	code, err := model.CreateCommunityGrant(model.AuthSessionIdentity(identity), "https://zaiduyu.top", body["code_challenge"])
+	require.NoError(t, err)
+	token, err := model.ExchangeCommunityGrant(code, "https://zaiduyu.top", communityTestVerifier)
+	require.NoError(t, err)
+	t.Setenv("COMMUNITY_SSO_ALLOWED_ORIGINS", "")
+	r := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(r)
+	c.Request = httptest.NewRequest("GET", "/userinfo", nil)
+	c.Request.Header.Set("Authorization", "Bearer "+token)
+	CommunitySSOUserinfo(c)
+	require.Equal(t, 401, r.Code)
+}
+
+func TestCommunitySSOConfigPreservesDefaults(t *testing.T) {
+	t.Setenv("COMMUNITY_SSO_ORIGIN", communityTestOrigin)
+	t.Setenv("STUDIO_SSO_ORIGIN", studioTestOrigin)
+	t.Setenv("COMMUNITY_SSO_ALLOWED_ORIGINS", "https://zaiduyu.top,"+communityTestOrigin)
+	t.Setenv("STUDIO_SSO_ALLOWED_ORIGINS", "https://zaiduyu.top")
+	r := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(r)
+	CommunitySSOConfig(c)
+	var config map[string]any
+	require.NoError(t, common.Unmarshal(r.Body.Bytes(), &config))
+	require.Equal(t, communityTestOrigin, config["community_origin"])
+	require.Equal(t, studioTestOrigin, config["studio_origin"])
+	require.Equal(t, []any{communityTestOrigin, "https://zaiduyu.top"}, config["community_origins"])
+	require.Equal(t, []any{studioTestOrigin, "https://zaiduyu.top"}, config["studio_origins"])
+}
