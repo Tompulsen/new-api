@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"html"
@@ -14,6 +16,49 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 )
+
+var registrationEmailLimiter common.InMemoryRateLimiter
+
+const registrationEmailLimitScript = `
+local count = tonumber(redis.call('GET', KEYS[2]) or '0')
+if count >= 10 then
+    return math.max(1, redis.call('TTL', KEYS[2]))
+end
+if redis.call('EXISTS', KEYS[1]) == 1 then
+    return math.max(1, redis.call('TTL', KEYS[1]))
+end
+redis.call('SET', KEYS[1], '1', 'EX', 60)
+if redis.call('INCR', KEYS[2]) == 1 then
+    redis.call('EXPIRE', KEYS[2], 86400)
+end
+return 0`
+
+// CheckRegistrationEmailRateLimit counts admitted send attempts, including uncertain delivery failures.
+func CheckRegistrationEmailRateLimit(ctx context.Context, email string) (int64, error) {
+	key := fmt.Sprintf("registration-email:{%x}", sha256.Sum256([]byte(model.NormalizeEmail(email))))
+	if common.RedisEnabled {
+		if common.RDB == nil {
+			return 0, errors.New("registration email Redis client is unavailable")
+		}
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		return common.RDB.Eval(ctx, registrationEmailLimitScript, []string{key + ":cooldown", key + ":day"}).Int64()
+	}
+
+	registrationEmailLimiter.Init(24 * time.Hour)
+	cooldown := registrationEmailLimiter.Reserve(key+":cooldown", 1, 60)
+	if cooldown == nil {
+		return 60, nil
+	}
+	daily := registrationEmailLimiter.Reserve(key+":day", 10, 86400)
+	if daily == nil {
+		cooldown.Complete(false)
+		return 86400, nil
+	}
+	cooldown.Complete(true)
+	daily.Complete(true)
+	return 0, nil
+}
 
 var (
 	ErrAccountEmailInvalid    = errors.New("Please enter a valid email address")

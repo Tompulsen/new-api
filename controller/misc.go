@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -225,6 +226,17 @@ func SendEmailVerification(c *gin.Context) {
 
 	if model.IsEmailAlreadyTaken(email) {
 		common.ApiErrorT(c, "Email address is already in use")
+		return
+	}
+	waitSeconds, err := service.CheckRegistrationEmailRateLimit(c.Request.Context(), email)
+	if err != nil {
+		logger.LogError(c.Request.Context(), common.LogText("registration email rate limit failed: %v", err))
+		writeAccountStatusError(c, http.StatusServiceUnavailable, "Please try again later.")
+		return
+	}
+	if waitSeconds > 0 {
+		c.Header("Retry-After", strconv.FormatInt(waitSeconds, 10))
+		common.ApiErrorStatus(c, http.StatusTooManyRequests, common.NewMessage("Please wait {{seconds}} seconds before requesting another verification code.", map[string]any{"seconds": waitSeconds}))
 		return
 	}
 	code := common.GenerateVerificationCode(6)

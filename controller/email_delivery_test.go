@@ -1,22 +1,189 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/go-playground/validator/v10"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func setupRegistrationEmailLimit(t *testing.T) (*miniredis.Miniredis, *redis.Client, *gin.Engine, *atomic.Int32) {
+	t.Helper()
+	require.NoError(t, i18n.Init())
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1})
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(&model.User{}))
+	oldDB, oldRedis, oldClient, oldValidator := model.DB, common.RedisEnabled, common.RDB, common.Validate
+	oldDomain, oldAlias, oldTurnstile := common.EmailDomainRestrictionEnabled, common.EmailAliasRestrictionEnabled, common.TurnstileCheckEnabled
+	model.DB, common.RedisEnabled, common.RDB, common.Validate = database, true, client, validator.New()
+	common.EmailDomainRestrictionEnabled, common.EmailAliasRestrictionEnabled, common.TurnstileCheckEnabled = false, false, false
+	t.Cleanup(func() {
+		model.DB, common.RedisEnabled, common.RDB, common.Validate = oldDB, oldRedis, oldClient, oldValidator
+		common.EmailDomainRestrictionEnabled, common.EmailAliasRestrictionEnabled, common.TurnstileCheckEnabled = oldDomain, oldAlias, oldTurnstile
+		require.NoError(t, client.Close())
+		sqlDB, err := database.DB()
+		require.NoError(t, err)
+		require.NoError(t, sqlDB.Close())
+	})
+	configureEmailDelivery(t, map[string]string{"EmailProvider": "resend", "ResendApiKey": "test-key", "ResendFrom": "sender@example.com"})
+	deliveries := &atomic.Int32{}
+	http.DefaultTransport = emailHTTPTransport(func(*http.Request) (*http.Response, error) {
+		deliveries.Add(1)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"id":"email-test-id"}`)), Header: make(http.Header)}, nil
+	})
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.GET("/api/verification", middleware.TurnstileCheck(), SendEmailVerification)
+	return server, client, router, deliveries
+}
+
+func TestRegistrationEmailLimitSharesNormalizedMailboxAcrossIPs(t *testing.T) {
+	server, _, router, deliveries := setupRegistrationEmailLimit(t)
+	for i, email := range []string{" User@Example.com ", "user@example.com"} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/verification?email="+url.QueryEscape(email), nil)
+		request.RemoteAddr = []string{"192.0.2.1:1234", "192.0.2.2:1234"}[i]
+		router.ServeHTTP(response, request)
+		if i == 0 {
+			assert.Equal(t, http.StatusOK, response.Code)
+			assert.Contains(t, response.Body.String(), `"success":true`)
+		} else {
+			assert.Equal(t, http.StatusTooManyRequests, response.Code)
+			assert.Equal(t, "60", response.Header().Get("Retry-After"))
+		}
+	}
+	assert.EqualValues(t, 1, deliveries.Load())
+	require.Len(t, server.Keys(), 2)
+	for _, key := range server.Keys() {
+		assert.NotContains(t, key, "user@example.com")
+	}
+}
+
+func TestRegistrationEmailLimitCooldownAndDailyExpiry(t *testing.T) {
+	server, _, _, _ := setupRegistrationEmailLimit(t)
+	ctx := context.Background()
+	take := func(email string) int64 {
+		wait, err := service.CheckRegistrationEmailRateLimit(ctx, email)
+		require.NoError(t, err)
+		return wait
+	}
+	assert.Zero(t, take("window@example.com"))
+	assert.EqualValues(t, 60, take(" WINDOW@example.com "))
+	server.FastForward(59 * time.Second)
+	assert.EqualValues(t, 1, take("window@example.com"))
+	server.FastForward(time.Second)
+	for i := 1; i < 10; i++ {
+		assert.Zero(t, take("window@example.com"), "rejected cooldown requests must not consume the daily budget")
+		server.FastForward(time.Minute)
+	}
+	assert.EqualValues(t, 86400-600, take("window@example.com"))
+	assert.Zero(t, take("other@example.com"))
+	server.FastForward(24 * time.Hour)
+	assert.Zero(t, take("window@example.com"))
+}
+
+func TestRegistrationEmailLimitAdmitsOneConcurrentSend(t *testing.T) {
+	_, _, _, _ = setupRegistrationEmailLimit(t)
+	var group sync.WaitGroup
+	var admitted, failed atomic.Int32
+	for range 12 {
+		group.Go(func() {
+			wait, err := service.CheckRegistrationEmailRateLimit(context.Background(), "concurrent@example.com")
+			if err != nil {
+				failed.Add(1)
+			} else if wait == 0 {
+				admitted.Add(1)
+			}
+		})
+	}
+	group.Wait()
+	assert.Zero(t, failed.Load())
+	assert.EqualValues(t, 1, admitted.Load())
+}
+
+func TestRegistrationEmailLimitDoesNotCountInvalidChallengeOrMailbox(t *testing.T) {
+	server, _, router, deliveries := setupRegistrationEmailLimit(t)
+	common.TurnstileCheckEnabled = true
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/verification?email=user@example.com", nil))
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	assert.Empty(t, server.Keys())
+	common.TurnstileCheckEnabled = false
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/verification?email=invalid", nil))
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	assert.Empty(t, server.Keys())
+	assert.Zero(t, deliveries.Load())
+}
+
+func TestRegistrationEmailLimitRetainsAttemptAfterUncertainDelivery(t *testing.T) {
+	_, _, router, deliveries := setupRegistrationEmailLimit(t)
+	http.DefaultTransport = emailHTTPTransport(func(*http.Request) (*http.Response, error) {
+		deliveries.Add(1)
+		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(`{"message":"test failure"}`)), Header: make(http.Header)}, nil
+	})
+	for i := range 2 {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/verification?email=uncertain@example.com", nil))
+		if i == 0 {
+			assert.Contains(t, response.Body.String(), `"success":false`)
+		} else {
+			assert.Equal(t, http.StatusTooManyRequests, response.Code)
+		}
+	}
+	assert.EqualValues(t, 1, deliveries.Load())
+}
+
+func TestRegistrationEmailLimitFailsClosedWhenRedisIsUnavailable(t *testing.T) {
+	server, _, router, deliveries := setupRegistrationEmailLimit(t)
+	server.Close()
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/verification?email=unavailable@example.com", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+	assert.NotContains(t, response.Body.String(), "redis")
+	assert.Zero(t, deliveries.Load())
+}
+
+func TestRegistrationEmailLimitWithoutRedis(t *testing.T) {
+	_, _, _, _ = setupRegistrationEmailLimit(t)
+	common.RedisEnabled = false
+	namespace := filepath.Base(filepath.Dir(t.TempDir()))
+	email := namespace[len(namespace)-10:] + "@example.com"
+	wait, err := service.CheckRegistrationEmailRateLimit(context.Background(), email)
+	require.NoError(t, err)
+	assert.Zero(t, wait)
+	wait, err = service.CheckRegistrationEmailRateLimit(context.Background(), " "+strings.ToUpper(email)+" ")
+	require.NoError(t, err)
+	assert.EqualValues(t, 60, wait)
+	wait, err = service.CheckRegistrationEmailRateLimit(context.Background(), "other-"+email)
+	require.NoError(t, err)
+	assert.Zero(t, wait)
+}
 
 type emailHTTPTransport func(*http.Request) (*http.Response, error)
 
