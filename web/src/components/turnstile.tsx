@@ -16,61 +16,95 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useRef } from 'react'
+import { useEffect, useEffectEvent, useRef } from 'react'
 
 declare global {
   interface Window {
     turnstile?: {
-      render: (element: HTMLElement, options: Record<string, unknown>) => void
+      render: (element: HTMLElement, options: Record<string, unknown>) => string
+      remove: (widgetId: string) => void
     }
   }
 }
 
 interface TurnstileProps {
   siteKey: string
+  action?: string
   onVerify: (token: string) => void
   onExpire?: () => void
   className?: string
 }
 
-export function Turnstile({
-  siteKey,
-  onVerify,
-  onExpire,
-  className,
-}: TurnstileProps) {
+export function Turnstile(props: TurnstileProps) {
   const ref = useRef<HTMLDivElement | null>(null)
+  const onVerify = useEffectEvent((token: string) => props.onVerify(token))
+  const onExpire = useEffectEvent(() => {
+    props.onExpire?.()
+  })
 
   useEffect(() => {
+    let active = true
+    let widgetId: string | undefined
     const render = () => {
-      if (!ref.current || !window.turnstile) return
+      if (
+        !active ||
+        widgetId !== undefined ||
+        !ref.current ||
+        !window.turnstile
+      ) {
+        return
+      }
       try {
-        window.turnstile.render(ref.current, {
-          sitekey: siteKey,
-          callback: (token: string) => onVerify(token),
-          'error-callback': () => onExpire?.(),
-          'expired-callback': () => onExpire?.(),
+        widgetId = window.turnstile.render(ref.current, {
+          sitekey: props.siteKey,
+          action: props.action,
+          'refresh-expired': 'auto',
+          retry: 'auto',
+          callback: (token: string) => {
+            if (active) onVerify(token)
+          },
+          'error-callback': () => {
+            if (active) onExpire()
+          },
+          'expired-callback': () => {
+            if (active) onExpire()
+          },
+          'timeout-callback': () => {
+            if (active) onExpire()
+          },
         })
       } catch {
-        /* empty */
+        onExpire()
       }
     }
-
-    if (window.turnstile) {
-      render()
-      return
+    const onError = () => {
+      script?.remove()
+      if (active) onExpire()
     }
     const scriptId = 'cf-turnstile'
-    if (document.getElementById(scriptId)) return
-    const s = document.createElement('script')
-    s.id = scriptId
-    s.src =
-      'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
-    s.async = true
-    s.defer = true
-    s.onload = () => render()
-    document.head.appendChild(s)
-  }, [siteKey, onVerify, onExpire])
+    let script = document.querySelector<HTMLScriptElement>(`#${scriptId}`)
+    if (!window.turnstile) {
+      if (!script) {
+        script = document.createElement('script')
+        script.id = scriptId
+        script.src =
+          'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+        script.async = true
+        script.defer = true
+        document.head.appendChild(script)
+      }
+      script.addEventListener('load', render)
+      script.addEventListener('error', onError)
+    } else {
+      render()
+    }
+    return () => {
+      active = false
+      script?.removeEventListener('load', render)
+      script?.removeEventListener('error', onError)
+      if (widgetId !== undefined) window.turnstile?.remove(widgetId)
+    }
+  }, [props.siteKey, props.action])
 
-  return <div ref={ref} className={className} />
+  return <div ref={ref} className={props.className} />
 }

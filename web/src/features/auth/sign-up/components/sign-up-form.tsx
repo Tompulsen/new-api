@@ -86,6 +86,7 @@ export function SignUpForm({
   } = useEmailVerification({
     turnstileToken,
     validateTurnstile,
+    onTurnstileConsumed: resetTurnstile,
   })
 
   const form = useForm<z.infer<typeof registerFormSchema>>({
@@ -140,6 +141,7 @@ export function SignUpForm({
   }, [])
 
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
+    if (isLoading || isSendingCode) return
     if (requiresLegalConsent && !agreedToLegal) {
       toast.error(legalConsentErrorMessage)
       return
@@ -159,6 +161,8 @@ export function SignUpForm({
 
     if (!validateTurnstile()) return
 
+    const submittedToken = turnstileToken
+    resetTurnstile()
     setIsLoading(true)
     try {
       const res = await register({
@@ -167,7 +171,7 @@ export function SignUpForm({
         email: data.email || undefined,
         verification_code: verificationCode || undefined,
         aff_code: getAffiliateCode(),
-        turnstile: turnstileToken,
+        turnstile: submittedToken,
       })
 
       if (res?.success) {
@@ -185,11 +189,16 @@ export function SignUpForm({
     }
   }
 
-  async function handleSendVerificationCode() {
-    if (await sendCode(emailValue || '')) {
+  function resetTurnstile() {
+    if (isTurnstileEnabled) {
       setTurnstileToken('')
       setTurnstileWidgetKey((current) => current + 1)
     }
+  }
+
+  async function handleSendVerificationCode() {
+    if (isLoading || isSendingCode || isActive) return
+    await sendCode(emailValue || '')
   }
 
   const handleOpenWeChatDialog = () => {
@@ -356,7 +365,9 @@ export function SignUpForm({
             <Turnstile
               key={turnstileWidgetKey}
               siteKey={turnstileSiteKey}
+              action='registration'
               onVerify={setTurnstileToken}
+              onExpire={() => setTurnstileToken('')}
             />
           </div>
         )}
@@ -374,6 +385,7 @@ export function SignUpForm({
           className='mt-2 w-full justify-center gap-2'
           disabled={
             isLoading ||
+            isSendingCode ||
             (requiresLegalConsent && !agreedToLegal) ||
             !turnstileReady
           }
