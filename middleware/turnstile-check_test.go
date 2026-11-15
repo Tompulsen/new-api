@@ -72,7 +72,11 @@ func TestTurnstileRegistrationRejectsInvalidProviderEvidence(t *testing.T) {
 	}{
 		{"wrong hostname", `{"success":true,"hostname":"evil.example","action":"registration"}`, 200},
 		{"hostname suffix", `{"success":true,"hostname":"zhangyuapi.com.evil.example","action":"registration"}`, 200},
+		{"www hostname suffix", `{"success":true,"hostname":"www.zhangyuapi.com.evil.example","action":"registration"}`, 200},
+		{"nested www hostname", `{"success":true,"hostname":"evil.www.zhangyuapi.com","action":"registration"}`, 200},
+		{"API hostname", `{"success":true,"hostname":"api.zhangyuapi.com","action":"registration"}`, 200},
 		{"wrong action", `{"success":true,"hostname":"zhangyuapi.com","action":"login"}`, 200},
+		{"www wrong action", `{"success":true,"hostname":"www.zhangyuapi.com","action":"login"}`, 200},
 		{"missing metadata", `{"success":true}`, 200},
 		{"expired or failed", `{"success":false,"error-codes":["timeout-or-duplicate"]}`, 200},
 		{"invalid JSON", `{`, 200},
@@ -91,6 +95,26 @@ func TestTurnstileRegistrationRejectsInvalidProviderEvidence(t *testing.T) {
 			assert.Contains(t, response.Body.String(), `"success":false`)
 			assert.NotEqual(t, http.StatusNoContent, response.Code)
 			assert.Empty(t, server.Keys(), "failed validation must not consume replay storage")
+		})
+	}
+}
+
+func TestTurnstileRegistrationAcceptsConfiguredHostnameAndWWW(t *testing.T) {
+	for _, hostname := range []string{"zhangyuapi.com", "www.zhangyuapi.com", "WWW.ZHANGYUAPI.COM"} {
+		t.Run(hostname, func(t *testing.T) {
+			router, _ := setupTurnstileTest(t)
+			body, err := common.Marshal(turnstileCheckResponse{
+				Success: true, Hostname: hostname, Action: "registration",
+			})
+			require.NoError(t, err)
+			http.DefaultTransport = turnstileTestTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+			})
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/verification?turnstile=www-token", nil)
+			request.Host = "untrusted.example"
+			router.ServeHTTP(response, request)
+			assert.Equal(t, http.StatusNoContent, response.Code)
 		})
 	}
 }

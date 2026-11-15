@@ -81,7 +81,9 @@ func TurnstileCheck(actions ...string) gin.HandlerFunc {
 				trustedURL, err := url.Parse(system_setting.ServerAddress)
 				if err != nil || (trustedURL.Scheme != "https" && trustedURL.Scheme != "http") ||
 					trustedURL.Hostname() == "" || trustedURL.User != nil ||
-					!strings.EqualFold(res.Hostname, trustedURL.Hostname()) || res.Action != expectedAction {
+					(!strings.EqualFold(res.Hostname, trustedURL.Hostname()) &&
+						!strings.EqualFold(res.Hostname, "www."+strings.TrimPrefix(strings.ToLower(trustedURL.Hostname()), "www."))) ||
+					res.Action != expectedAction {
 					common.ApiErrorT(c, "Turnstile verification failed, please refresh and try again!")
 					c.Abort()
 					return
