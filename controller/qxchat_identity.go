@@ -135,7 +135,7 @@ var qxchatSessionNonce = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 func readQXChatSessionRequest(c *gin.Context) ([]byte, error) {
 	secret := os.Getenv("QXCHAT_SESSION_SECRET")
-	if !service.QXChatIdentityEnabled() || len(secret) < 32 || ssoOrigin("QXCHAT_SSO_ORIGIN") == "" || c.Request.URL.RawQuery != "" || c.GetHeader("Content-Encoding") != "" {
+	if !service.QXChatIdentityEnabled() || len(secret) < 32 || len(ssoOrigins("QXCHAT_SSO")) == 0 || c.Request.URL.RawQuery != "" || c.GetHeader("Content-Encoding") != "" {
 		return nil, model.ErrAuthFlowInvalid
 	}
 	stamp, nonce := c.GetHeader("X-QXChat-Timestamp"), c.GetHeader("X-QXChat-Nonce")
@@ -184,12 +184,15 @@ func QXChatSessionExchange(c *gin.Context) {
 		writeQXChatSessionResponse(c, http.StatusBadRequest, gin.H{"active": false})
 		return
 	}
-	identity, err := model.ExchangeQXChatSession(request.AccessToken, ssoOrigin("QXCHAT_SSO_ORIGIN"))
-	if err != nil {
-		writeQXChatSessionResponse(c, http.StatusUnauthorized, gin.H{"active": false})
-		return
+	// Failed audience checks roll back consumption, as in CommunitySSOUserinfo.
+	for _, origin := range ssoOrigins("QXCHAT_SSO") {
+		identity, err := model.ExchangeQXChatSession(request.AccessToken, origin)
+		if err == nil {
+			writeQXChatSessionResponse(c, http.StatusOK, identity)
+			return
+		}
 	}
-	writeQXChatSessionResponse(c, http.StatusOK, identity)
+	writeQXChatSessionResponse(c, http.StatusUnauthorized, gin.H{"active": false})
 }
 
 func QXChatSessionValidate(c *gin.Context) {
@@ -207,10 +210,12 @@ func QXChatSessionValidate(c *gin.Context) {
 		writeQXChatSessionResponse(c, http.StatusBadRequest, gin.H{"active": false})
 		return
 	}
-	identity, err := model.ValidateQXChatSession(request.SessionProof, ssoOrigin("QXCHAT_SSO_ORIGIN"), request.SourceID, request.UserID)
-	if err != nil {
-		writeQXChatSessionResponse(c, http.StatusUnauthorized, gin.H{"active": false})
-		return
+	for _, origin := range ssoOrigins("QXCHAT_SSO") {
+		identity, err := model.ValidateQXChatSession(request.SessionProof, origin, request.SourceID, request.UserID)
+		if err == nil {
+			writeQXChatSessionResponse(c, http.StatusOK, identity)
+			return
+		}
 	}
-	writeQXChatSessionResponse(c, http.StatusOK, identity)
+	writeQXChatSessionResponse(c, http.StatusUnauthorized, gin.H{"active": false})
 }

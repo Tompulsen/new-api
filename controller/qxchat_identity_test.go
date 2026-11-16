@@ -420,3 +420,65 @@ func TestQXChatSSOSessionProofIsBoundToLiveParentSession(t *testing.T) {
 		})
 	}
 }
+
+func TestQXChatSSOSessionOrigins(t *testing.T) {
+	const primary = "https://qxchat.example.com"
+	const regional = "https://qxchat-regional.example.com"
+	const community = "https://community.example.com"
+	for _, scenario := range []struct {
+		name, primary, allowed, origin string
+		permitted                     bool
+	}{
+		{"primary", primary, regional, primary, true},
+		{"regional", primary, regional, regional, true},
+		{"allowlist only", "", regional, regional, true},
+		{"community only", primary, regional, community, false},
+		{"unlisted", primary, regional, "https://unlisted.example.com", false},
+		{"invalid HTTP origin", primary, "http://qxchat-regional.example.com", regional, false},
+		{"disabled", "", "", primary, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			user, auth := setupQXChatIdentityTest(t)
+			startQXChatSourceFixture(t)
+			t.Setenv("QXCHAT_SESSION_SECRET", qxchatTestSecret)
+			t.Setenv("QXCHAT_SSO_ORIGIN", scenario.primary)
+			t.Setenv("QXCHAT_SSO_ALLOWED_ORIGINS", scenario.allowed)
+			t.Setenv("COMMUNITY_SSO_ORIGIN", community)
+			t.Setenv("COMMUNITY_SSO_ALLOWED_ORIGINS", primary+","+regional)
+			require.NoError(t, model.DB.Create(&model.QXChatIdentity{SourceID: qxchatTestSource, UserID: user.Id, SourceUsername: "legacy-user", SourceEmail: "legacy@example.com", RequestID: qxchatTestRequest, CredentialVersion: strings.Repeat("a", 64), AuthorityVersion: 1, State: model.QXChatIdentityActive}).Error)
+			verifier := strings.Repeat("v", 43)
+			digest := sha256.Sum256([]byte(verifier))
+			code, err := model.CreateCommunityGrant(auth, scenario.origin, base64.RawURLEncoding.EncodeToString(digest[:]))
+			require.NoError(t, err)
+			token, err := model.ExchangeCommunityGrant(code, scenario.origin, verifier)
+			require.NoError(t, err)
+			response := qxchatSessionRequest(t, "/api/qxchat/session/exchange", map[string]string{"access_token": token}, strings.Repeat("1", 32), QXChatSessionExchange)
+			var proof model.QXChatSessionIdentity
+			if scenario.permitted {
+				require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &proof))
+			} else {
+				require.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
+				// A rejected audience must leave the one-use token unconsumed.
+				created, err := model.ExchangeQXChatSession(token, scenario.origin)
+				require.NoError(t, err)
+				proof = *created
+			}
+			request := map[string]any{"session_proof": proof.SessionProof, "source_id": qxchatTestSource, "newapi_user_id": user.Id}
+			response = qxchatSessionRequest(t, "/api/qxchat/session/validate", request, strings.Repeat("2", 32), QXChatSessionValidate)
+			if !scenario.permitted {
+				assert.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
+				return
+			}
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			assert.NotContains(t, response.Body.String(), proof.SessionProof)
+			if scenario.origin == primary {
+				t.Setenv("QXCHAT_SSO_ORIGIN", "")
+			} else {
+				t.Setenv("QXCHAT_SSO_ALLOWED_ORIGINS", "")
+			}
+			response = qxchatSessionRequest(t, "/api/qxchat/session/validate", request, strings.Repeat("3", 32), QXChatSessionValidate)
+			assert.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
+		})
+	}
+}
