@@ -451,6 +451,13 @@ func ImportQXChatWallet(request WalletImportRequest, digest string) (*UnifiedWal
 	if err!=nil { return nil,err }
 	if !qxchatSourceID.MatchString(request.SourceUserID) || request.NewAPIUserID<=0 || request.BindingVersion<=0 { return nil,ErrWalletConflict }
 	var receipt UnifiedWalletReceipt
+ // A committed receipt is immutable: recovery must survive later revocation.
+ err=DB.First(&receipt,"transfer_id = ?",request.TransferID).Error
+ if err==nil {
+  if receipt.UserID!=request.NewAPIUserID || receipt.SourceUserID!=request.SourceUserID || receipt.BindingVersion!=request.BindingVersion || receipt.Digest!=digest || receipt.Status!="credited" { return nil,ErrWalletConflict }
+  return &receipt,nil
+ }
+ if !errors.Is(err,gorm.ErrRecordNotFound) { return nil,err }
 	err=DB.Transaction(func(tx *gorm.DB) error {
   var identity QXChatIdentity
   if err:=lockForUpdate(tx).Where("source_id = ?",request.SourceUserID).First(&identity).Error;err!=nil { return err }
@@ -459,9 +466,9 @@ func ImportQXChatWallet(request WalletImportRequest, digest string) (*UnifiedWal
 		user,_,err:=lockUnifiedWallet(tx,identity.UserID)
 		if err!=nil { return err }
   if user.Status!=common.UserStatusEnabled { return ErrQXChatIdentityInactive }
-		err=tx.First(&receipt,"transfer_id = ?",request.TransferID).Error
+		err=lockForUpdate(tx).First(&receipt,"transfer_id = ?",request.TransferID).Error
 		if err==nil {
-			if receipt.UserID!=identity.UserID || receipt.Digest!=digest || receipt.Status!="credited" { return ErrWalletConflict }
+			if receipt.UserID!=identity.UserID || receipt.SourceUserID!=request.SourceUserID || receipt.BindingVersion!=request.BindingVersion || receipt.Digest!=digest || receipt.Status!="credited" { return ErrWalletConflict }
 			return nil
 		}
 		if !errors.Is(err,gorm.ErrRecordNotFound) { return err }

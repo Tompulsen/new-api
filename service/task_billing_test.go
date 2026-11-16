@@ -1857,7 +1857,7 @@ func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
 }
 
 func TestUnifiedWalletBillingSessionLifecycle(t *testing.T) {
- for _,scenario:=range []string{"sync-zero-delta","async-reprice","playground-refund"} {
+ for _,scenario:=range []string{"sync-zero-delta","async-reprice","playground-refund","free-intent"} {
   t.Run(scenario,func(t *testing.T){
    truncate(t)
    t.Setenv("UNIFIED_WALLET_ENABLED","true")
@@ -1873,10 +1873,16 @@ func TestUnifiedWalletBillingSessionLifecycle(t *testing.T) {
    ctx.Set(common.CommunityWalletUserKey,1);ctx.Set(common.CommunityWalletOperationKey,id)
    info:=&relaycommon.RelayInfo{UserId:1,TokenId:1,TokenKey:"wallet-service-token",TokenUnlimited:false,RequestId:"wallet-service-request",ForcePreConsume:scenario=="async-reprice",IsPlayground:scenario=="playground-refund"}
    info.UserSetting.BillingPreference="subscription_only"
-   session,apiErr:=NewBillingSession(ctx,info,50);require.Nil(t,apiErr);require.NotNil(t,session)
+   initial:=50;if scenario=="free-intent" { initial=0 }
+   session,apiErr:=NewBillingSession(ctx,info,initial);require.Nil(t,apiErr);require.NotNil(t,session)
    info.Billing=session
    require.Equal(t,id,info.WalletOperationID)
    switch scenario {
+   case "free-intent":
+    again,duplicateErr:=NewBillingSession(ctx,info,0);assert.Nil(t,again);assert.NotNil(t,duplicateErr)
+    require.NoError(t,session.Settle(0))
+    again,duplicateErr=NewBillingSession(ctx,info,0);assert.Nil(t,again);assert.NotNil(t,duplicateErr)
+    var operation model.UnifiedWalletOperation;require.NoError(t,model.DB.First(&operation,"id = ?",id).Error);assert.Equal(t,"settled",operation.State)
    case "sync-zero-delta":
     require.NoError(t,session.Settle(50));require.NoError(t,session.Settle(50));session.Refund(ctx)
     var operation model.UnifiedWalletOperation;require.NoError(t,model.DB.First(&operation,"id = ?",id).Error)

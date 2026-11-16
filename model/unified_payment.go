@@ -3,6 +3,7 @@ package model
 import (
  "errors"
  "strings"
+ "strconv"
  "time"
  "github.com/QuantumNous/new-api/common"
  "github.com/shopspring/decimal"
@@ -34,7 +35,10 @@ func creditCompletedTopUp(tx *gorm.DB,topup *TopUp,quota int,updates map[string]
   fact:=payment[0]
   if len(fact.Currency)>8 || len(fact.Reference)>191 || (fact.Currency=="CNY" && (fact.PrincipalFen<=0 || fact.PrincipalFen>int64(common.MaxWalletQuota)/50 || strings.TrimSpace(fact.Reference)=="")) { return ErrInvalidTopUpQuota }
   // Epay's signed amount must match the frozen order amount, not current prices.
-  if fact.Currency=="CNY" && topup.PaymentProvider==PaymentProviderEpay && !decimal.NewFromFloat(topup.Money).Round(2).Equal(decimal.NewFromInt(fact.PrincipalFen).Div(decimal.NewFromInt(100))) { return ErrWalletConflict }
+  if fact.Currency=="CNY" && topup.PaymentProvider==PaymentProviderEpay {
+   frozen,err:=decimal.NewFromString(strconv.FormatFloat(topup.Money,'f',2,64))
+   if err!=nil || !frozen.Equal(decimal.NewFromInt(fact.PrincipalFen).Div(decimal.NewFromInt(100))) { return ErrWalletConflict }
+  }
   topup.PaymentCurrency=fact.Currency
   topup.PaymentPrincipalFen=0
   if fact.Currency=="CNY" { topup.PaymentPrincipalFen=fact.PrincipalFen }

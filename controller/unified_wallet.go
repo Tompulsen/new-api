@@ -13,8 +13,8 @@ import (
 
 func RegisterUnifiedWalletRoutes(api *gin.RouterGroup) {
 	api.GET("/user/self/wallet",middleware.UserAuth(),middleware.DisableCache(),getUnifiedWallet)
-	api.POST("/qxchat/wallet/import",middleware.CriticalRateLimit(),middleware.QXChatWalletProof(),importQXChatWallet)
-	api.GET("/qxchat/wallet/receipts/:transfer_id",middleware.CriticalRateLimit(),middleware.QXChatWalletProof(),getQXChatWalletReceipt)
+	api.POST("/qxchat/wallet/import",middleware.CommunitySSOExchangeRateLimit(),middleware.QXChatWalletProof(),importQXChatWallet)
+	api.GET("/qxchat/wallet/receipts/:transfer_id",middleware.CommunitySSOExchangeRateLimit(),middleware.QXChatWalletProof(),getQXChatWalletReceipt)
 }
 
 func walletAPIError(c *gin.Context,err error) {

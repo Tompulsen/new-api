@@ -321,3 +321,50 @@ func TestUnifiedWalletTopUpSchemaUpgrade(t *testing.T) {
  view,err:=GetUnifiedWallet(user.Id);require.NoError(t,err)
  assert.Equal(t,int64(123),view.LegacyAPIQuota);assert.Equal(t,"0",view.PermanentPoints)
 }
+
+func TestUnifiedWalletImportedCharityNeverBecomesAPIQuota(t *testing.T) {
+ unifiedWalletDatabase(t)
+ user:=createReserveTestUser(t,0)
+ identity:=QXChatIdentity{SourceID:"52b34e97-7a0f-4e80-85a8-d511ed61aef5",UserID:user.Id,State:QXChatIdentityActive,AuthorityVersion:1}
+ require.NoError(t,DB.Create(&identity).Error)
+ expiry:=time.Now().Add(time.Hour).Unix()
+ request:=WalletImportRequest{TransferID:"charity-only-lifecycle",SourceUserID:identity.SourceID,NewAPIUserID:user.Id,BindingVersion:1,Lots:[]WalletImportLot{{SourceLotID:"charity",Points:100,ExpiresAt:&expiry}}}
+ _,err:=ImportQXChatWallet(request,strings.Repeat("c",64));require.NoError(t,err)
+ token:=unifiedWalletToken(t,user.Id,100)
+ check:=func(points string){
+  view,err:=GetUnifiedWallet(user.Id);require.NoError(t,err)
+  assert.Equal(t,points,view.CharityPoints);assert.Equal(t,"0",view.PermanentPoints)
+  assert.Zero(t,view.PaidAPIQuota);assert.Zero(t,view.LegacyAPIQuota);assert.Zero(t,view.TotalAPIQuota)
+  assert.Zero(t,getUserQuotaFromDB(t,user.Id))
+  assert.ErrorIs(t,BeginWalletOperation(user.Id,WalletReference("ordinary",points),WalletAPI,1,token.Id),ErrWalletInsufficient)
+ }
+ check("100")
+ id:=WalletReference("charity-only-consume")
+ require.NoError(t,BeginWalletOperation(user.Id,id,WalletCommunity,40,token.Id));check("60")
+ require.NoError(t,ChangeWalletOperation(user.Id,id,0,"refunded",false));check("100")
+ require.NoError(t,ChangeWalletOperation(user.Id,id,0,"refunded",false));check("100")
+ expiredID:=WalletReference("charity-before-expiry")
+ require.NoError(t,BeginWalletOperation(user.Id,expiredID,WalletCommunity,30,token.Id))
+ require.NoError(t,DB.Model(&UnifiedWalletLot{}).Where("user_id = ? AND kind = ?",user.Id,WalletCharity).Update("expires_at",time.Now().Add(-time.Second).Unix()).Error)
+ require.NoError(t,ChangeWalletOperation(user.Id,expiredID,0,"refunded",false));check("0")
+ assert.Equal(t,100,getTokenFromDB(t,token.Id).RemainQuota)
+ var paidLots int64;require.NoError(t,DB.Model(&UnifiedWalletLot{}).Where("user_id = ? AND kind = ?",user.Id,WalletPaid).Count(&paidLots).Error);assert.Zero(t,paidLots)
+}
+
+func TestUnifiedWalletReceiptRecoveryAfterAccountRevocation(t *testing.T) {
+ unifiedWalletDatabase(t)
+ user:=createReserveTestUser(t,0)
+ identity:=QXChatIdentity{SourceID:"52b34e97-7a0f-4e80-85a8-d511ed61aef5",UserID:user.Id,State:QXChatIdentityActive,AuthorityVersion:1}
+ require.NoError(t,DB.Create(&identity).Error)
+ request:=WalletImportRequest{TransferID:"receipt-after-revocation",SourceUserID:identity.SourceID,NewAPIUserID:user.Id,BindingVersion:1,Lots:[]WalletImportLot{{SourceLotID:"one",Points:25}}}
+ digest:=strings.Repeat("d",64)
+ receipt,err:=ImportQXChatWallet(request,digest);require.NoError(t,err)
+ require.NoError(t,DB.Model(&user).Update("status",common.UserStatusDisabled).Error)
+ require.NoError(t,DB.Model(&identity).Update("authority_version",2).Error)
+ recovered,err:=ImportQXChatWallet(request,digest);require.NoError(t,err);assert.Equal(t,*receipt,*recovered)
+ _,err=ImportQXChatWallet(request,strings.Repeat("e",64));assert.ErrorIs(t,err,ErrWalletConflict)
+ request.TransferID="new-transfer-after-revocation"
+ _,err=ImportQXChatWallet(request,digest);assert.Error(t,err)
+ var count int64;require.NoError(t,DB.Model(&UnifiedWalletLot{}).Where("user_id = ?",user.Id).Count(&count).Error);assert.Equal(t,int64(1),count)
+ assert.Zero(t,getUserQuotaFromDB(t,user.Id))
+}

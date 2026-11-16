@@ -330,11 +330,14 @@ func RequestEpay(c *gin.Context) {
 		paymentError(c, common.NewMessage("Payment information has not been configured by administrator"))
 		return
 	}
+ amountText:=strconv.FormatFloat(payMoney,'f',2,64)
+ frozenMoney,parseErr:=strconv.ParseFloat(amountText,64)
+ if parseErr!=nil || !(frozenMoney>=0.01) { paymentError(c,common.NewMessage("Payment amount is too low"));return }
 	uri, params, err := client.Purchase(&epay.PurchaseArgs{
 		Type:           req.PaymentMethod,
 		ServiceTradeNo: tradeNo,
 		Name:           fmt.Sprintf("TUC%d", req.Amount),
-		Money:          strconv.FormatFloat(payMoney, 'f', 2, 64),
+		Money:          amountText,
 		Device:         epay.PC,
 		NotifyUrl:      notifyUrl,
 		ReturnUrl:      returnUrl,
@@ -353,7 +356,7 @@ func RequestEpay(c *gin.Context) {
 	topUp := &model.TopUp{
 		UserId:          id,
 		Amount:          amount,
-		Money:           payMoney,
+		Money:           frozenMoney,
 		TradeNo:         tradeNo,
 		PaymentMethod:   req.PaymentMethod,
 		PaymentProvider: model.PaymentProviderEpay,

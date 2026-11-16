@@ -7,7 +7,7 @@ import (
 )
 
 func RegisterQXChatIdentityRoutes(api *gin.RouterGroup) {
-	api.POST("/qxchat/session/exchange", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.AnonymousRequestBodyLimit(), controller.QXChatSessionExchange)
+	api.POST("/qxchat/session/exchange", middleware.CommunitySSOExchangeRateLimit(), middleware.DisableCache(), middleware.AnonymousRequestBodyLimit(), controller.QXChatSessionExchange)
 	api.POST("/qxchat/session/validate", middleware.DisableCache(), middleware.AnonymousRequestBodyLimit(), controller.QXChatSessionValidate)
 	api.GET("/user/qxchat/config", middleware.DisableCache(), controller.QXChatIdentityConfig)
 	api.GET("/user/qxchat", middleware.UserAuth(), middleware.DisableCache(), controller.QXChatIdentityStatus)

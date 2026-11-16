@@ -184,6 +184,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 						usage.OutputTokenDetails.AudioTokens += realtimeUsage.OutputTokenDetails.AudioTokens
 						usage.OutputTokenDetails.TextTokens += realtimeUsage.OutputTokenDetails.TextTokens
 						quota, err = preConsumeUsage(c, info, usage, sumUsage)
+      localUsage = &dto.RealtimeUsage{}
 						if err != nil {
 							errChan <- fmt.Errorf("error consume usage: %v", err)
 							return
