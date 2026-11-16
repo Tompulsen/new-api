@@ -53,13 +53,14 @@ afterEach(() => {
 
 it('connects only after current-account verification with an identifier-bound single-use proof', async () => {
   const post = vi.spyOn(api, 'post').mockImplementation(async (url) => {
-    if (url === '/api/user/qxchat/bind')
+    if (url === '/api/user/qxchat/bind') {
       return {
         data: {
           success: true,
           data: { state: 'active', notification_warning: false },
         },
       }
+    }
     return {
       data: {
         success: true,
@@ -157,13 +158,14 @@ it('clears old credentials on an account change and on dismissal', async () => {
 
 it('does not report a successful connection after a source authentication failure', async () => {
   vi.spyOn(api, 'post').mockImplementation(async (url) => {
-    if (url === '/api/user/qxchat/bind')
+    if (url === '/api/user/qxchat/bind') {
       return {
         data: {
           success: false,
           message: 'Username or password is incorrect, or user has been banned',
         },
       }
+    }
     return {
       data: {
         success: true,

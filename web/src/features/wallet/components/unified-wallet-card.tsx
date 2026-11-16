@@ -48,9 +48,10 @@ export function UnifiedWalletCard() {
     meta: { errorToast: false },
   })
   if (!userID) return null
-  if (query.isPending)
+  if (query.isPending) {
     return <LoadingState inline message={t('Loading community points')} />
-  if (query.isError)
+  }
+  if (query.isError) {
     return (
       <ErrorState
         title={t('Community points are unavailable')}
@@ -58,6 +59,7 @@ export function UnifiedWalletCard() {
         className='min-h-0 py-4'
       />
     )
+  }
   if (!query.data.enabled) return null
   const language = i18n.resolvedLanguage || i18n.language
   return (

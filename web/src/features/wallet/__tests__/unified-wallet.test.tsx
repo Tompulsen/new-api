@@ -87,11 +87,9 @@ it('displays separate charity and permanent balances and changes formatting with
 })
 
 it('hides balances when disabled and does not use a previous account balance for a new session', async () => {
-  const get = vi
-    .spyOn(api, 'get')
-    .mockResolvedValue({
-      data: { success: true, data: { ...wallet, enabled: false } },
-    })
+  const get = vi.spyOn(api, 'get').mockResolvedValue({
+    data: { success: true, data: { ...wallet, enabled: false } },
+  })
   render(
     <QueryClientProvider client={client}>
       <UnifiedWalletCard />
