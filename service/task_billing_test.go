@@ -1937,6 +1937,26 @@ func TestUnifiedWalletBillingSessionLifecycle(t *testing.T) {
 				assert.Equal(t, int64(100), lot.RemainingQuota)
 				assert.False(t, session.NeedsRefund())
 			}
+			var beforeLot model.UnifiedWalletLot
+			var beforeToken model.Token
+			require.NoError(t, model.DB.First(&beforeLot, lot.ID).Error)
+			require.NoError(t, model.DB.First(&beforeToken, 1).Error)
+			duplicateInfo := *info
+			duplicateInfo.Billing = nil
+			duplicateErr := PreConsumeBilling(ctx, initial, &duplicateInfo)
+			require.NotNil(t, duplicateErr)
+			assert.Equal(t, http.StatusConflict, duplicateErr.StatusCode)
+			assert.Equal(t, types.ErrorCodeInvalidRequest, duplicateErr.GetErrorCode())
+			assert.True(t, types.IsSkipRetryError(duplicateErr))
+			assert.False(t, types.IsRecordErrorLog(duplicateErr))
+			assert.Nil(t, duplicateInfo.Billing)
+			var afterLot model.UnifiedWalletLot
+			var afterToken model.Token
+			require.NoError(t, model.DB.First(&afterLot, lot.ID).Error)
+			require.NoError(t, model.DB.First(&afterToken, 1).Error)
+			assert.Equal(t, beforeLot.RemainingQuota, afterLot.RemainingQuota)
+			assert.Equal(t, beforeToken.RemainQuota, afterToken.RemainQuota)
+			assert.Equal(t, beforeToken.UsedQuota, afterToken.UsedQuota)
 			view, err := model.GetUnifiedWallet(1)
 			require.NoError(t, err)
 			assert.Zero(t, view.TotalAPIQuota)
