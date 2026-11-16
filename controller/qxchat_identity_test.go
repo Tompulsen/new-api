@@ -427,7 +427,7 @@ func TestQXChatSSOSessionOrigins(t *testing.T) {
 	const community = "https://community.example.com"
 	for _, scenario := range []struct {
 		name, primary, allowed, origin string
-		permitted                     bool
+		permitted                      bool
 	}{
 		{"primary", primary, regional, primary, true},
 		{"regional", primary, regional, regional, true},
