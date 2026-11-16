@@ -475,15 +475,22 @@ func WaffoPancakeWebhook(c *gin.Context) {
 	}
 
 	logger.LogInfo(c.Request.Context(), common.LogText("Waffo Pancake webhook signature verified event_type=%s event_id=%s order_id=%s client_ip=%s", event.NormalizedEventType(), event.ID, event.Data.OrderID, c.ClientIP()))
-	if event.NormalizedEventType()=="refund.succeeded" && model.UnifiedWalletEnabled() {
-  payment,paymentErr:=model.VerifiedPaymentMajor(event.Data.Currency,event.Data.Amount,event.Data.OrderID)
-  if paymentErr!=nil { c.String(http.StatusBadRequest,"invalid amount");return }
-  if payment.Currency=="CNY" {
-   if err:=model.ReverseVerifiedPayment(model.PaymentProviderWaffoPancake,payment.Reference,event.ID,payment.PrincipalFen,false);err!=nil { c.String(http.StatusInternalServerError,"retry");return }
-  }
-  c.String(http.StatusOK,"OK");return
- }
- if event.NormalizedEventType() != "order.completed" {
+	if event.NormalizedEventType() == "refund.succeeded" && model.UnifiedWalletEnabled() {
+		payment, paymentErr := model.VerifiedPaymentMajor(event.Data.Currency, event.Data.Amount, event.Data.OrderID)
+		if paymentErr != nil {
+			c.String(http.StatusBadRequest, "invalid amount")
+			return
+		}
+		if payment.Currency == "CNY" {
+			if err := model.ReverseVerifiedPayment(model.PaymentProviderWaffoPancake, payment.Reference, event.ID, payment.PrincipalFen, false); err != nil {
+				c.String(http.StatusInternalServerError, "retry")
+				return
+			}
+		}
+		c.String(http.StatusOK, "OK")
+		return
+	}
+	if event.NormalizedEventType() != "order.completed" {
 		c.String(http.StatusOK, "OK")
 		return
 	}
@@ -531,9 +538,12 @@ func WaffoPancakeWebhook(c *gin.Context) {
 	LockOrder(tradeNo)
 	defer UnlockOrder(tradeNo)
 
-	payment,paymentErr:=model.VerifiedPaymentMajor(event.Data.Currency,event.Data.Amount,event.Data.OrderID)
-	if paymentErr!=nil { c.String(http.StatusBadRequest,"invalid amount");return }
-	if err := model.RechargeWaffoPancake(tradeNo,payment); err != nil {
+	payment, paymentErr := model.VerifiedPaymentMajor(event.Data.Currency, event.Data.Amount, event.Data.OrderID)
+	if paymentErr != nil {
+		c.String(http.StatusBadRequest, "invalid amount")
+		return
+	}
+	if err := model.RechargeWaffoPancake(tradeNo, payment); err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("Waffo Pancake top-up processing failed trade_no=%s event_id=%s order_id=%s client_ip=%s error=%q", tradeNo, event.ID, event.Data.OrderID, c.ClientIP(), err.Error()))
 		c.String(http.StatusInternalServerError, "retry")
 		return

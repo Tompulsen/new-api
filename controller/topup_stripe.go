@@ -192,14 +192,28 @@ func StripeWebhook(c *gin.Context) {
 	logger.LogInfo(ctx, common.LogText("Stripe webhook signature verified event_type=%s client_ip=%s path=%q", string(event.Type), callerIp, c.Request.RequestURI))
 	switch event.Type {
 	case stripe.EventTypeChargeRefunded:
-  amount,parseErr:=strconv.ParseInt(event.GetObjectValue("amount_refunded"),10,64)
-  if parseErr!=nil || amount<=0 { c.AbortWithStatus(http.StatusBadRequest);return }
-  if err:=model.ReverseVerifiedPayment(model.PaymentProviderStripe,event.GetObjectValue("payment_intent"),event.ID,amount,true);err!=nil { logger.LogError(ctx,"Stripe wallet reversal failed: "+err.Error());c.AbortWithStatus(http.StatusInternalServerError);return }
- case stripe.EventTypeChargeDisputeFundsWithdrawn:
-  amount,parseErr:=strconv.ParseInt(event.GetObjectValue("amount"),10,64)
-  if parseErr!=nil || amount<=0 { c.AbortWithStatus(http.StatusBadRequest);return }
-  if err:=model.ReverseVerifiedPayment(model.PaymentProviderStripe,event.GetObjectValue("payment_intent"),event.ID,amount,true);err!=nil { logger.LogError(ctx,"Stripe wallet dispute reversal failed: "+err.Error());c.AbortWithStatus(http.StatusInternalServerError);return }
- case stripe.EventTypeCheckoutSessionCompleted:
+		amount, parseErr := strconv.ParseInt(event.GetObjectValue("amount_refunded"), 10, 64)
+		if parseErr != nil || amount <= 0 {
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if err := model.ReverseVerifiedPayment(model.PaymentProviderStripe, event.GetObjectValue("payment_intent"), event.ID, amount, true); err != nil {
+			logger.LogError(ctx, "Stripe wallet reversal failed: "+err.Error())
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+	case stripe.EventTypeChargeDisputeFundsWithdrawn:
+		amount, parseErr := strconv.ParseInt(event.GetObjectValue("amount"), 10, 64)
+		if parseErr != nil || amount <= 0 {
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if err := model.ReverseVerifiedPayment(model.PaymentProviderStripe, event.GetObjectValue("payment_intent"), event.ID, amount, true); err != nil {
+			logger.LogError(ctx, "Stripe wallet dispute reversal failed: "+err.Error())
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+	case stripe.EventTypeCheckoutSessionCompleted:
 		sessionCompleted(ctx, event, callerIp)
 	case stripe.EventTypeCheckoutSessionExpired:
 		sessionExpired(ctx, event)
@@ -303,9 +317,12 @@ func fulfillOrder(ctx context.Context, event stripe.Event, referenceId string, c
 		return
 	}
 
-	principal,parseErr:=strconv.ParseInt(event.GetObjectValue("amount_total"),10,64)
-	if parseErr!=nil || principal<=0 { logger.LogError(ctx,"invalid Stripe payment amount");return }
-	err := model.Recharge(referenceId, customerId, callerIp,model.VerifiedTopUpPayment{Currency:strings.ToUpper(event.GetObjectValue("currency")),PrincipalFen:principal,Reference:event.GetObjectValue("payment_intent")})
+	principal, parseErr := strconv.ParseInt(event.GetObjectValue("amount_total"), 10, 64)
+	if parseErr != nil || principal <= 0 {
+		logger.LogError(ctx, "invalid Stripe payment amount")
+		return
+	}
+	err := model.Recharge(referenceId, customerId, callerIp, model.VerifiedTopUpPayment{Currency: strings.ToUpper(event.GetObjectValue("currency")), PrincipalFen: principal, Reference: event.GetObjectValue("payment_intent")})
 	if err != nil {
 		logger.LogError(ctx, common.LogText("Stripe top-up processing failed trade_no=%s event_type=%s client_ip=%s error=%q", referenceId, string(event.Type), callerIp, err.Error()))
 		return

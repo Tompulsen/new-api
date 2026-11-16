@@ -806,8 +806,10 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		}
 		if requiredQuota > 0 {
 			var chargeErr error
-			if UnifiedWalletEnabled() { chargeErr = UnifiedWalletDeltaTx(tx,userId,-int64(requiredQuota),true,WalletReference("subscription-purchase",common.NewRequestId())) } else {
-				chargeErr = tx.Model(&User{}).Where("id = ?", userId).Update("quota",gorm.Expr("quota - ?",requiredQuota)).Error
+			if UnifiedWalletEnabled() {
+				chargeErr = UnifiedWalletDeltaTx(tx, userId, -int64(requiredQuota), true, WalletReference("subscription-purchase", common.NewRequestId()))
+			} else {
+				chargeErr = tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota - ?", requiredQuota)).Error
 			}
 			if chargeErr != nil {
 				return chargeErr

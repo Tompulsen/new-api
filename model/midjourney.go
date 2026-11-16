@@ -4,28 +4,28 @@ import "gorm.io/gorm"
 
 type Midjourney struct {
 	WalletOperationID string `json:"-" gorm:"type:varchar(64);index"`
-	Id          int    `json:"id"`
-	Code        int    `json:"code"`
-	UserId      int    `json:"user_id" gorm:"index"`
-	Action      string `json:"action" gorm:"type:varchar(40);index"`
-	MjId        string `json:"mj_id" gorm:"index"`
-	Prompt      string `json:"prompt"`
-	PromptEn    string `json:"prompt_en"`
-	Description string `json:"description"`
-	State       string `json:"state"`
-	SubmitTime  int64  `json:"submit_time" gorm:"index"`
-	StartTime   int64  `json:"start_time" gorm:"index"`
-	FinishTime  int64  `json:"finish_time" gorm:"index"`
-	ImageUrl    string `json:"image_url"`
-	VideoUrl    string `json:"video_url"`
-	VideoUrls   string `json:"video_urls"`
-	Status      string `json:"status" gorm:"type:varchar(20);index"`
-	Progress    string `json:"progress" gorm:"type:varchar(30);index"`
-	FailReason  string `json:"fail_reason"`
-	ChannelId   int    `json:"channel_id"`
-	Quota       int    `json:"quota"`
-	Buttons     string `json:"buttons"`
-	Properties  string `json:"properties"`
+	Id                int    `json:"id"`
+	Code              int    `json:"code"`
+	UserId            int    `json:"user_id" gorm:"index"`
+	Action            string `json:"action" gorm:"type:varchar(40);index"`
+	MjId              string `json:"mj_id" gorm:"index"`
+	Prompt            string `json:"prompt"`
+	PromptEn          string `json:"prompt_en"`
+	Description       string `json:"description"`
+	State             string `json:"state"`
+	SubmitTime        int64  `json:"submit_time" gorm:"index"`
+	StartTime         int64  `json:"start_time" gorm:"index"`
+	FinishTime        int64  `json:"finish_time" gorm:"index"`
+	ImageUrl          string `json:"image_url"`
+	VideoUrl          string `json:"video_url"`
+	VideoUrls         string `json:"video_urls"`
+	Status            string `json:"status" gorm:"type:varchar(20);index"`
+	Progress          string `json:"progress" gorm:"type:varchar(30);index"`
+	FailReason        string `json:"fail_reason"`
+	ChannelId         int    `json:"channel_id"`
+	Quota             int    `json:"quota"`
+	Buttons           string `json:"buttons"`
+	Properties        string `json:"properties"`
 
 	TokenId          int `json:"-" gorm:"default:0"`
 	BillingChannelId int `json:"-" gorm:"default:0"`
@@ -100,8 +100,10 @@ func GetAllUnFinishTasks() []*Midjourney {
 	var tasks []*Midjourney
 	var err error
 	// get all tasks progress is not 100%
-	query:=DB.Where("progress != ?", "100%")
-	if UnifiedWalletEnabled() { query=query.Or("id IN (?)",DB.Model(&UnifiedWalletOperation{}).Select("midjourney_id").Where("state = ? AND midjourney_id > 0","reserved")) }
+	query := DB.Where("progress != ?", "100%")
+	if UnifiedWalletEnabled() {
+		query = query.Or("id IN (?)", DB.Model(&UnifiedWalletOperation{}).Select("midjourney_id").Where("state = ? AND midjourney_id > 0", "reserved"))
+	}
 	err = query.Find(&tasks).Error
 	if err != nil {
 		return nil
@@ -114,7 +116,12 @@ func GetAllUnFinishTasks() []*Midjourney {
 // whether the midjourney_poll system task needs to run; when no task is pending
 // the scheduler skips creating a row entirely.
 func HasUnfinishedMidjourneyTasks() bool {
-	if UnifiedWalletEnabled() { var pending int64;if err:=DB.Model(&UnifiedWalletOperation{}).Where("state = ? AND midjourney_id > 0","reserved").Limit(1).Count(&pending).Error;err==nil && pending>0 { return true } }
+	if UnifiedWalletEnabled() {
+		var pending int64
+		if err := DB.Model(&UnifiedWalletOperation{}).Where("state = ? AND midjourney_id > 0", "reserved").Limit(1).Count(&pending).Error; err == nil && pending > 0 {
+			return true
+		}
+	}
 	var id int
 	err := DB.Model(&Midjourney{}).
 		Where("progress != ?", "100%").
@@ -168,14 +175,21 @@ func UpdateProgress(id int, progress string) error {
 }
 
 func (midjourney *Midjourney) Insert() error {
- if UnifiedWalletEnabled() && midjourney.WalletOperationID!="" {
-  return DB.Transaction(func(tx *gorm.DB) error {
-   if err:=createWalletOperationTx(tx,midjourney.UserId,midjourney.TokenId,midjourney.WalletOperationID,WalletAPI,midjourney.Quota,"reserved",false);err!=nil { return err }
-   if err:=tx.Create(midjourney).Error;err!=nil { return err }
-   state:="reserved";if midjourney.Status=="SUCCESS" { state="settled" }
-   return tx.Model(&UnifiedWalletOperation{}).Where("id = ?",midjourney.WalletOperationID).Updates(map[string]any{"midjourney_id":midjourney.Id,"state":state}).Error
-  })
- }
+	if UnifiedWalletEnabled() && midjourney.WalletOperationID != "" {
+		return DB.Transaction(func(tx *gorm.DB) error {
+			if err := createWalletOperationTx(tx, midjourney.UserId, midjourney.TokenId, midjourney.WalletOperationID, WalletAPI, midjourney.Quota, "reserved", false); err != nil {
+				return err
+			}
+			if err := tx.Create(midjourney).Error; err != nil {
+				return err
+			}
+			state := "reserved"
+			if midjourney.Status == "SUCCESS" {
+				state = "settled"
+			}
+			return tx.Model(&UnifiedWalletOperation{}).Where("id = ?", midjourney.WalletOperationID).Updates(map[string]any{"midjourney_id": midjourney.Id, "state": state}).Error
+		})
+	}
 	var err error
 	err = DB.Create(midjourney).Error
 	return err
@@ -206,9 +220,11 @@ func (midjourney *Midjourney) GetBillingChannelId() int {
 // UpdateWithStatus performs a conditional UPDATE guarded by fromStatus (CAS).
 // Uses Model().Select("*").Updates() to avoid GORM Save()'s INSERT fallback.
 func (midjourney *Midjourney) UpdateWithStatus(fromStatus string) (bool, error) {
- query:=DB.Model(midjourney).Where("status = ?",fromStatus).Select("*")
- if UnifiedWalletEnabled() && midjourney.WalletOperationID!="" { query=query.Omit("quota") }
- result:=query.Updates(midjourney)
+	query := DB.Model(midjourney).Where("status = ?", fromStatus).Select("*")
+	if UnifiedWalletEnabled() && midjourney.WalletOperationID != "" {
+		query = query.Omit("quota")
+	}
+	result := query.Updates(midjourney)
 	if result.Error != nil {
 		return false, result.Error
 	}

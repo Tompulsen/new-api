@@ -39,7 +39,9 @@ func qxchatTestProfile() model.QXChatSourceProfile {
 func setupQXChatIdentityTest(t *testing.T) (*model.User, service.AuthIdentity) {
 	t.Helper()
 	user, identity := setupSecurityEnrollmentTest(t)
-	for range 2 { require.NoError(t, model.MigrateQXChatIdentity(model.DB)) }
+	for range 2 {
+		require.NoError(t, model.MigrateQXChatIdentity(model.DB))
+	}
 	var preserved model.User
 	require.NoError(t, model.DB.First(&preserved, user.Id).Error)
 	assert.Equal(t, user.Password, preserved.Password)
@@ -48,13 +50,13 @@ func setupQXChatIdentityTest(t *testing.T) (*model.User, service.AuthIdentity) {
 }
 
 type qxchatSourceFixture struct {
-	mu sync.Mutex
-	profile model.QXChatSourceProfile
-	committed *service.QXChatCommitRequest
-	prepareCalls, commitCalls int
+	mu                                        sync.Mutex
+	profile                                   model.QXChatSourceProfile
+	committed                                 *service.QXChatCommitRequest
+	prepareCalls, commitCalls                 int
 	loseReceipt, tamperResponse, refuseCommit bool
-	nonces map[string]bool
-	onCommit func() error
+	nonces                                    map[string]bool
+	onCommit                                  func() error
 }
 
 func startQXChatSourceFixture(t *testing.T) *qxchatSourceFixture {
@@ -64,7 +66,10 @@ func startQXChatSourceFixture(t *testing.T) *qxchatSourceFixture {
 		fixture.mu.Lock()
 		defer fixture.mu.Unlock()
 		body, err := io.ReadAll(r.Body)
-		if !assert.NoError(t, err) { w.WriteHeader(http.StatusInternalServerError); return }
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		digest := sha256.Sum256(body)
 		nonce := r.Header.Get("X-QXChat-Nonce")
 		canonical := strings.Join([]string{"qxchat-identity-v1", "POST", r.URL.Path, r.Header.Get("X-QXChat-Timestamp"), nonce, hex.EncodeToString(digest[:])}, "\n")
@@ -78,9 +83,12 @@ func startQXChatSourceFixture(t *testing.T) *qxchatSourceFixture {
 		switch r.URL.Path {
 		case "/api/account-unification/prepare":
 			fixture.prepareCalls++
-			var input struct { RequestID, Identifier, Password string }
+			var input struct{ RequestID, Identifier, Password string }
 			var request map[string]string
-			if common.Unmarshal(body, &request) != nil { w.WriteHeader(http.StatusBadRequest); return }
+			if common.Unmarshal(body, &request) != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
 			input.RequestID, input.Identifier, input.Password = request["request_id"], request["identifier"], request["password"]
 			if input.Password != qxchatTestPassword || fixture.committed != nil {
 				status, result = http.StatusUnauthorized, map[string]string{"error": "credentials"}
@@ -92,7 +100,10 @@ func startQXChatSourceFixture(t *testing.T) *qxchatSourceFixture {
 		case "/api/account-unification/commit":
 			fixture.commitCalls++
 			var input service.QXChatCommitRequest
-			if common.Unmarshal(body, &input) != nil { w.WriteHeader(http.StatusBadRequest); return }
+			if common.Unmarshal(body, &input) != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
 			if fixture.refuseCommit || input.CredentialVersion != fixture.profile.CredentialVersion || (fixture.committed != nil && *fixture.committed != input) {
 				status, result = http.StatusConflict, map[string]string{"error": "credentials changed"}
 			} else {
@@ -100,21 +111,32 @@ func startQXChatSourceFixture(t *testing.T) *qxchatSourceFixture {
 				if fixture.onCommit != nil {
 					hook := fixture.onCommit
 					fixture.onCommit = nil
-					if err := hook(); err != nil { w.WriteHeader(http.StatusInternalServerError); return }
+					if err := hook(); err != nil {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
 				}
 				result = map[string]any{"request_id": input.RequestID, "source_id": input.SourceID, "newapi_user_id": input.NewAPIUserID, "authority": "newapi", "authority_version": input.AuthorityVersion}
-				if fixture.loseReceipt { fixture.loseReceipt = false; status = http.StatusServiceUnavailable }
+				if fixture.loseReceipt {
+					fixture.loseReceipt = false
+					status = http.StatusServiceUnavailable
+				}
 			}
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		encoded, err := common.Marshal(result)
-		if !assert.NoError(t, err) { w.WriteHeader(http.StatusInternalServerError); return }
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		responseDigest := sha256.Sum256(encoded)
 		responseCanonical := strings.Join([]string{"qxchat-identity-response-v1", nonce, strconv.Itoa(status), hex.EncodeToString(responseDigest[:])}, "\n")
 		signature := common.GenerateHMACWithKey([]byte(qxchatTestSecret), responseCanonical)
-		if fixture.tamperResponse { signature = strings.Repeat("0", 64) }
+		if fixture.tamperResponse {
+			signature = strings.Repeat("0", 64)
+		}
 		w.Header().Set("X-QXChat-Signature", signature)
 		w.WriteHeader(status)
 		_, _ = w.Write(encoded)
@@ -312,7 +334,14 @@ func TestQXChatLoginPreservesMFA(t *testing.T) {
 		CredentialVersion: strings.Repeat("a", 64), AuthorityVersion: 1, State: model.QXChatIdentityActive}).Error)
 	require.NoError(t, model.DB.Create(&model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}).Error)
 	response := securityEnrollmentRequest("POST", "/api/user/login/qxchat", `{"username":"legacy-user","password":"enrollment-password"}`, "", service.AuthIdentity{}, QXChatIdentityLogin)
-	var result struct { Success bool `json:"success"`; Data struct { RequiresVerification bool `json:"requires_verification"`; FlowToken string `json:"flow_token"`; AccessToken string `json:"access_token"` } `json:"data"` }
+	var result struct {
+		Success bool `json:"success"`
+		Data    struct {
+			RequiresVerification bool   `json:"requires_verification"`
+			FlowToken            string `json:"flow_token"`
+			AccessToken          string `json:"access_token"`
+		} `json:"data"`
+	}
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
 	require.True(t, result.Success, response.Body.String())
 	assert.NotEmpty(t, result.Data.FlowToken)

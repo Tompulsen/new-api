@@ -150,7 +150,9 @@ func PrepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 					return ErrQXChatIdentityConflict
 				}
 				name := []rune(profile.DisplayName)
-				if len(name) > UserNameMaxLength { name = name[:UserNameMaxLength] }
+				if len(name) > UserNameMaxLength {
+					name = name[:UserNameMaxLength]
+				}
 				user = User{Username: username, Email: profile.Email, Password: hash, DisplayName: string(name), Role: common.RoleCommonUser,
 					Status: QXChatUserPendingStatus, Group: "default", AffCode: common.GetRandomString(16), AuthVersion: 1}
 				// Deliberately bypass Insert/FinishInsert: migration is not registration.
@@ -177,20 +179,30 @@ func ActivateQXChatIdentity(expected QXChatIdentity, target *AuthSessionIdentity
 			return ErrQXChatIdentityConflict
 		}
 		if !identity.Imported {
-			if target == nil || target.UserID != identity.UserID || strings.HasPrefix(target.SessionID, "pat:") { return ErrUserSessionInactive }
+			if target == nil || target.UserID != identity.UserID || strings.HasPrefix(target.SessionID, "pat:") {
+				return ErrUserSessionInactive
+			}
 			// A source commit cannot undo a target logout, password change or session revocation.
-			if err := ValidateAuthSessionWithTx(tx, *target); err != nil { return err }
+			if err := ValidateAuthSessionWithTx(tx, *target); err != nil {
+				return err
+			}
 		}
 		if err := lockForUpdate(tx).First(&user, identity.UserID).Error; err != nil {
 			return ErrQXChatIdentityInactive
 		}
 		if identity.State == QXChatIdentityActive {
-			if user.Status != common.UserStatusEnabled { return ErrQXChatIdentityInactive }
+			if user.Status != common.UserStatusEnabled {
+				return ErrQXChatIdentityInactive
+			}
 			return nil
 		}
 		if identity.Imported {
-			if user.Status != QXChatUserPendingStatus || !strings.HasPrefix(user.Password, common.QXChatPasswordPrefix) || user.AuthVersion != 1 { return ErrQXChatIdentityInactive }
-			if err := tx.Model(&user).Update("status", common.UserStatusEnabled).Error; err != nil { return err }
+			if user.Status != QXChatUserPendingStatus || !strings.HasPrefix(user.Password, common.QXChatPasswordPrefix) || user.AuthVersion != 1 {
+				return ErrQXChatIdentityInactive
+			}
+			if err := tx.Model(&user).Update("status", common.UserStatusEnabled).Error; err != nil {
+				return err
+			}
 			user.Status = common.UserStatusEnabled
 		} else if user.Status != common.UserStatusEnabled {
 			return ErrQXChatIdentityInactive
@@ -212,18 +224,28 @@ type QXChatSessionIdentity struct {
 
 // The one-use PKCE identity grant creates a QX-only server-side session reference.
 func ExchangeQXChatSession(token, origin string) (*QXChatSessionIdentity, error) {
-	if !communityOpaque.MatchString(token) || origin == "" { return nil, ErrAuthFlowInvalid }
+	if !communityOpaque.MatchString(token) || origin == "" {
+		return nil, ErrAuthFlowInvalid
+	}
 	var result QXChatSessionIdentity
 	_, err := ConsumeAuthFlowWithAction(token, AuthFlowMatch{Purpose: communityIdentityPurpose}, func(tx *gorm.DB, flow *AuthFlow) error {
 		grant, err := validateCommunityGrant(tx, flow, origin)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		var mapping QXChatIdentity
-		if err := tx.Where("user_id = ? AND state = ?", grant.UserID, QXChatIdentityActive).First(&mapping).Error; err != nil { return ErrQXChatIdentityInactive }
+		if err := tx.Where("user_id = ? AND state = ?", grant.UserID, QXChatIdentityActive).First(&mapping).Error; err != nil {
+			return ErrQXChatIdentityInactive
+		}
 		var session UserSession
-		if err := tx.Where("sid = ? AND user_id = ?", grant.SessionID, grant.UserID).First(&session).Error; err != nil { return err }
+		if err := tx.Where("sid = ? AND user_id = ?", grant.SessionID, grant.UserID).First(&session).Error; err != nil {
+			return err
+		}
 		expires := time.Unix(min(session.ExpiresAt, time.Now().Add(24*time.Hour).Unix()), 0)
 		proof, _, err := createAuthFlowWithTx(tx, AuthFlowCreate{Purpose: qxchatSessionPurpose, UserId: grant.UserID, SessionId: grant.SessionID, Payload: flow.Payload, ExpiresAt: expires})
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		result = QXChatSessionIdentity{Active: true, UserID: grant.UserID, SourceID: mapping.SourceID, AuthorityVersion: mapping.AuthorityVersion, Username: mapping.SourceUsername, SessionProof: proof, ExpiresAt: expires.Unix()}
 		return nil
 	})
@@ -231,15 +253,23 @@ func ExchangeQXChatSession(token, origin string) (*QXChatSessionIdentity, error)
 }
 
 func ValidateQXChatSession(proof, origin, sourceID string, userID int) (*QXChatSessionIdentity, error) {
-	if !communityOpaque.MatchString(proof) || origin == "" || !qxchatSourceID.MatchString(sourceID) || userID <= 0 { return nil, ErrAuthFlowInvalid }
+	if !communityOpaque.MatchString(proof) || origin == "" || !qxchatSourceID.MatchString(sourceID) || userID <= 0 {
+		return nil, ErrAuthFlowInvalid
+	}
 	var result QXChatSessionIdentity
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var flow AuthFlow
 		if err := applyAuthFlowMatch(tx, proof, AuthFlowMatch{Purpose: qxchatSessionPurpose, UserId: userID}).
-			Where("consumed_at IS NULL AND expires_at > ?", time.Now()).First(&flow).Error; err != nil { return ErrAuthFlowInvalid }
-		if _, err := validateCommunityGrant(tx, &flow, origin); err != nil { return err }
+			Where("consumed_at IS NULL AND expires_at > ?", time.Now()).First(&flow).Error; err != nil {
+			return ErrAuthFlowInvalid
+		}
+		if _, err := validateCommunityGrant(tx, &flow, origin); err != nil {
+			return err
+		}
 		var mapping QXChatIdentity
-		if err := tx.Where("source_id = ? AND user_id = ? AND state = ?", sourceID, userID, QXChatIdentityActive).First(&mapping).Error; err != nil { return ErrQXChatIdentityInactive }
+		if err := tx.Where("source_id = ? AND user_id = ? AND state = ?", sourceID, userID, QXChatIdentityActive).First(&mapping).Error; err != nil {
+			return ErrQXChatIdentityInactive
+		}
 		result = QXChatSessionIdentity{Active: true, UserID: userID, SourceID: mapping.SourceID, AuthorityVersion: mapping.AuthorityVersion, Username: mapping.SourceUsername, ExpiresAt: flow.ExpiresAt.Unix()}
 		return nil
 	})

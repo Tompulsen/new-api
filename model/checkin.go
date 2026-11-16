@@ -102,8 +102,10 @@ func userCheckinWithTransaction(checkin *Checkin, userId int, quotaAwarded int) 
 
 		// 步骤2: 在事务中增加用户额度
 		var creditErr error
-		if UnifiedWalletEnabled() { creditErr = UnifiedWalletDeltaTx(tx,userId,int64(quotaAwarded),false,WalletReference("checkin",strconv.Itoa(userId),checkin.CheckinDate)) } else {
-			creditErr = tx.Model(&User{}).Where("id = ?", userId).Update("quota",gorm.Expr("quota + ?",quotaAwarded)).Error
+		if UnifiedWalletEnabled() {
+			creditErr = UnifiedWalletDeltaTx(tx, userId, int64(quotaAwarded), false, WalletReference("checkin", strconv.Itoa(userId), checkin.CheckinDate))
+		} else {
+			creditErr = tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", quotaAwarded)).Error
 		}
 		if creditErr != nil {
 			return common.NewMessage("Check-in failed: quota update error")

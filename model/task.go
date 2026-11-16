@@ -112,9 +112,9 @@ func (m Properties) Value() (driver.Value, error) {
 
 type TaskPrivateData struct {
 	WalletOperationID string `json:"wallet_operation_id,omitempty"`
-	Key            string `json:"key,omitempty"`
-	UpstreamTaskID string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
-	ResultURL      string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
+	Key               string `json:"key,omitempty"`
+	UpstreamTaskID    string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
+	ResultURL         string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
 	// Execution records safe, immutable request provenance. It lives next to
 	// other private task state so public task DTOs cannot expose it by accident.
 	Execution *TaskExecutionSnapshot `json:"execution,omitempty"`
@@ -416,8 +416,10 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 	var tasks []*Task
 	var err error
 	// get all tasks progress is not 100%
-	query:=DB.Where("progress != ? AND status NOT IN ?", "100%",[]string{TaskStatusFailure,TaskStatusSuccess})
-	if UnifiedWalletEnabled() { query=query.Or("id IN (?)",DB.Model(&UnifiedWalletOperation{}).Select("task_id").Where("state = ? AND task_id > 0","reserved")) }
+	query := DB.Where("progress != ? AND status NOT IN ?", "100%", []string{TaskStatusFailure, TaskStatusSuccess})
+	if UnifiedWalletEnabled() {
+		query = query.Or("id IN (?)", DB.Model(&UnifiedWalletOperation{}).Select("task_id").Where("state = ? AND task_id > 0", "reserved"))
+	}
 	err = query.Limit(limit).Order("id").Find(&tasks).Error
 	if err != nil {
 		return nil
@@ -430,7 +432,12 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 // whether the async_task_poll system task needs to run; when no task is pending
 // the scheduler skips creating a row entirely.
 func HasUnfinishedSyncTasks() bool {
-	if UnifiedWalletEnabled() { var pending int64; if err:=DB.Model(&UnifiedWalletOperation{}).Where("state = ? AND task_id > 0","reserved").Limit(1).Count(&pending).Error;err==nil && pending>0 { return true } }
+	if UnifiedWalletEnabled() {
+		var pending int64
+		if err := DB.Model(&UnifiedWalletOperation{}).Where("state = ? AND task_id > 0", "reserved").Limit(1).Count(&pending).Error; err == nil && pending > 0 {
+			return true
+		}
+	}
 	var id int64
 	err := DB.Model(&Task{}).
 		Where("progress != ?", "100%").
@@ -532,15 +539,25 @@ func (Task *Task) InsertWithContext(ctx context.Context, omitColumns ...string) 
 	if len(omitColumns) > 0 {
 		tx = tx.Omit(omitColumns...)
 	}
-	if UnifiedWalletEnabled() && Task.PrivateData.WalletOperationID!="" {
-  return tx.Transaction(func(walletTx *gorm.DB) error {
-   if _,_,err:=lockUnifiedWallet(walletTx,Task.UserId);err!=nil { return err }
-   if err:=walletTx.Create(Task).Error;err!=nil { return err }
-   result:=walletTx.Model(&UnifiedWalletOperation{}).Where("id = ? AND user_id = ? AND state = ? AND task_id = 0",Task.PrivateData.WalletOperationID,Task.UserId,"reserved").Update("task_id",Task.ID)
-   if result.Error!=nil { return result.Error };if result.RowsAffected!=1 { return ErrWalletConflict };return nil
-  })
- }
- return tx.Create(Task).Error
+	if UnifiedWalletEnabled() && Task.PrivateData.WalletOperationID != "" {
+		return tx.Transaction(func(walletTx *gorm.DB) error {
+			if _, _, err := lockUnifiedWallet(walletTx, Task.UserId); err != nil {
+				return err
+			}
+			if err := walletTx.Create(Task).Error; err != nil {
+				return err
+			}
+			result := walletTx.Model(&UnifiedWalletOperation{}).Where("id = ? AND user_id = ? AND state = ? AND task_id = 0", Task.PrivateData.WalletOperationID, Task.UserId, "reserved").Update("task_id", Task.ID)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrWalletConflict
+			}
+			return nil
+		})
+	}
+	return tx.Create(Task).Error
 }
 
 type taskSnapshot struct {
@@ -601,8 +618,10 @@ func (t *Task) UpdateQuota() error {
 // falls back to INSERT ON CONFLICT when the WHERE-guarded UPDATE matches
 // zero rows, which silently bypasses the CAS guard.
 func (t *Task) UpdateWithStatus(fromStatus TaskStatus) (bool, error) {
-	update:=DB.Model(t).Where("status = ?", fromStatus).Select("*")
-	if UnifiedWalletEnabled() && t.PrivateData.WalletOperationID!="" { update=update.Omit("quota") }
+	update := DB.Model(t).Where("status = ?", fromStatus).Select("*")
+	if UnifiedWalletEnabled() && t.PrivateData.WalletOperationID != "" {
+		update = update.Omit("quota")
+	}
 	result := update.Updates(t)
 	if result.Error != nil {
 		return false, result.Error

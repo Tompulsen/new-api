@@ -330,9 +330,12 @@ func RequestEpay(c *gin.Context) {
 		paymentError(c, common.NewMessage("Payment information has not been configured by administrator"))
 		return
 	}
- amountText:=strconv.FormatFloat(payMoney,'f',2,64)
- frozenMoney,parseErr:=strconv.ParseFloat(amountText,64)
- if parseErr!=nil || !(frozenMoney>=0.01) { paymentError(c,common.NewMessage("Payment amount is too low"));return }
+	amountText := strconv.FormatFloat(payMoney, 'f', 2, 64)
+	frozenMoney, parseErr := strconv.ParseFloat(amountText, 64)
+	if parseErr != nil || !(frozenMoney >= 0.01) {
+		paymentError(c, common.NewMessage("Payment amount is too low"))
+		return
+	}
 	uri, params, err := client.Purchase(&epay.PurchaseArgs{
 		Type:           req.PaymentMethod,
 		ServiceTradeNo: tradeNo,
@@ -477,9 +480,12 @@ func EpayNotify(c *gin.Context) {
 		// 数据库行锁 + 事务内状态校验保证（多实例部署下同样安全）。
 		LockOrder(verifyInfo.ServiceTradeNo)
 		defer UnlockOrder(verifyInfo.ServiceTradeNo)
-		payment,paymentErr:=model.VerifiedPaymentMajor("CNY",params["money"],params["trade_no"])
-		if paymentErr!=nil { c.String(http.StatusBadRequest,"fail");return }
-		alreadyDone, err := model.RechargeEpay(verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP(),payment)
+		payment, paymentErr := model.VerifiedPaymentMajor("CNY", params["money"], params["trade_no"])
+		if paymentErr != nil {
+			c.String(http.StatusBadRequest, "fail")
+			return
+		}
+		alreadyDone, err := model.RechargeEpay(verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP(), payment)
 		if err != nil {
 			switch {
 			case errors.Is(err, model.ErrTopUpNotFound):

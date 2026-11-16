@@ -13,22 +13,22 @@ import (
 )
 
 type TopUp struct {
-	Id              int                             `json:"id"`
-	UserId          int                             `json:"user_id" gorm:"index"`
-	Amount          int64                           `json:"amount"`
-	Money           float64                         `json:"money"`
-	TradeNo         string                          `json:"trade_no" gorm:"unique;type:varchar(255);index"`
-	PaymentMethod   string                          `json:"payment_method" gorm:"type:varchar(50)"`
-	PaymentProvider string                          `json:"payment_provider" gorm:"type:varchar(50);default:''"`
-	CreateTime      int64                           `json:"create_time"`
-	CompleteTime    int64                           `json:"complete_time"`
-	Status          string                          `json:"status"`
-	LotteryCredit   *CommunityLotteryCreditSnapshot `json:"-" gorm:"serializer:json;type:text"`
-	PaymentCurrency string `json:"payment_currency" gorm:"type:varchar(8)"`
-	PaymentPrincipalFen int64 `json:"payment_principal_fen" gorm:"type:bigint"`
-	PaymentVerified bool `json:"-"`
-	PaymentReference string `json:"-" gorm:"type:varchar(191);index"`
-	PaymentRefundedFen int64 `json:"payment_refunded_fen" gorm:"type:bigint"`
+	Id                  int                             `json:"id"`
+	UserId              int                             `json:"user_id" gorm:"index"`
+	Amount              int64                           `json:"amount"`
+	Money               float64                         `json:"money"`
+	TradeNo             string                          `json:"trade_no" gorm:"unique;type:varchar(255);index"`
+	PaymentMethod       string                          `json:"payment_method" gorm:"type:varchar(50)"`
+	PaymentProvider     string                          `json:"payment_provider" gorm:"type:varchar(50);default:''"`
+	CreateTime          int64                           `json:"create_time"`
+	CompleteTime        int64                           `json:"complete_time"`
+	Status              string                          `json:"status"`
+	LotteryCredit       *CommunityLotteryCreditSnapshot `json:"-" gorm:"serializer:json;type:text"`
+	PaymentCurrency     string                          `json:"payment_currency" gorm:"type:varchar(8)"`
+	PaymentPrincipalFen int64                           `json:"payment_principal_fen" gorm:"type:bigint"`
+	PaymentVerified     bool                            `json:"-"`
+	PaymentReference    string                          `json:"-" gorm:"type:varchar(191);index"`
+	PaymentRefundedFen  int64                           `json:"payment_refunded_fen" gorm:"type:bigint"`
 }
 
 const (
@@ -99,8 +99,12 @@ func creditTopUpQuota(tx *gorm.DB, userId int, creditedQuota int, updates map[st
 		return err
 	}
 	if UnifiedWalletEnabled() {
-		if err := UnifiedWalletDeltaTx(tx, userId, int64(creditedQuota), false, WalletReference("noncash-credit", common.NewRequestId())); err != nil { return err }
-		if len(updates) > 0 { return tx.Model(&User{}).Where("id = ?", userId).Updates(updates).Error }
+		if err := UnifiedWalletDeltaTx(tx, userId, int64(creditedQuota), false, WalletReference("noncash-credit", common.NewRequestId())); err != nil {
+			return err
+		}
+		if len(updates) > 0 {
+			return tx.Model(&User{}).Where("id = ?", userId).Updates(updates).Error
+		}
 		return nil
 	}
 
@@ -226,7 +230,7 @@ func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string, p
 		if err := tx.Save(topUp).Error; err != nil {
 			return err
 		}
-		return creditCompletedTopUp(tx,topUp,quotaToAdd,nil,payment...)
+		return creditCompletedTopUp(tx, topUp, quotaToAdd, nil, payment...)
 	})
 	if err != nil {
 		if !errors.Is(err, ErrTopUpNotFound) && !errors.Is(err, ErrPaymentMethodMismatch) && !errors.Is(err, ErrTopUpStatusInvalid) {
@@ -284,7 +288,7 @@ func Recharge(referenceId string, customerId string, callerIp string, payment ..
 		if err != nil || quota <= 0 {
 			return ErrInvalidTopUpQuota
 		}
-		return creditCompletedTopUp(tx,topUp,quota,map[string]any{"stripe_customer":customerId},payment...)
+		return creditCompletedTopUp(tx, topUp, quota, map[string]any{"stripe_customer": customerId}, payment...)
 	})
 
 	if err != nil {
@@ -589,7 +593,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 			}
 		}
 
-		return creditCompletedTopUp(tx,topUp,quota,updateFields,payment...)
+		return creditCompletedTopUp(tx, topUp, quota, updateFields, payment...)
 	})
 
 	if err != nil {
@@ -647,7 +651,7 @@ func RechargeWaffo(tradeNo string, callerIp string, payment ...VerifiedTopUpPaym
 			return err
 		}
 
-		return creditCompletedTopUp(tx,topUp,quotaToAdd,nil,payment...)
+		return creditCompletedTopUp(tx, topUp, quotaToAdd, nil, payment...)
 	})
 
 	if err != nil {
@@ -707,7 +711,7 @@ func RechargeWaffoPancake(tradeNo string, payment ...VerifiedTopUpPayment) (err 
 			return err
 		}
 
-		return creditCompletedTopUp(tx,topUp,quotaToAdd,nil,payment...)
+		return creditCompletedTopUp(tx, topUp, quotaToAdd, nil, payment...)
 	})
 
 	if err != nil {

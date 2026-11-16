@@ -30,7 +30,7 @@ import (
 type BillingSession struct {
 	relayInfo        *relaycommon.RelayInfo
 	funding          FundingSource
-	walletUsage int
+	walletUsage      int
 	preConsumedQuota int    // 实际预扣额度（信任用户可能为 0）
 	tokenConsumed    int    // 令牌额度实际扣减量
 	extraReserved    int    // 发送前补充预扣的额度（订阅退款时需要单独回滚）
@@ -95,7 +95,10 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	}
 	if funding, ok := s.funding.(*UnifiedWalletFunding); ok {
 		defer s.mu.Unlock()
-		if err := funding.Refund(); err != nil { common.SysError("unified wallet refund failed: " + err.Error()); return }
+		if err := funding.Refund(); err != nil {
+			common.SysError("unified wallet refund failed: " + err.Error())
+			return
+		}
 		s.refunded = true
 		return
 	}
@@ -148,7 +151,9 @@ func (s *BillingSession) needsRefundLocked() bool {
 		// fundingSettled 时资金来源已提交结算，不能再退预扣费
 		return false
 	}
-	if funding, ok := s.funding.(*UnifiedWalletFunding); ok { return funding.begun }
+	if funding, ok := s.funding.(*UnifiedWalletFunding); ok {
+		return funding.begun
+	}
 	if s.tokenConsumed > 0 {
 		return true
 	}
@@ -274,7 +279,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) error {
 	switch funding := s.funding.(type) {
 	case *UnifiedWalletFunding:
-		return funding.reserve(funding.consumed + delta, requireAvailableQuota)
+		return funding.reserve(funding.consumed+delta, requireAvailableQuota)
 	case *WalletFunding:
 		if requireAvailableQuota {
 			// Image quantities and task retry prices are known before
@@ -315,7 +320,9 @@ func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) e
 func (s *BillingSession) rollbackFundingReserve(delta int) {
 	switch funding := s.funding.(type) {
 	case *UnifiedWalletFunding:
-		if err:=funding.reserve(funding.consumed-delta,false);err!=nil { common.SysError(err.Error()) }
+		if err := funding.reserve(funding.consumed-delta, false); err != nil {
+			common.SysError(err.Error())
+		}
 	case *WalletFunding:
 		if err := model.IncreaseUserQuota(funding.userId, delta, false); err != nil {
 			common.SysLog(common.LogText("error rolling back wallet funding reserve: %s", err.Error()))
@@ -330,7 +337,9 @@ func (s *BillingSession) rollbackFundingReserve(delta int) {
 }
 
 func (s *BillingSession) reserveToken(delta int) error {
-	if _,ok:=s.funding.(*UnifiedWalletFunding);ok { return nil }
+	if _, ok := s.funding.(*UnifiedWalletFunding); ok {
+		return nil
+	}
 	if delta <= 0 || s.relayInfo.IsPlayground {
 		return nil
 	}
@@ -342,7 +351,9 @@ func (s *BillingSession) reserveToken(delta int) error {
 
 // shouldTrust 统一信任额度检查，适用于钱包和订阅。
 func (s *BillingSession) shouldTrust(c *gin.Context) bool {
-	if _,ok:=s.funding.(*UnifiedWalletFunding);ok { return false }
+	if _, ok := s.funding.(*UnifiedWalletFunding); ok {
+		return false
+	}
 	// 异步任务（ForcePreConsume=true）必须预扣全额，不允许信任旁路
 	if s.relayInfo.ForcePreConsume {
 		return false
@@ -382,7 +393,10 @@ func (s *BillingSession) syncRelayInfo() {
 	info := s.relayInfo
 	info.FinalPreConsumedQuota = s.preConsumedQuota
 	info.BillingSource = s.funding.Source()
-	if funding,ok:=s.funding.(*UnifiedWalletFunding);ok { info.WalletOperationID=funding.operationID; info.WalletMode=funding.mode }
+	if funding, ok := s.funding.(*UnifiedWalletFunding); ok {
+		info.WalletOperationID = funding.operationID
+		info.WalletMode = funding.mode
+	}
 
 	if sub, ok := s.funding.(*SubscriptionFunding); ok {
 		info.SubscriptionId = sub.subscriptionId
@@ -409,17 +423,27 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 	}
 
 	communityUser := c.GetInt(common.CommunityWalletUserKey)
-	if communityUser>0 && (communityUser!=relayInfo.UserId || !model.UnifiedWalletEnabled()) { return nil,types.NewErrorWithStatusCode(model.ErrWalletConflict,types.ErrorCodeInvalidRequest,http.StatusForbidden,types.ErrOptionWithSkipRetry()) }
+	if communityUser > 0 && (communityUser != relayInfo.UserId || !model.UnifiedWalletEnabled()) {
+		return nil, types.NewErrorWithStatusCode(model.ErrWalletConflict, types.ErrorCodeInvalidRequest, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+	}
 	pref := common.NormalizeBillingPreference(relayInfo.UserSetting.BillingPreference)
 
 	// 钱包路径需要先检查用户额度
 	tryWallet := func() (*BillingSession, *types.NewAPIError) {
 		if model.UnifiedWalletEnabled() {
-			mode,operationID:=model.WalletAPI,model.WalletReference("api",relayInfo.RequestId)
-			if communityUser>0 { mode,operationID=model.WalletCommunity,c.GetString(common.CommunityWalletOperationKey) }
-			tokenID:=relayInfo.TokenId; if relayInfo.IsPlayground { tokenID=0 }
-			session:=&BillingSession{relayInfo:relayInfo,lang:i18n.StatedLang(c),funding:&UnifiedWalletFunding{userID:relayInfo.UserId,tokenID:tokenID,operationID:operationID,mode:mode,deferFinal:relayInfo.ForcePreConsume}}
-			if apiErr:=session.preConsume(c,preConsumedQuota);apiErr!=nil { return nil,apiErr };return session,nil
+			mode, operationID := model.WalletAPI, model.WalletReference("api", relayInfo.RequestId)
+			if communityUser > 0 {
+				mode, operationID = model.WalletCommunity, c.GetString(common.CommunityWalletOperationKey)
+			}
+			tokenID := relayInfo.TokenId
+			if relayInfo.IsPlayground {
+				tokenID = 0
+			}
+			session := &BillingSession{relayInfo: relayInfo, lang: i18n.StatedLang(c), funding: &UnifiedWalletFunding{userID: relayInfo.UserId, tokenID: tokenID, operationID: operationID, mode: mode, deferFinal: relayInfo.ForcePreConsume}}
+			if apiErr := session.preConsume(c, preConsumedQuota); apiErr != nil {
+				return nil, apiErr
+			}
+			return session, nil
 		}
 		userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
 		if err != nil {
@@ -473,7 +497,9 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		return session, nil
 	}
 
-	if communityUser>0 { return tryWallet() }
+	if communityUser > 0 {
+		return tryWallet()
+	}
 	switch pref {
 	case "subscription_only":
 		return trySubscription()

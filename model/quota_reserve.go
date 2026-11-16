@@ -170,7 +170,9 @@ func TryReserveUserQuota(id int, quota int) (bool, error) {
 	}
 	if UnifiedWalletEnabled() {
 		err := UnifiedWalletDelta(id, -int64(quota), true)
-		if errors.Is(err, ErrWalletInsufficient) { return false, nil }
+		if errors.Is(err, ErrWalletInsufficient) {
+			return false, nil
+		}
 		return err == nil, err
 	}
 	if !common.RedisEnabled {
@@ -212,7 +214,9 @@ func TryReserveTokenQuota(id int, key string, quota int, unlimited bool) (bool, 
 		return true, nil
 	}
 	if UnifiedWalletEnabled() {
-		if unlimited { return true, decreaseTokenQuota(id, quota) }
+		if unlimited {
+			return true, decreaseTokenQuota(id, quota)
+		}
 		return reserveTokenQuotaDB(id, quota)
 	}
 	if unlimited {

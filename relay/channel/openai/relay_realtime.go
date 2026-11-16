@@ -184,7 +184,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 						usage.OutputTokenDetails.AudioTokens += realtimeUsage.OutputTokenDetails.AudioTokens
 						usage.OutputTokenDetails.TextTokens += realtimeUsage.OutputTokenDetails.TextTokens
 						quota, err = preConsumeUsage(c, info, usage, sumUsage)
-      localUsage = &dto.RealtimeUsage{}
+						localUsage = &dto.RealtimeUsage{}
 						if err != nil {
 							errChan <- fmt.Errorf("error consume usage: %v", err)
 							return
@@ -293,8 +293,8 @@ func preConsumeUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.R
 	totalUsage.OutputTokenDetails.TextTokens += usage.OutputTokenDetails.TextTokens
 	totalUsage.OutputTokenDetails.AudioTokens += usage.OutputTokenDetails.AudioTokens
 	// The response is already included in totalUsage even when charging stops
- // the connection. Do not count it again during the final drain.
- quota,err:=service.PreWssConsumeQuota(ctx, info, usage)
- *usage=dto.RealtimeUsage{}
- return quota,err
+	// the connection. Do not count it again during the final drain.
+	quota, err := service.PreWssConsumeQuota(ctx, info, usage)
+	*usage = dto.RealtimeUsage{}
+	return quota, err
 }

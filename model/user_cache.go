@@ -157,7 +157,9 @@ func cacheGetUserBase(userId int) (*UserBase, error) {
 // 通过守卫式 Lua 脚本执行：哈希不存在时直接跳过（下次读取会从数据库水合），
 // 不会像裸 HINCRBY 那样创建只含 Quota 字段的残缺哈希。
 func cacheIncrUserQuota(userId int, delta int64) error {
-	if UnifiedWalletEnabled() { return nil }
+	if UnifiedWalletEnabled() {
+		return nil
+	}
 	if !common.RedisEnabled {
 		return nil
 	}

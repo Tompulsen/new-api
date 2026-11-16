@@ -48,11 +48,15 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 	taskM := make(map[string]*model.Midjourney)
 	nullTaskIds := make([]int, 0)
 	for _, task := range tasks {
-  if task.WalletOperationID!="" && (task.Status=="SUCCESS" || task.Status=="FAILURE") {
-   if task.Status=="FAILURE" { service.RefundMidjourneyQuota(ctx,task,task.FailReason) } else if _,_,err:=model.ChangeWalletMidjourneyQuota(task,task.Quota,"settled");err!=nil { logger.LogError(ctx,"Midjourney wallet finalization failed: "+err.Error()) }
-   continue
-  }
-  if task.MjId == "" {
+		if task.WalletOperationID != "" && (task.Status == "SUCCESS" || task.Status == "FAILURE") {
+			if task.Status == "FAILURE" {
+				service.RefundMidjourneyQuota(ctx, task, task.FailReason)
+			} else if _, _, err := model.ChangeWalletMidjourneyQuota(task, task.Quota, "settled"); err != nil {
+				logger.LogError(ctx, "Midjourney wallet finalization failed: "+err.Error())
+			}
+			continue
+		}
+		if task.MjId == "" {
 			// 统计失败的未完成任务
 			nullTaskIds = append(nullTaskIds, task.Id)
 			continue

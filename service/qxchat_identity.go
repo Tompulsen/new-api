@@ -46,12 +46,18 @@ func callQXChatSource(ctx context.Context, path string, input, output any) error
 		return ErrQXChatUnavailable
 	}
 	body, err := common.Marshal(input)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	base.Path = path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base.String(), bytes.NewReader(body))
-	if err != nil { return ErrQXChatUnavailable }
+	if err != nil {
+		return ErrQXChatUnavailable
+	}
 	nonceBytes := make([]byte, 16)
-	if _, err := rand.Read(nonceBytes); err != nil { return err }
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return err
+	}
 	nonce := hex.EncodeToString(nonceBytes)
 	stamp := strconv.FormatInt(time.Now().Unix(), 10)
 	digest := sha256.Sum256(body)
@@ -63,16 +69,26 @@ func callQXChatSource(ctx context.Context, path string, input, output any) error
 	req.Header.Set("X-QXChat-Signature", common.GenerateHMACWithKey(secret, canonical))
 	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	res, err := client.Do(req)
-	if err != nil { return ErrQXChatUnavailable }
+	if err != nil {
+		return ErrQXChatUnavailable
+	}
 	defer res.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(res.Body, 32769))
-	if err != nil || len(responseBody) > 32768 { return ErrQXChatUnavailable }
+	if err != nil || len(responseBody) > 32768 {
+		return ErrQXChatUnavailable
+	}
 	responseDigest := sha256.Sum256(responseBody)
 	responseCanonical := strings.Join([]string{"qxchat-identity-response-v1", nonce, strconv.Itoa(res.StatusCode), hex.EncodeToString(responseDigest[:])}, "\n")
 	expected := common.GenerateHMACWithKey(secret, responseCanonical)
-	if !hmac.Equal([]byte(res.Header.Get("X-QXChat-Signature")), []byte(expected)) { return ErrQXChatUnavailable }
-	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden || res.StatusCode == http.StatusConflict { return model.ErrInvalidCredentials }
-	if res.StatusCode != http.StatusOK || common.Unmarshal(responseBody, output) != nil { return ErrQXChatUnavailable }
+	if !hmac.Equal([]byte(res.Header.Get("X-QXChat-Signature")), []byte(expected)) {
+		return ErrQXChatUnavailable
+	}
+	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden || res.StatusCode == http.StatusConflict {
+		return model.ErrInvalidCredentials
+	}
+	if res.StatusCode != http.StatusOK || common.Unmarshal(responseBody, output) != nil {
+		return ErrQXChatUnavailable
+	}
 	return nil
 }
 
@@ -87,82 +103,142 @@ type QXChatCommitRequest struct {
 func commitQXChatIdentity(ctx context.Context, identity *model.QXChatIdentity, target *AuthIdentity) (*model.User, error) {
 	request := QXChatCommitRequest{identity.RequestID, identity.SourceID, identity.UserID, identity.CredentialVersion, identity.AuthorityVersion}
 	var receipt struct {
-		RequestID string `json:"request_id"`
-		SourceID string `json:"source_id"`
-		NewAPIUserID int `json:"newapi_user_id"`
-		Authority string `json:"authority"`
-		AuthorityVersion int64 `json:"authority_version"`
+		RequestID        string `json:"request_id"`
+		SourceID         string `json:"source_id"`
+		NewAPIUserID     int    `json:"newapi_user_id"`
+		Authority        string `json:"authority"`
+		AuthorityVersion int64  `json:"authority_version"`
 	}
-	if err := callQXChatSource(ctx, qxchatCommitPath, request, &receipt); err != nil { return nil, err }
+	if err := callQXChatSource(ctx, qxchatCommitPath, request, &receipt); err != nil {
+		return nil, err
+	}
 	if receipt.RequestID != request.RequestID || receipt.SourceID != request.SourceID || receipt.NewAPIUserID != request.NewAPIUserID ||
-		receipt.Authority != "newapi" || receipt.AuthorityVersion != request.AuthorityVersion { return nil, ErrQXChatUnavailable }
+		receipt.Authority != "newapi" || receipt.AuthorityVersion != request.AuthorityVersion {
+		return nil, ErrQXChatUnavailable
+	}
 	user, err := model.ActivateQXChatIdentity(*identity, target)
-	if err != nil { return nil, err }
-	if err := model.PublishUserAuthCache(user.Id); err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
+	if err := model.PublishUserAuthCache(user.Id); err != nil {
+		return nil, err
+	}
 	return user, nil
 }
 
 func LoginQXChatIdentity(ctx context.Context, identifier, password string) (*model.User, error) {
-	if !QXChatIdentityEnabled() { return nil, ErrQXChatUnavailable }
+	if !QXChatIdentityEnabled() {
+		return nil, ErrQXChatUnavailable
+	}
 	identifier = strings.ToLower(strings.TrimSpace(identifier))
-	if identifier == "" || len(identifier) > 255 || password == "" || len(password) > 512 { return nil, model.ErrInvalidCredentials }
+	if identifier == "" || len(identifier) > 255 || password == "" || len(password) > 512 {
+		return nil, model.ErrInvalidCredentials
+	}
 	mapping, err := model.FindQXChatIdentity(identifier)
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) { return nil, err }
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
 	if err == nil {
 		var user model.User
-		if err := model.DB.First(&user, mapping.UserID).Error; err != nil { return nil, model.ErrInvalidCredentials }
+		if err := model.DB.First(&user, mapping.UserID).Error; err != nil {
+			return nil, model.ErrInvalidCredentials
+		}
 		if mapping.State == model.QXChatIdentityActive {
-			if user.Status != common.UserStatusEnabled || !common.ValidatePasswordAndHash(password, user.Password) { return nil, model.ErrInvalidCredentials }
+			if user.Status != common.UserStatusEnabled || !common.ValidatePasswordAndHash(password, user.Password) {
+				return nil, model.ErrInvalidCredentials
+			}
 			return &user, nil
 		}
-		if !mapping.Imported { return nil, model.ErrQXChatIdentityConflict }
+		if !mapping.Imported {
+			return nil, model.ErrQXChatIdentityConflict
+		}
 		// Resume after a lost source receipt without re-enabling the old credential authority.
 		if user.Status == model.QXChatUserPendingStatus && common.ValidatePasswordAndHash(password, user.Password) {
 			user, err := commitQXChatIdentity(ctx, mapping, nil)
-			if err == nil { return user, nil }
-			if !errors.Is(err, model.ErrInvalidCredentials) { return nil, err }
+			if err == nil {
+				return user, nil
+			}
+			if !errors.Is(err, model.ErrInvalidCredentials) {
+				return nil, err
+			}
 		}
 	}
 	var profile model.QXChatSourceProfile
 	requestID := uuid.NewString()
-	if mapping != nil { requestID = mapping.RequestID }
+	if mapping != nil {
+		requestID = mapping.RequestID
+	}
 	if err := callQXChatSource(ctx, qxchatPreparePath, struct {
-		RequestID string `json:"request_id"`
+		RequestID  string `json:"request_id"`
 		Identifier string `json:"identifier"`
-		Password string `json:"password"`
-	}{requestID, identifier, password}, &profile); err != nil { return nil, err }
-	if profile.RequestID != requestID { return nil, ErrQXChatUnavailable }
+		Password   string `json:"password"`
+	}{requestID, identifier, password}, &profile); err != nil {
+		return nil, err
+	}
+	if profile.RequestID != requestID {
+		return nil, ErrQXChatUnavailable
+	}
 	mapping, _, err = model.PrepareQXChatIdentity(profile, nil)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return commitQXChatIdentity(ctx, mapping, nil)
 }
 
 func BindQXChatIdentity(ctx context.Context, identity AuthIdentity, authorization *model.AuthFlowAuthorization, identifier, password string) (*model.QXChatIdentity, error) {
-	if !QXChatIdentityEnabled() { return nil, ErrQXChatUnavailable }
+	if !QXChatIdentityEnabled() {
+		return nil, ErrQXChatUnavailable
+	}
 	identifier = strings.ToLower(strings.TrimSpace(identifier))
 	encoded, err := common.Marshal(AccountBindingContext{Provider: "qxchat", Code: identifier})
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	operation := VerificationOperation{Scope: VerificationScopeAccountBind, Context: encoded}
-	if err := ValidateFlowAuthorization(identity, operation, authorization); err != nil { return nil, err }
-	if strings.HasPrefix(identity.SessionID, "pat:") || identifier == "" || len(identifier) > 255 || password == "" || len(password) > 512 { return nil, model.ErrInvalidCredentials }
+	if err := ValidateFlowAuthorization(identity, operation, authorization); err != nil {
+		return nil, err
+	}
+	if strings.HasPrefix(identity.SessionID, "pat:") || identifier == "" || len(identifier) > 255 || password == "" || len(password) > 512 {
+		return nil, model.ErrInvalidCredentials
+	}
 	mapping, err := model.FindQXChatIdentity(identifier)
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) { return nil, err }
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
 	if err == nil && mapping.UserID == identity.UserID {
-		if mapping.State == model.QXChatIdentityActive { return model.ResolveQXChatIdentity(mapping.SourceID) }
-		if _, err := commitQXChatIdentity(ctx, mapping, &identity); err == nil { return model.ResolveQXChatIdentity(mapping.SourceID) } else if !errors.Is(err, model.ErrInvalidCredentials) { return nil, err }
+		if mapping.State == model.QXChatIdentityActive {
+			return model.ResolveQXChatIdentity(mapping.SourceID)
+		}
+		if _, err := commitQXChatIdentity(ctx, mapping, &identity); err == nil {
+			return model.ResolveQXChatIdentity(mapping.SourceID)
+		} else if !errors.Is(err, model.ErrInvalidCredentials) {
+			return nil, err
+		}
 	}
 	var profile model.QXChatSourceProfile
 	requestID := uuid.NewString()
-	if mapping != nil && mapping.UserID == identity.UserID { requestID = mapping.RequestID }
+	if mapping != nil && mapping.UserID == identity.UserID {
+		requestID = mapping.RequestID
+	}
 	if err := callQXChatSource(ctx, qxchatPreparePath, struct {
-		RequestID string `json:"request_id"`
+		RequestID  string `json:"request_id"`
 		Identifier string `json:"identifier"`
-		Password string `json:"password"`
-	}{requestID, identifier, password}, &profile); err != nil { return nil, err }
-	if profile.RequestID != requestID { return nil, ErrQXChatUnavailable }
-	if err := ValidateFlowAuthorization(identity, operation, authorization); err != nil { return nil, err }
+		Password   string `json:"password"`
+	}{requestID, identifier, password}, &profile); err != nil {
+		return nil, err
+	}
+	if profile.RequestID != requestID {
+		return nil, ErrQXChatUnavailable
+	}
+	if err := ValidateFlowAuthorization(identity, operation, authorization); err != nil {
+		return nil, err
+	}
 	mapping, _, err = model.PrepareQXChatIdentity(profile, &identity)
-	if err != nil { return nil, err }
-	if _, err := commitQXChatIdentity(ctx, mapping, &identity); err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
+	if _, err := commitQXChatIdentity(ctx, mapping, &identity); err != nil {
+		return nil, err
+	}
 	return model.ResolveQXChatIdentity(mapping.SourceID)
 }

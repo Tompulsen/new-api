@@ -1144,23 +1144,34 @@ func TestSecurityRoutesDisableCachingBeforeAuthentication(t *testing.T) {
 }
 
 func TestUnifiedWalletPluginDispatchPreservesVerifiedScope(t *testing.T) {
- plugin:=compileRouterPlugin(t,"wallet-native","1.0.0",`[{method:"POST",path:"/v1/vendor/generate",type:"dynamic"}]`)
- handlers:=testPluginRouteHandlers(func(c *gin.Context,_ *jsplugin.RoutingGeneration,_ jsplugin.RouteBinding){
-  c.JSON(http.StatusOK,gin.H{"owner":c.GetInt(common.CommunityWalletUserKey),"operation":c.GetString(common.CommunityWalletOperationKey)})
- })
- outer,registry:=newPluginRouterTest(t,[]*jsplugin.LoadedPlugin{plugin},handlers)
- outer.Use(func(c *gin.Context){
-  if c.Query("trusted")=="1" { c.Set(common.CommunityWalletUserKey,42);c.Set(common.CommunityWalletOperationKey,"verified-operation") }
-  c.Next()
- })
- outer.NoRoute((&pluginRouteDispatcher{registry:registry}).dispatch)
- for _,trusted:=range []bool{false,true} {
-  path:="/v1/vendor/generate";if trusted { path+="?trusted=1" }
-  request:=httptest.NewRequest(http.MethodPost,path,nil)
-  request.Header.Set("X-Community-User","999");request.Header.Set("Idempotency-Key","unverified-header")
-  recorder:=httptest.NewRecorder();outer.ServeHTTP(recorder,request)
-  require.Equal(t,http.StatusOK,recorder.Code)
-  expected:=`{"owner":0,"operation":""}`;if trusted { expected=`{"owner":42,"operation":"verified-operation"}` }
-  assert.JSONEq(t,expected,recorder.Body.String())
- }
+	plugin := compileRouterPlugin(t, "wallet-native", "1.0.0", `[{method:"POST",path:"/v1/vendor/generate",type:"dynamic"}]`)
+	handlers := testPluginRouteHandlers(func(c *gin.Context, _ *jsplugin.RoutingGeneration, _ jsplugin.RouteBinding) {
+		c.JSON(http.StatusOK, gin.H{"owner": c.GetInt(common.CommunityWalletUserKey), "operation": c.GetString(common.CommunityWalletOperationKey)})
+	})
+	outer, registry := newPluginRouterTest(t, []*jsplugin.LoadedPlugin{plugin}, handlers)
+	outer.Use(func(c *gin.Context) {
+		if c.Query("trusted") == "1" {
+			c.Set(common.CommunityWalletUserKey, 42)
+			c.Set(common.CommunityWalletOperationKey, "verified-operation")
+		}
+		c.Next()
+	})
+	outer.NoRoute((&pluginRouteDispatcher{registry: registry}).dispatch)
+	for _, trusted := range []bool{false, true} {
+		path := "/v1/vendor/generate"
+		if trusted {
+			path += "?trusted=1"
+		}
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		request.Header.Set("X-Community-User", "999")
+		request.Header.Set("Idempotency-Key", "unverified-header")
+		recorder := httptest.NewRecorder()
+		outer.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusOK, recorder.Code)
+		expected := `{"owner":0,"operation":""}`
+		if trusted {
+			expected = `{"owner":42,"operation":"verified-operation"}`
+		}
+		assert.JSONEq(t, expected, recorder.Body.String())
+	}
 }

@@ -381,7 +381,10 @@ func DeleteTokenById(id int, userId int) (err error) {
 
 func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
 	if UnifiedWalletEnabled() {
-		if quota < 0 || quota > common.MaxWalletQuota { return ErrWalletQuotaLimitExceeded }; return increaseTokenQuota(tokenId, quota)
+		if quota < 0 || quota > common.MaxWalletQuota {
+			return ErrWalletQuotaLimitExceeded
+		}
+		return increaseTokenQuota(tokenId, quota)
 	}
 	if quota < 0 {
 		return errors.New("quota cannot be negative")
@@ -415,7 +418,10 @@ func increaseTokenQuota(id int, quota int) (err error) {
 
 func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 	if UnifiedWalletEnabled() {
-		if quota < 0 || quota > common.MaxWalletQuota { return ErrWalletQuotaLimitExceeded }; return decreaseTokenQuota(id, quota)
+		if quota < 0 || quota > common.MaxWalletQuota {
+			return ErrWalletQuotaLimitExceeded
+		}
+		return decreaseTokenQuota(id, quota)
 	}
 	if quota < 0 {
 		return errors.New("quota cannot be negative")
