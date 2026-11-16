@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -1946,9 +1947,9 @@ func TestUnifiedWalletBillingSessionLifecycle(t *testing.T) {
 			duplicateErr := PreConsumeBilling(ctx, initial, &duplicateInfo)
 			require.NotNil(t, duplicateErr)
 			assert.Equal(t, http.StatusConflict, duplicateErr.StatusCode)
-			assert.Equal(t, types.ErrorCodeInvalidRequest, duplicateErr.GetErrorCode())
-			assert.True(t, types.IsSkipRetryError(duplicateErr))
-			assert.False(t, types.IsRecordErrorLog(duplicateErr))
+			assert.Equal(t, relaytypes.ErrorCodeInvalidRequest, duplicateErr.GetErrorCode())
+			assert.True(t, relaytypes.IsSkipRetryError(duplicateErr))
+			assert.False(t, relaytypes.IsRecordErrorLog(duplicateErr))
 			assert.Nil(t, duplicateInfo.Billing)
 			var afterLot model.UnifiedWalletLot
 			var afterToken model.Token
