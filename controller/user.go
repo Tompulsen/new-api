@@ -283,7 +283,20 @@ func Register(c *gin.Context) {
 	if common.EmailVerificationEnabled {
 		cleanUser.Email = user.Email
 	}
-	if err := cleanUser.Insert(inviterId); err != nil {
+	if service.QXChatIdentityEnabled() && common.EmailVerificationEnabled {
+		err = model.DB.Transaction(func(tx *gorm.DB) error {
+			if err := cleanUser.InsertWithTx(tx, inviterId); err != nil {
+				return err
+			}
+			return model.RecordQXChatVerifiedEmailWithTx(tx, cleanUser.Id, cleanUser.Email)
+		})
+		if err == nil {
+			cleanUser.FinishInsert(inviterId)
+		}
+	} else {
+		err = cleanUser.Insert(inviterId)
+	}
+	if err != nil {
 		if errors.Is(err, model.ErrEmailAlreadyTaken) {
 			common.ApiErrorT(c, "Email address is already in use")
 			return

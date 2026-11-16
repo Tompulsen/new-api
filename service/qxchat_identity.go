@@ -83,6 +83,14 @@ func callQXChatSource(ctx context.Context, path string, input, output any) error
 	if !hmac.Equal([]byte(res.Header.Get("X-QXChat-Signature")), []byte(expected)) {
 		return ErrQXChatUnavailable
 	}
+	if res.StatusCode == http.StatusConflict && path == "/api/account-unification/provision" {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		if common.Unmarshal(responseBody, &failure) == nil && failure.Error == "binding_required" {
+			return model.ErrQXChatIdentityConflict
+		}
+	}
 	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden || res.StatusCode == http.StatusConflict {
 		return model.ErrInvalidCredentials
 	}
@@ -90,6 +98,38 @@ func callQXChatSource(ctx context.Context, path string, input, output any) error
 		return ErrQXChatUnavailable
 	}
 	return nil
+}
+
+func ExchangeQXChatIdentitySession(ctx context.Context, token, origin string) (*model.QXChatSessionIdentity, error) {
+	mapping, profile, err := model.PrepareQXChatRegistration(token, origin)
+	if err != nil {
+		return nil, err
+	}
+	if profile != nil {
+		var receipt struct {
+			RequestID        string `json:"request_id"`
+			SourceID         string `json:"source_id"`
+			NewAPIUserID     int    `json:"newapi_user_id"`
+			Authority        string `json:"authority"`
+			AuthorityVersion int64  `json:"authority_version"`
+		}
+		if err := callQXChatSource(ctx, "/api/account-unification/provision", profile, &receipt); err != nil {
+			if errors.Is(err, model.ErrQXChatIdentityConflict) {
+				if releaseErr := model.ReleaseQXChatRegistration(*mapping); releaseErr != nil {
+					return nil, releaseErr
+				}
+			}
+			return nil, err
+		}
+		if receipt.RequestID != mapping.RequestID || receipt.SourceID != mapping.SourceID || receipt.NewAPIUserID != mapping.UserID ||
+			receipt.Authority != "newapi" || receipt.AuthorityVersion != mapping.AuthorityVersion {
+			return nil, ErrQXChatUnavailable
+		}
+		if err := model.FinishQXChatRegistration(*mapping, token, origin); err != nil {
+			return nil, err
+		}
+	}
+	return model.ExchangeQXChatSession(token, origin)
 }
 
 type QXChatCommitRequest struct {

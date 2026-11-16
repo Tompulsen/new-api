@@ -40,7 +40,11 @@ func QXChatIdentityStatus(c *gin.Context) {
 		writeQXChatIdentityError(c, service.ErrQXChatUnavailable)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"enabled": true, "state": mapping.State, "username": mapping.SourceUsername})
+	state := mapping.State
+	if state == model.QXChatIdentityProvisioning {
+		state = model.QXChatIdentityPending
+	}
+	common.ApiSuccess(c, gin.H{"enabled": true, "state": state, "username": mapping.SourceUsername})
 }
 
 func qxchatLoginPassword(request LoginRequest) (string, error) {
@@ -186,7 +190,7 @@ func QXChatSessionExchange(c *gin.Context) {
 	}
 	// Failed audience checks roll back consumption, as in CommunitySSOUserinfo.
 	for _, origin := range ssoOrigins("QXCHAT_SSO") {
-		identity, err := model.ExchangeQXChatSession(request.AccessToken, origin)
+		identity, err := service.ExchangeQXChatIdentitySession(c.Request.Context(), request.AccessToken, origin)
 		if err == nil {
 			writeQXChatSessionResponse(c, http.StatusOK, identity)
 			return

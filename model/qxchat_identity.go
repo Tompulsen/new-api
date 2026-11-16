@@ -1,20 +1,26 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 const QXChatIdentityPending = "pending"
 const QXChatIdentityActive = "active"
+const QXChatIdentityProvisioning = "provisioning"
 const QXChatUserPendingStatus = 3
 const qxchatSessionPurpose = "qxchat_session"
+const qxchatVerifiedEmailProvider = "qxchat_verified_email"
 
 var ErrQXChatIdentityConflict = errors.New("QXChat identity requires explicit account binding")
 var ErrQXChatIdentityInactive = errors.New("QXChat identity is not active")
@@ -48,6 +54,136 @@ type QXChatSourceProfile struct {
 	NewAPIUserID      int    `json:"newapi_user_id"`
 	Eligible          bool   `json:"eligible"`
 	EmailVerified     bool   `json:"email_verified"`
+}
+
+type QXChatRegistrationProfile struct {
+	RequestID         string `json:"request_id"`
+	SourceID          string `json:"source_id"`
+	NewAPIUserID      int    `json:"newapi_user_id"`
+	AuthorityVersion  int64  `json:"authority_version"`
+	CredentialVersion string `json:"credential_version"`
+	Username          string `json:"username"`
+	Email             string `json:"email"`
+	DisplayName       string `json:"display_name"`
+}
+
+// Only local email-code verification may write this claim; OAuth profile emails are not proof.
+func RecordQXChatVerifiedEmailWithTx(tx *gorm.DB, userID int, email string) error {
+	email = NormalizeEmail(email)
+	if tx == nil || userID <= 0 || common.Validate.Var(email, "required,email") != nil {
+		return ErrQXChatIdentityInactive
+	}
+	digest := sha256.Sum256([]byte(strconv.Itoa(userID) + "\n" + email))
+	if err := ReleaseExternalIdentityWithTx(tx, qxchatVerifiedEmailProvider, userID); err != nil {
+		return err
+	}
+	return ClaimExternalIdentityWithTx(tx, qxchatVerifiedEmailProvider, hex.EncodeToString(digest[:]), userID)
+}
+
+func validateQXChatVerifiedEmailWithTx(tx *gorm.DB, user User) error {
+	email := NormalizeEmail(user.Email)
+	if len(email) > 191 || common.Validate.Var(email, "required,email") != nil {
+		return ErrQXChatIdentityInactive
+	}
+	digest := sha256.Sum256([]byte(strconv.Itoa(user.Id) + "\n" + email))
+	var claim ExternalIdentityClaim
+	if err := tx.Where("provider = ? AND user_id = ? AND subject = ?", qxchatVerifiedEmailProvider, user.Id, hex.EncodeToString(digest[:])).First(&claim).Error; err != nil {
+		return ErrQXChatIdentityInactive
+	}
+	return nil
+}
+
+// Reserve the destination before contacting QX, so retries cannot create a second local identity.
+func PrepareQXChatRegistration(token, origin string) (*QXChatIdentity, *QXChatRegistrationProfile, error) {
+	if !communityOpaque.MatchString(token) || origin == "" {
+		return nil, nil, ErrAuthFlowInvalid
+	}
+	var mapping QXChatIdentity
+	var profile *QXChatRegistrationProfile
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var flow AuthFlow
+		if err := applyAuthFlowMatch(tx, token, AuthFlowMatch{Purpose: communityIdentityPurpose}).
+			Where("consumed_at IS NULL AND expires_at > ?", time.Now()).First(&flow).Error; err != nil {
+			return ErrAuthFlowInvalid
+		}
+		if _, err := validateCommunityGrant(tx, &flow, origin); err != nil {
+			return err
+		}
+		var user User
+		if err := lockForUpdate(tx).First(&user, flow.UserId).Error; err != nil || user.Status != common.UserStatusEnabled {
+			return ErrQXChatIdentityInactive
+		}
+		err := tx.Where("user_id = ?", user.Id).First(&mapping).Error
+		if err == nil && mapping.State == QXChatIdentityActive {
+			return nil
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err == nil && mapping.State != QXChatIdentityProvisioning {
+			return ErrQXChatIdentityInactive
+		}
+		if err := validateQXChatVerifiedEmailWithTx(tx, user); err != nil {
+			return err
+		}
+		email := NormalizeEmail(user.Email)
+		if err == nil && mapping.SourceEmail != email {
+			return ErrQXChatIdentityInactive
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			username := strings.ToLower(strings.TrimSpace(user.Username))
+			if username == "" || utf8.RuneCountInString(username) > 32 {
+				return ErrQXChatIdentityInactive
+			}
+			mapping = QXChatIdentity{SourceID: uuid.NewString(), UserID: user.Id, SourceUsername: username, SourceEmail: email,
+				RequestID: uuid.NewString(), AuthorityVersion: 1, State: QXChatIdentityProvisioning}
+			digest := sha256.Sum256([]byte(mapping.SourceID + "\n" + mapping.RequestID))
+			mapping.CredentialVersion = hex.EncodeToString(digest[:])
+			if err := tx.Create(&mapping).Error; err != nil {
+				return err
+			}
+		}
+		profile = &QXChatRegistrationProfile{mapping.RequestID, mapping.SourceID, mapping.UserID, mapping.AuthorityVersion,
+			mapping.CredentialVersion, mapping.SourceUsername, mapping.SourceEmail, user.DisplayName}
+		return nil
+	})
+	return &mapping, profile, err
+}
+
+func FinishQXChatRegistration(expected QXChatIdentity, token, origin string) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var flow AuthFlow
+		if err := applyAuthFlowMatch(tx, token, AuthFlowMatch{Purpose: communityIdentityPurpose, UserId: expected.UserID}).
+			Where("consumed_at IS NULL AND expires_at > ?", time.Now()).First(&flow).Error; err != nil {
+			return ErrAuthFlowInvalid
+		}
+		if _, err := validateCommunityGrant(tx, &flow, origin); err != nil {
+			return err
+		}
+		var user User
+		if err := lockForUpdate(tx).First(&user, expected.UserID).Error; err != nil || user.Status != common.UserStatusEnabled || NormalizeEmail(user.Email) != expected.SourceEmail {
+			return ErrQXChatIdentityInactive
+		}
+		if err := validateQXChatVerifiedEmailWithTx(tx, user); err != nil {
+			return err
+		}
+		var mapping QXChatIdentity
+		if err := lockForUpdate(tx).Where("user_id = ?", expected.UserID).First(&mapping).Error; err != nil {
+			return err
+		}
+		if mapping.SourceID != expected.SourceID || mapping.RequestID != expected.RequestID ||
+			mapping.CredentialVersion != expected.CredentialVersion || mapping.Imported ||
+			(mapping.State != QXChatIdentityProvisioning && mapping.State != QXChatIdentityActive) {
+			return ErrQXChatIdentityConflict
+		}
+		return tx.Model(&mapping).Update("state", QXChatIdentityActive).Error
+	})
+}
+
+// A signed, definitive collision means QX made no write; free the reservation for explicit binding.
+func ReleaseQXChatRegistration(expected QXChatIdentity) error {
+	return DB.Where("source_id = ? AND user_id = ? AND request_id = ? AND state = ?", expected.SourceID, expected.UserID, expected.RequestID, QXChatIdentityProvisioning).
+		Delete(&QXChatIdentity{}).Error
 }
 
 func MigrateQXChatIdentity(db *gorm.DB) error {
