@@ -25,6 +25,7 @@ import (
 
 const qxchatPreparePath = "/api/account-unification/prepare"
 const qxchatCommitPath = "/api/account-unification/commit"
+const qxchatProvisionPath = "/api/account-unification/provision"
 
 var ErrQXChatUnavailable = errors.New("QXChat account connection is temporarily unavailable. Please try again.")
 
@@ -34,7 +35,7 @@ func QXChatIdentityEnabled() bool {
 
 // The configured source is operator-owned; user input never chooses a URL.
 func callQXChatSource(ctx context.Context, path string, input, output any) error {
-	if !QXChatIdentityEnabled() || (path != qxchatPreparePath && path != qxchatCommitPath) {
+	if !QXChatIdentityEnabled() || (path != qxchatPreparePath && path != qxchatCommitPath && path != qxchatProvisionPath) {
 		return ErrQXChatUnavailable
 	}
 	base, err := url.Parse(os.Getenv("QXCHAT_IDENTITY_SOURCE_URL"))
@@ -83,7 +84,7 @@ func callQXChatSource(ctx context.Context, path string, input, output any) error
 	if !hmac.Equal([]byte(res.Header.Get("X-QXChat-Signature")), []byte(expected)) {
 		return ErrQXChatUnavailable
 	}
-	if res.StatusCode == http.StatusConflict && path == "/api/account-unification/provision" {
+	if res.StatusCode == http.StatusConflict && path == qxchatProvisionPath {
 		var failure struct {
 			Error string `json:"error"`
 		}
@@ -113,7 +114,7 @@ func ExchangeQXChatIdentitySession(ctx context.Context, token, origin string) (*
 			Authority        string `json:"authority"`
 			AuthorityVersion int64  `json:"authority_version"`
 		}
-		if err := callQXChatSource(ctx, "/api/account-unification/provision", profile, &receipt); err != nil {
+		if err := callQXChatSource(ctx, qxchatProvisionPath, profile, &receipt); err != nil {
 			if errors.Is(err, model.ErrQXChatIdentityConflict) {
 				if releaseErr := model.ReleaseQXChatRegistration(*mapping); releaseErr != nil {
 					return nil, releaseErr
