@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { authResult } from '@/lib/secure-verification'
 
 import type {
   RedemptionRequest,
@@ -39,7 +40,12 @@ import type {
   WaffoPaymentResponse,
   WaffoPancakePaymentRequest,
   WaffoPancakePaymentResponse,
+  UnifiedWalletView,
 } from './types'
+
+export function getUnifiedWallet(signal?: AbortSignal): Promise<UnifiedWalletView> {
+  return authResult(api.get('/api/user/self/wallet', { signal }))
+}
 
 // ============================================================================
 // Wallet API Functions

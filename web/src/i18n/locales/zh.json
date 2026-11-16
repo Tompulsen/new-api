@@ -7751,5 +7751,23 @@
     "Reload model prices before applying a template": "请重新加载模型价格后应用模板"
   },
   "Community lottery reward: {{amount}} USD": "社区抽奖奖励：{{amount}} USD",
-  "Community lottery": "社区抽奖"
+  "Community lottery": "社区抽奖",
+  "Sign in with a QXChat account": "使用 QXChat 账户登录",
+  "QXChat account connected": "QXChat 账户已关联",
+  "Connect QXChat account": "关联 QXChat 账户",
+  "Connect your QXChat account to this New API account. Future sign-ins use this New API account.": "将 QXChat 账户关联到当前 New API 账户，之后使用此 New API 账户登录。",
+  "QXChat username or email": "QXChat 用户名或邮箱",
+  "QXChat password": "QXChat 密码",
+  "QXChat account connection is temporarily unavailable. Please try again.": "QXChat 账户连接暂时不可用，请稍后重试。",
+  "Sign in to your existing New API account and connect QXChat in account security.": "请先登录已有的 New API 账户，再到「账户安全」关联 QXChat。",
+  "Community points": "社区积分",
+  "Loading community points": "正在加载社区积分",
+  "Community points are unavailable": "暂时无法获取社区积分",
+  "Refresh community points": "刷新社区积分",
+  "Charity points": "公益积分",
+  "Permanent points": "永久积分",
+  "100 points = ¥0.02": "100 积分 = 0.02 元人民币",
+  "Only available in the community. Original expiry dates are preserved.": "仅限社区使用，保留原有到期时间。",
+  "The community view of your paid New API balance.": "您在 New API 充值余额对应的社区积分。",
+  "Next charity expiry: {{date}}": "最近一批公益积分到期时间：{{date}}"
 }

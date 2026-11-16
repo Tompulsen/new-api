@@ -7751,5 +7751,23 @@
     "Reload model prices before applying a template": "Tải lại giá mô hình trước khi áp dụng mẫu"
   },
   "Community lottery reward: {{amount}} USD": "Phần thưởng bốc thăm cộng đồng: {{amount}} USD",
-  "Community lottery": "Bốc thăm cộng đồng"
+  "Community lottery": "Bốc thăm cộng đồng",
+  "Sign in with a QXChat account": "Đăng nhập bằng tài khoản QXChat",
+  "QXChat account connected": "Đã liên kết tài khoản QXChat",
+  "Connect QXChat account": "Liên kết tài khoản QXChat",
+  "Connect your QXChat account to this New API account. Future sign-ins use this New API account.": "Liên kết tài khoản QXChat với tài khoản New API này. Các lần đăng nhập sau sẽ dùng tài khoản New API này.",
+  "QXChat username or email": "Tên đăng nhập hoặc email QXChat",
+  "QXChat password": "Mật khẩu QXChat",
+  "QXChat account connection is temporarily unavailable. Please try again.": "Kết nối tài khoản QXChat tạm thời không khả dụng. Vui lòng thử lại.",
+  "Sign in to your existing New API account and connect QXChat in account security.": "Đăng nhập vào tài khoản New API hiện có và liên kết QXChat trong phần bảo mật tài khoản.",
+  "Community points": "Điểm cộng đồng",
+  "Loading community points": "Đang tải điểm cộng đồng",
+  "Community points are unavailable": "Không thể tải điểm cộng đồng",
+  "Refresh community points": "Làm mới điểm cộng đồng",
+  "Charity points": "Điểm công ích",
+  "Permanent points": "Điểm vĩnh viễn",
+  "100 points = ¥0.02": "100 điểm = 0,02 CNY",
+  "Only available in the community. Original expiry dates are preserved.": "Chỉ sử dụng trong cộng đồng. Giữ nguyên thời hạn ban đầu.",
+  "The community view of your paid New API balance.": "Điểm cộng đồng tương ứng với số dư đã nạp tại New API.",
+  "Next charity expiry: {{date}}": "Đợt điểm công ích hết hạn tiếp theo: {{date}}"
 }

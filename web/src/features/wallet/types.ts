@@ -29,6 +29,18 @@ export interface ApiResponse<T = unknown> {
   data?: T
 }
 
+export interface UnifiedWalletView {
+  enabled: boolean
+  currency: 'CNY'
+  points_per_cny: number
+  charity_points: string
+  permanent_points: string
+  legacy_api_quota: number
+  paid_api_quota: number
+  total_api_quota: number
+  charity_expiring_at: number | null
+}
+
 /**
  * Standard API response types
  */

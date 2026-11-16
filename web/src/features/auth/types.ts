@@ -27,6 +27,7 @@ import type { LoginResult } from './secure-verification/types'
 export interface LoginPayload {
   username: string
   password: string
+  qxchat?: boolean
   turnstile?: string
   passwordEncryptionEnabled?: boolean
 }

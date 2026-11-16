@@ -14,6 +14,7 @@ import (
 const QXChatIdentityPending = "pending"
 const QXChatIdentityActive = "active"
 const QXChatUserPendingStatus = 3
+const qxchatSessionPurpose = "qxchat_session"
 
 var ErrQXChatIdentityConflict = errors.New("QXChat identity requires explicit account binding")
 var ErrQXChatIdentityInactive = errors.New("QXChat identity is not active")
@@ -192,4 +193,50 @@ func ActivateQXChatIdentity(expected QXChatIdentity) (*User, error) {
 		return tx.Model(&identity).Update("state", QXChatIdentityActive).Error
 	})
 	return &user, err
+}
+
+type QXChatSessionIdentity struct {
+	Active           bool   `json:"active"`
+	UserID           int    `json:"newapi_user_id"`
+	SourceID         string `json:"source_id"`
+	AuthorityVersion int64  `json:"authority_version"`
+	Username         string `json:"username"`
+	SessionProof     string `json:"session_proof,omitempty"`
+	ExpiresAt        int64  `json:"expires_at"`
+}
+
+// The one-use PKCE identity grant creates a QX-only server-side session reference.
+func ExchangeQXChatSession(token, origin string) (*QXChatSessionIdentity, error) {
+	if !communityOpaque.MatchString(token) || origin == "" { return nil, ErrAuthFlowInvalid }
+	var result QXChatSessionIdentity
+	_, err := ConsumeAuthFlowWithAction(token, AuthFlowMatch{Purpose: communityIdentityPurpose}, func(tx *gorm.DB, flow *AuthFlow) error {
+		grant, err := validateCommunityGrant(tx, flow, origin)
+		if err != nil { return err }
+		var mapping QXChatIdentity
+		if err := tx.Where("user_id = ? AND state = ?", grant.UserID, QXChatIdentityActive).First(&mapping).Error; err != nil { return ErrQXChatIdentityInactive }
+		var session UserSession
+		if err := tx.Where("sid = ? AND user_id = ?", grant.SessionID, grant.UserID).First(&session).Error; err != nil { return err }
+		expires := time.Unix(min(session.ExpiresAt, time.Now().Add(24*time.Hour).Unix()), 0)
+		proof, _, err := createAuthFlowWithTx(tx, AuthFlowCreate{Purpose: qxchatSessionPurpose, UserId: grant.UserID, SessionId: grant.SessionID, Payload: flow.Payload, ExpiresAt: expires})
+		if err != nil { return err }
+		result = QXChatSessionIdentity{Active: true, UserID: grant.UserID, SourceID: mapping.SourceID, AuthorityVersion: mapping.AuthorityVersion, Username: mapping.SourceUsername, SessionProof: proof, ExpiresAt: expires.Unix()}
+		return nil
+	})
+	return &result, err
+}
+
+func ValidateQXChatSession(proof, origin, sourceID string, userID int) (*QXChatSessionIdentity, error) {
+	if !communityOpaque.MatchString(proof) || origin == "" || !qxchatSourceID.MatchString(sourceID) || userID <= 0 { return nil, ErrAuthFlowInvalid }
+	var result QXChatSessionIdentity
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var flow AuthFlow
+		if err := applyAuthFlowMatch(tx, proof, AuthFlowMatch{Purpose: qxchatSessionPurpose, UserId: userID}).
+			Where("consumed_at IS NULL AND expires_at > ?", time.Now()).First(&flow).Error; err != nil { return ErrAuthFlowInvalid }
+		if _, err := validateCommunityGrant(tx, &flow, origin); err != nil { return err }
+		var mapping QXChatIdentity
+		if err := tx.Where("source_id = ? AND user_id = ? AND state = ?", sourceID, userID, QXChatIdentityActive).First(&mapping).Error; err != nil { return ErrQXChatIdentityInactive }
+		result = QXChatSessionIdentity{Active: true, UserID: userID, SourceID: mapping.SourceID, AuthorityVersion: mapping.AuthorityVersion, Username: mapping.SourceUsername, ExpiresAt: flow.ExpiresAt.Unix()}
+		return nil
+	})
+	return &result, err
 }

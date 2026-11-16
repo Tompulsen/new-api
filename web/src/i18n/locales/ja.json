@@ -7751,5 +7751,23 @@
     "Reload model prices before applying a template": "テンプレート適用前にモデル料金を再読み込みしてください"
   },
   "Community lottery reward: {{amount}} USD": "コミュニティ抽選報酬：{{amount}} USD",
-  "Community lottery": "コミュニティ抽選"
+  "Community lottery": "コミュニティ抽選",
+  "Sign in with a QXChat account": "QXChat アカウントでログイン",
+  "QXChat account connected": "QXChat アカウントを連携しました",
+  "Connect QXChat account": "QXChat アカウントを連携",
+  "Connect your QXChat account to this New API account. Future sign-ins use this New API account.": "QXChat アカウントをこの New API アカウントに連携します。今後はこの New API アカウントでログインします。",
+  "QXChat username or email": "QXChat のユーザー名またはメールアドレス",
+  "QXChat password": "QXChat のパスワード",
+  "QXChat account connection is temporarily unavailable. Please try again.": "QXChat アカウントへの接続は一時的に利用できません。もう一度お試しください。",
+  "Sign in to your existing New API account and connect QXChat in account security.": "既存の New API アカウントでログインし、アカウントのセキュリティ設定で QXChat を連携してください。",
+  "Community points": "コミュニティポイント",
+  "Loading community points": "コミュニティポイントを読み込み中",
+  "Community points are unavailable": "コミュニティポイントを取得できません",
+  "Refresh community points": "コミュニティポイントを更新",
+  "Charity points": "公益ポイント",
+  "Permanent points": "永久ポイント",
+  "100 points = ¥0.02": "100 ポイント = 0.02 人民元",
+  "Only available in the community. Original expiry dates are preserved.": "コミュニティでのみ使用できます。元の有効期限を引き継ぎます。",
+  "The community view of your paid New API balance.": "New API のチャージ残高に対応するコミュニティポイントです。",
+  "Next charity expiry: {{date}}": "次の公益ポイントの有効期限：{{date}}"
 }

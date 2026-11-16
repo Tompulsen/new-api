@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQuery } from '@tanstack/react-query'
 import { Mail, Shield, Send, Link2, Unlink } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -31,6 +32,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { createOAuthAuthorization } from '@/features/auth/api'
+import { getQXChatIdentity } from '@/features/auth/qxchat'
 import {
   openOAuthPopup,
   type OAuthPopupExchange,
@@ -59,6 +61,7 @@ import {
 
 import { useAccountSecurity } from '../hooks/use-account-security'
 import { EmailBindDialog } from './dialogs/email-bind-dialog'
+import { QXChatBindDialog } from './dialogs/qxchat-bind-dialog'
 import { WeChatBindDialog } from './dialogs/wechat-bind-dialog'
 
 // ============================================================================
@@ -70,7 +73,7 @@ interface AccountBindingsProps {
   onUpdate: () => void
 }
 
-type DialogKey = 'email' | 'wechat'
+type DialogKey = 'email' | 'wechat' | 'qxchat'
 
 type PreparedOAuthBinding = AccountSecurityResult & {
   provider: string
@@ -87,6 +90,11 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
     null
   )
   const security = useAccountSecurity()
+  const qxchatIdentity = useQuery({
+    queryKey: ['qxchat', 'identity', security.sessionKey],
+    queryFn: ({ signal }) => getQXChatIdentity(signal),
+    enabled: Boolean(profile),
+  })
   const unbinding = security.pending
   const [preparedBinding, setPreparedBinding] =
     useState<PreparedOAuthBinding | null>(null)
@@ -231,6 +239,15 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
 
   const bindings: BindingItem[] = [
     {
+      id: 'qxchat',
+      label: 'QXChat',
+      icon: Link2,
+      value: qxchatIdentity.data?.username,
+      isBound: qxchatIdentity.data?.state === 'active',
+      isEnabled: qxchatIdentity.data?.enabled === true,
+      onBind: () => dialogs.open('qxchat'),
+    },
+    {
       id: 'email',
       label: t('Email'),
       icon: Mail,
@@ -323,6 +340,9 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
       >
         {bindings.map((binding) => {
           let actionLabel = t('Bind')
+          if (binding.id === 'qxchat' && qxchatIdentity.data?.state === 'pending') {
+            actionLabel = t('Continue')
+          }
           if (binding.isBound && binding.id === 'email') {
             actionLabel = t('Change')
           } else if (binding.isBound) {
@@ -468,6 +488,15 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
       />
 
       {/* Email Bind Dialog */}
+      <QXChatBindDialog
+        open={dialogs.isOpen('qxchat')}
+        passwordEncryptionEnabled={status.password_login_encryption_enabled === true}
+        onOpenChange={(open) => open ? dialogs.open('qxchat') : dialogs.close('qxchat')}
+        onSuccess={() => {
+          void qxchatIdentity.refetch()
+          onUpdate()
+        }}
+      />
       <EmailBindDialog
         open={dialogs.isOpen('email')}
         onOpenChange={(open) =>

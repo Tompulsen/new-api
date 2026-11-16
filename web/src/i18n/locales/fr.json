@@ -7751,5 +7751,23 @@
     "Reload model prices before applying a template": "Rechargez les prix avant d'appliquer un modèle"
   },
   "Community lottery reward: {{amount}} USD": "Récompense du tirage communautaire : {{amount}} USD",
-  "Community lottery": "Tirage communautaire"
+  "Community lottery": "Tirage communautaire",
+  "Sign in with a QXChat account": "Se connecter avec un compte QXChat",
+  "QXChat account connected": "Compte QXChat associé",
+  "Connect QXChat account": "Associer un compte QXChat",
+  "Connect your QXChat account to this New API account. Future sign-ins use this New API account.": "Associez votre compte QXChat à ce compte New API. Les prochaines connexions utiliseront ce compte New API.",
+  "QXChat username or email": "Nom d’utilisateur ou e-mail QXChat",
+  "QXChat password": "Mot de passe QXChat",
+  "QXChat account connection is temporarily unavailable. Please try again.": "La connexion au compte QXChat est temporairement indisponible. Réessayez.",
+  "Sign in to your existing New API account and connect QXChat in account security.": "Connectez-vous à votre compte New API existant, puis associez QXChat dans la sécurité du compte.",
+  "Community points": "Points communautaires",
+  "Loading community points": "Chargement des points communautaires",
+  "Community points are unavailable": "Points communautaires indisponibles",
+  "Refresh community points": "Actualiser les points communautaires",
+  "Charity points": "Points solidaires",
+  "Permanent points": "Points permanents",
+  "100 points = ¥0.02": "100 points = 0,02 CNY",
+  "Only available in the community. Original expiry dates are preserved.": "Utilisables uniquement dans la communauté. Les dates d’expiration initiales sont conservées.",
+  "The community view of your paid New API balance.": "L’équivalent communautaire de votre solde New API payé.",
+  "Next charity expiry: {{date}}": "Prochaine expiration des points solidaires : {{date}}"
 }

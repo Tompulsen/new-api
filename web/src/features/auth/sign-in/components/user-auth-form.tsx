@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Loader2, LogIn, KeyRound } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -29,6 +30,8 @@ import { Dialog } from '@/components/dialog'
 import { PasswordInput } from '@/components/password-input'
 import { Turnstile } from '@/components/turnstile'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Field } from '@/components/ui/field'
 import {
   Form,
   FormControl,
@@ -52,6 +55,7 @@ import {
   type PasskeyDomains,
 } from '@/features/auth/passkey/assertion'
 import { PasskeyDomainSelector } from '@/features/auth/passkey/components/passkey-domain-selector'
+import { getQXChatConfig } from '@/features/auth/qxchat'
 import type { AuthFormProps } from '@/features/auth/types'
 import { useStatus } from '@/hooks/use-status'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -67,6 +71,13 @@ export function UserAuthForm({
 }: AuthFormProps) {
   const { t } = useTranslation()
   const [isLoading, setIsLoading] = useState(false)
+  const [qxchatLogin, setQXChatLogin] = useState(false)
+  const qxchatConfig = useQuery({
+    queryKey: ['qxchat', 'config'],
+    queryFn: ({ signal }) => getQXChatConfig(signal),
+    retry: false,
+    meta: { errorToast: false },
+  })
   const [wechatCode, setWeChatCode] = useState('')
   const [agreedToLegal, setAgreedToLegal] = useState(false)
   const [passkeySupported, setPasskeySupported] = useState(false)
@@ -180,6 +191,7 @@ export function UserAuthForm({
         password: data.password,
         turnstile: submittedTurnstileToken,
         passwordEncryptionEnabled: passwordLoginEncryptionEnabled,
+        qxchat: qxchatConfig.data?.enabled === true && qxchatLogin,
       })
 
       if (res.success) {
@@ -353,6 +365,17 @@ export function UserAuthForm({
 
         {passwordLoginEnabled && (
           <>
+            {qxchatConfig.data?.enabled && (
+              <Field orientation='horizontal'>
+                <Checkbox
+                  id='qxchat-login'
+                  checked={qxchatLogin}
+                  onCheckedChange={setQXChatLogin}
+                  disabled={isLoading}
+                />
+                <Label htmlFor='qxchat-login'>{t('Sign in with a QXChat account')}</Label>
+              </Field>
+            )}
             {/* Username Field */}
             <FormField
               control={form.control}

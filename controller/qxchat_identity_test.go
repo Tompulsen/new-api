@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -11,10 +12,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -267,4 +270,76 @@ func TestQXChatLoginPreservesMFA(t *testing.T) {
 	assert.NotEmpty(t, result.Data.FlowToken)
 	assert.Empty(t, result.Data.AccessToken)
 	assert.Empty(t, response.Header().Values("Set-Cookie"))
+}
+
+func qxchatSessionRequest(t *testing.T, path string, input any, nonce string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := common.Marshal(input)
+	require.NoError(t, err)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest("POST", path, strings.NewReader(string(body)))
+	stamp := strconv.FormatInt(time.Now().Unix(), 10)
+	digest := sha256.Sum256(body)
+	canonical := strings.Join([]string{"qxchat-session-v1", "POST", path, stamp, nonce, hex.EncodeToString(digest[:])}, "\n")
+	c.Request.Header.Set("X-QXChat-Timestamp", stamp)
+	c.Request.Header.Set("X-QXChat-Nonce", nonce)
+	c.Request.Header.Set("X-QXChat-Signature", common.GenerateHMACWithKey([]byte(qxchatTestSecret), canonical))
+	handler(c)
+	digest = sha256.Sum256(response.Body.Bytes())
+	canonical = strings.Join([]string{"qxchat-session-response-v1", nonce, strconv.Itoa(response.Code), hex.EncodeToString(digest[:])}, "\n")
+	assert.Equal(t, common.GenerateHMACWithKey([]byte(qxchatTestSecret), canonical), response.Header().Get("X-QXChat-Signature"))
+	return response
+}
+
+func TestQXChatSSOSessionProofIsBoundToLiveParentSession(t *testing.T) {
+	for _, scenario := range []string{"session revoked", "auth version", "user disabled", "expired proof"} {
+		t.Run(scenario, func(t *testing.T) {
+			user, auth := setupQXChatIdentityTest(t)
+			startQXChatSourceFixture(t)
+			t.Setenv("QXCHAT_SESSION_SECRET", qxchatTestSecret)
+			t.Setenv("QXCHAT_SSO_ORIGIN", "https://qxchat.example.com")
+			require.NoError(t, model.DB.Create(&model.QXChatIdentity{SourceID: qxchatTestSource, UserID: user.Id, SourceUsername: "legacy-user", SourceEmail: "legacy@example.com", RequestID: qxchatTestRequest, CredentialVersion: strings.Repeat("a", 64), AuthorityVersion: 1, State: model.QXChatIdentityActive}).Error)
+			verifier := strings.Repeat("v", 43)
+			digest := sha256.Sum256([]byte(verifier))
+			code, err := model.CreateCommunityGrant(auth, "https://qxchat.example.com", base64.RawURLEncoding.EncodeToString(digest[:]))
+			require.NoError(t, err)
+			token, err := model.ExchangeCommunityGrant(code, "https://qxchat.example.com", verifier)
+			require.NoError(t, err)
+			_, err = model.ExchangeQXChatSession(token, "https://other.example.com")
+			assert.Error(t, err)
+			response := qxchatSessionRequest(t, "/api/qxchat/session/exchange", map[string]string{"access_token": token}, strings.Repeat("1", 32), QXChatSessionExchange)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var proof model.QXChatSessionIdentity
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &proof))
+			require.NotEmpty(t, proof.SessionProof)
+			assert.Equal(t, user.Id, proof.UserID)
+			assert.Equal(t, qxchatTestSource, proof.SourceID)
+			assert.LessOrEqual(t, proof.ExpiresAt, time.Now().Add(24*time.Hour).Unix())
+			_, err = model.ExchangeQXChatSession(token, "https://qxchat.example.com")
+			assert.Error(t, err)
+			_, err = model.ConsumeCommunityIdentity(proof.SessionProof, "https://qxchat.example.com")
+			assert.Error(t, err)
+			_, err = model.ValidateQXChatSession(proof.SessionProof, "https://qxchat.example.com", "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", user.Id)
+			assert.Error(t, err)
+			request := map[string]any{"session_proof": proof.SessionProof, "source_id": qxchatTestSource, "newapi_user_id": user.Id}
+			response = qxchatSessionRequest(t, "/api/qxchat/session/validate", request, strings.Repeat("2", 32), QXChatSessionValidate)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			assert.NotContains(t, response.Body.String(), proof.SessionProof)
+			response = qxchatSessionRequest(t, "/api/qxchat/session/validate", request, strings.Repeat("2", 32), QXChatSessionValidate)
+			assert.Equal(t, http.StatusUnauthorized, response.Code)
+			switch scenario {
+			case "session revoked":
+				require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", auth.SessionID).Update("revoked_at", time.Now().Unix()).Error)
+			case "auth version":
+				require.NoError(t, model.DB.Model(user).Update("auth_version", user.AuthVersion+1).Error)
+			case "user disabled":
+				require.NoError(t, model.DB.Model(user).Update("status", common.UserStatusDisabled).Error)
+			case "expired proof":
+				require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("purpose = ?", "qxchat_session").Update("expires_at", time.Now().Add(-time.Minute)).Error)
+			}
+			response = qxchatSessionRequest(t, "/api/qxchat/session/validate", request, strings.Repeat("3", 32), QXChatSessionValidate)
+			assert.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
+		})
+	}
 }
