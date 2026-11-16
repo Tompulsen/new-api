@@ -59,6 +59,10 @@ func AdjustUserQuota(userID, operatorRole int, mode string, value int) (*UserQuo
 		// An unchanged override is a successful operation, including on MySQL
 		// configurations that count only changed rows in RowsAffected.
 		if after != user.Quota {
+			if UnifiedWalletEnabled() {
+				adjustment = UserQuotaAdjustment{UserID:user.Id,Username:user.Username,Before:user.Quota,After:after}
+				return UnifiedWalletDeltaTx(tx,userID,int64(after)-int64(user.Quota),false,WalletReference("admin-adjustment",common.NewRequestId()))
+			}
 			result := tx.Model(&User{}).Where("id = ?", userID).Update("quota", after)
 			if result.Error != nil {
 				return result.Error

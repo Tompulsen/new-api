@@ -790,6 +790,7 @@ func executeTaskSubmissionWith(
 	task.PrivateData.Execution = service.TaskExecutionSnapshotFromContext(c)
 	task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
 	task.PrivateData.BillingSource = relayInfo.BillingSource
+	task.PrivateData.WalletOperationID = relayInfo.WalletOperationID
 	task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
 	task.PrivateData.TokenId = relayInfo.TokenId
 	task.PrivateData.NodeName = common.NodeName
@@ -892,6 +893,9 @@ func executeTaskSubmissionWith(
 		policy.AddEvent(service.PolicyEvent{Decision: service.PolicyDecision{Action: "stop", Reason: "task_failed", Source: "upstream"}})
 	}
 	service.LogTaskConsumption(c, relayInfo, task)
+	if immediateTerminal && task.PrivateData.WalletOperationID!="" {
+		if task.Status==model.TaskStatusFailure { service.RefundTaskQuota(c,task,task.FailReason) } else { service.RecalculateTaskQuota(c,task,task.Quota,common.NewMessage("Task completed")) }
+	}
 	diagnostics.complete(task, result.Quota)
 
 	return &taskSubmissionOutcome{Result: result, Task: task, RelayInfo: relayInfo}, nil

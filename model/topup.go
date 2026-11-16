@@ -24,6 +24,9 @@ type TopUp struct {
 	CompleteTime    int64                           `json:"complete_time"`
 	Status          string                          `json:"status"`
 	LotteryCredit   *CommunityLotteryCreditSnapshot `json:"-" gorm:"serializer:json;type:text"`
+	PaymentCurrency string `json:"payment_currency" gorm:"type:varchar(8)"`
+	PaymentPrincipalFen int64 `json:"payment_principal_fen" gorm:"type:bigint"`
+	PaymentVerified bool `json:"-"`
 }
 
 const (
@@ -92,6 +95,11 @@ func creditTopUpQuota(tx *gorm.DB, userId int, creditedQuota int, updates map[st
 	maxCurrentQuota, err := topUpQuotaMaxCurrent(creditedQuota)
 	if err != nil {
 		return err
+	}
+	if UnifiedWalletEnabled() {
+		if err := UnifiedWalletDeltaTx(tx, userId, int64(creditedQuota), false, WalletReference("noncash-credit", common.NewRequestId())); err != nil { return err }
+		if len(updates) > 0 { return tx.Model(&User{}).Where("id = ?", userId).Updates(updates).Error }
+		return nil
 	}
 
 	updateFields := make(map[string]any, len(updates)+1)

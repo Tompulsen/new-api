@@ -28,6 +28,9 @@ func Password2Hash(password string) (string, error) {
 }
 
 func ValidatePasswordAndHash(password string, hash string) bool {
+	if strings.HasPrefix(hash, QXChatPasswordPrefix) {
+		return validateQXChatPassword(password, hash)
+	}
 	if strings.HasPrefix(hash, "$argon2id$") {
 		return validateArgon2AccountPassword(password, hash)
 	}

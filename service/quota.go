@@ -140,7 +140,18 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
 
-	if userQuota < quota {
+	if model.UnifiedWalletEnabled() {
+  if relayInfo.Billing==nil {
+   session,apiErr:=NewBillingSession(ctx,relayInfo,0)
+   if apiErr!=nil { return 0,apiErr };relayInfo.Billing=session
+  }
+  if session,ok:=relayInfo.Billing.(*BillingSession);ok {
+   if _,unified:=session.funding.(*UnifiedWalletFunding);unified {
+    if err:=session.accumulateWalletUsage(quota);err!=nil { return 0,err };return quota,nil
+   }
+  }
+ }
+ if userQuota < quota {
 		return 0, fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(userQuota), logger.FormatQuota(quota))
 	}
 
@@ -438,6 +449,13 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 }
 
 func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) (result postConsumeQuotaResult, err error) {
+ if model.UnifiedWalletEnabled() && relayInfo!=nil && relayInfo.BillingSource!=BillingSourceSubscription {
+  mode:=relayInfo.WalletMode;if mode=="" { mode=model.WalletAPI }
+  tokenID:=relayInfo.TokenId;if relayInfo.IsPlayground { tokenID=0 }
+  err=model.ApplyWalletUsage(relayInfo.UserId,tokenID,model.WalletReference("post-consume",relayInfo.RequestId),mode,quota)
+  if err!=nil { return result,err };result.FundingApplied=true;result.TokenApplied=tokenID>0;return result,nil
+ }
+
 
 	// 1) Consume from wallet quota OR subscription item
 	if relayInfo != nil && relayInfo.BillingSource == BillingSourceSubscription {

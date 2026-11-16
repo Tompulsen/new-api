@@ -609,6 +609,11 @@ func (user *User) TransferAffQuotaToQuota(quota int) error {
 	}
 
 	// 更新用户额度
+	if UnifiedWalletEnabled() {
+		if err := UnifiedWalletDeltaTx(tx, user.Id, int64(quota), false, WalletReference("invitation", common.NewRequestId())); err != nil { return err }
+		if err := tx.Model(user).Update("aff_quota", user.AffQuota-quota).Error; err != nil { return err }
+		return tx.Commit().Error
+	}
 	user.AffQuota -= quota
 	user.Quota += quota
 
@@ -1250,7 +1255,7 @@ func ValidateAccessToken(token string) (*User, error) {
 
 // GetUserQuota gets quota from Redis first, falls back to DB if needed
 func GetUserQuota(id int, fromDB bool) (quota int, err error) {
-	if !fromDB && common.RedisEnabled {
+	if !UnifiedWalletEnabled() && !fromDB && common.RedisEnabled {
 		return getUserQuotaCache(id)
 	}
 	err = DB.Model(&User{}).Where("id = ?", id).Select("quota").Find(&quota).Error
@@ -1344,6 +1349,7 @@ func IncreaseUserQuota(id int, quota int, db bool) (err error) {
 	if err := common.ValidateWalletQuota(quota); err != nil {
 		return err
 	}
+	if UnifiedWalletEnabled() { return UnifiedWalletDelta(id, int64(quota), false) }
 	if !db && common.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeUserQuota, id, quota)
 		gopool.Go(func() {
@@ -1388,6 +1394,7 @@ func DecreaseUserQuota(id int, quota int, db bool) (err error) {
 	if quota < 0 {
 		return errors.New("quota cannot be negative")
 	}
+	if UnifiedWalletEnabled() { return UnifiedWalletDelta(id, -int64(quota), false) }
 	gopool.Go(func() {
 		err := cacheDecrUserQuota(id, int64(quota))
 		if err != nil {
@@ -1470,6 +1477,10 @@ func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
 }
 
 func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, requestCount int) {
+	if UnifiedWalletEnabled() && quota != 0 {
+		common.SysError("legacy wallet batch writer attempted to run after unified wallet activation")
+		return
+	}
 	if quota == 0 && usedQuota == 0 && requestCount == 0 {
 		return
 	}

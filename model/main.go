@@ -380,6 +380,12 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+	if err := MigrateQXChatIdentity(DB); err != nil {
+		return err
+	}
+	if err := MigrateUnifiedWallet(DB); err != nil {
+		return err
+	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
 	}

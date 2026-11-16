@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
@@ -100,7 +101,11 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 		return nil
 	}
 
-	// 回退：无 BillingSession 时使用旧路径
+	if model.UnifiedWalletEnabled() && ctx.GetInt(common.CommunityWalletUserKey)>0 {
+  if ctx.GetInt(common.CommunityWalletUserKey)!=relayInfo.UserId { return model.ErrWalletConflict }
+  relayInfo.WalletMode=model.WalletCommunity
+ }
+ // 回退：无 BillingSession 时使用旧路径
 	quotaDelta := actualQuota - relayInfo.FinalPreConsumedQuota
 	if quotaDelta != 0 {
 		return PostConsumeQuota(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true)
