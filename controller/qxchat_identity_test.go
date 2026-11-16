@@ -54,6 +54,7 @@ type qxchatSourceFixture struct {
 	prepareCalls, commitCalls int
 	loseReceipt, tamperResponse, refuseCommit bool
 	nonces map[string]bool
+	onCommit func() error
 }
 
 func startQXChatSourceFixture(t *testing.T) *qxchatSourceFixture {
@@ -96,6 +97,11 @@ func startQXChatSourceFixture(t *testing.T) *qxchatSourceFixture {
 				status, result = http.StatusConflict, map[string]string{"error": "credentials changed"}
 			} else {
 				fixture.committed = &input
+				if fixture.onCommit != nil {
+					hook := fixture.onCommit
+					fixture.onCommit = nil
+					if err := hook(); err != nil { w.WriteHeader(http.StatusInternalServerError); return }
+				}
 				result = map[string]any{"request_id": input.RequestID, "source_id": input.SourceID, "newapi_user_id": input.NewAPIUserID, "authority": "newapi", "authority_version": input.AuthorityVersion}
 				if fixture.loseReceipt { fixture.loseReceipt = false; status = http.StatusServiceUnavailable }
 			}
@@ -255,6 +261,48 @@ func TestQXChatCollisionRequiresBothAccountsAndProofCannotReplay(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrInvalidCredentials)
 	_, err = service.LoginQXChatIdentity(context.Background(), "legacy-user", "enrollment-password")
 	assert.NoError(t, err)
+}
+
+func TestQXChatBindingCannotFinishWithRevokedTargetAuthorization(t *testing.T) {
+	for _, scenario := range []string{"session revoked", "auth version changed"} {
+		t.Run(scenario, func(t *testing.T) {
+			user, identity := setupQXChatIdentityTest(t)
+			source := startQXChatSourceFixture(t)
+			source.onCommit = func() error {
+				if scenario == "session revoked" {
+					_, err := model.RevokeUserSession(user.Id, identity.SessionID, "test-revoke-during-source-commit")
+					return err
+				}
+				return model.DB.Model(&model.User{}).Where("id = ?", user.Id).Update("auth_version", identity.UserAuthVersion+1).Error
+			}
+			operation := service.VerificationOperation{Scope: service.VerificationScopeAccountBind, Context: []byte(`{"provider":"qxchat","code":"legacy-user"}`)}
+			proof := issueSecurityEnrollmentProof(t, identity, operation, service.VerificationMethodPassword)
+			body := `{"username":"legacy-user","password":"QXChat-password-123"}`
+			response := securityEnrollmentRequest("POST", "/api/user/qxchat/bind", body, proof, identity, QXChatIdentityBind)
+			var result securityEnrollmentResponse
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+			assert.False(t, result.Success)
+			require.NotNil(t, source.committed)
+			var mapping model.QXChatIdentity
+			require.NoError(t, model.DB.First(&mapping, "source_id = ?", qxchatTestSource).Error)
+			assert.Equal(t, model.QXChatIdentityPending, mapping.State)
+			response = securityEnrollmentRequest("POST", "/api/user/qxchat/bind", body, proof, identity, QXChatIdentityBind)
+			assert.Equal(t, http.StatusForbidden, response.Code)
+			assert.Equal(t, 1, source.commitCalls)
+			require.NoError(t, model.PublishUserAuthCache(user.Id))
+			bundle, err := service.CreateLoginSession(user.Id, "password", "127.0.0.1", "qxchat-recovery")
+			require.NoError(t, err)
+			freshIdentity, err := service.ParseAccessToken(bundle.AccessToken)
+			require.NoError(t, err)
+			freshProof := issueSecurityEnrollmentProof(t, freshIdentity, operation, service.VerificationMethodPassword)
+			response = securityEnrollmentRequest("POST", "/api/user/qxchat/bind", body, freshProof, freshIdentity, QXChatIdentityBind)
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+			require.True(t, result.Success, response.Body.String())
+			_, err = model.ResolveQXChatIdentity(qxchatTestSource)
+			require.NoError(t, err)
+			assert.Equal(t, 1, source.prepareCalls)
+		})
+	}
 }
 
 func TestQXChatLoginPreservesMFA(t *testing.T) {

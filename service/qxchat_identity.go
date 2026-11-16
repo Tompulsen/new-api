@@ -84,7 +84,7 @@ type QXChatCommitRequest struct {
 	AuthorityVersion  int64  `json:"authority_version"`
 }
 
-func commitQXChatIdentity(ctx context.Context, identity *model.QXChatIdentity) (*model.User, error) {
+func commitQXChatIdentity(ctx context.Context, identity *model.QXChatIdentity, target *AuthIdentity) (*model.User, error) {
 	request := QXChatCommitRequest{identity.RequestID, identity.SourceID, identity.UserID, identity.CredentialVersion, identity.AuthorityVersion}
 	var receipt struct {
 		RequestID string `json:"request_id"`
@@ -96,7 +96,7 @@ func commitQXChatIdentity(ctx context.Context, identity *model.QXChatIdentity) (
 	if err := callQXChatSource(ctx, qxchatCommitPath, request, &receipt); err != nil { return nil, err }
 	if receipt.RequestID != request.RequestID || receipt.SourceID != request.SourceID || receipt.NewAPIUserID != request.NewAPIUserID ||
 		receipt.Authority != "newapi" || receipt.AuthorityVersion != request.AuthorityVersion { return nil, ErrQXChatUnavailable }
-	user, err := model.ActivateQXChatIdentity(*identity)
+	user, err := model.ActivateQXChatIdentity(*identity, target)
 	if err != nil { return nil, err }
 	if err := model.PublishUserAuthCache(user.Id); err != nil { return nil, err }
 	return user, nil
@@ -118,7 +118,7 @@ func LoginQXChatIdentity(ctx context.Context, identifier, password string) (*mod
 		if !mapping.Imported { return nil, model.ErrQXChatIdentityConflict }
 		// Resume after a lost source receipt without re-enabling the old credential authority.
 		if user.Status == model.QXChatUserPendingStatus && common.ValidatePasswordAndHash(password, user.Password) {
-			user, err := commitQXChatIdentity(ctx, mapping)
+			user, err := commitQXChatIdentity(ctx, mapping, nil)
 			if err == nil { return user, nil }
 			if !errors.Is(err, model.ErrInvalidCredentials) { return nil, err }
 		}
@@ -134,7 +134,7 @@ func LoginQXChatIdentity(ctx context.Context, identifier, password string) (*mod
 	if profile.RequestID != requestID { return nil, ErrQXChatUnavailable }
 	mapping, _, err = model.PrepareQXChatIdentity(profile, nil)
 	if err != nil { return nil, err }
-	return commitQXChatIdentity(ctx, mapping)
+	return commitQXChatIdentity(ctx, mapping, nil)
 }
 
 func BindQXChatIdentity(ctx context.Context, identity AuthIdentity, authorization *model.AuthFlowAuthorization, identifier, password string) (*model.QXChatIdentity, error) {
@@ -149,7 +149,7 @@ func BindQXChatIdentity(ctx context.Context, identity AuthIdentity, authorizatio
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) { return nil, err }
 	if err == nil && mapping.UserID == identity.UserID {
 		if mapping.State == model.QXChatIdentityActive { return model.ResolveQXChatIdentity(mapping.SourceID) }
-		if _, err := commitQXChatIdentity(ctx, mapping); err == nil { return model.ResolveQXChatIdentity(mapping.SourceID) } else if !errors.Is(err, model.ErrInvalidCredentials) { return nil, err }
+		if _, err := commitQXChatIdentity(ctx, mapping, &identity); err == nil { return model.ResolveQXChatIdentity(mapping.SourceID) } else if !errors.Is(err, model.ErrInvalidCredentials) { return nil, err }
 	}
 	var profile model.QXChatSourceProfile
 	requestID := uuid.NewString()
@@ -163,6 +163,6 @@ func BindQXChatIdentity(ctx context.Context, identity AuthIdentity, authorizatio
 	if err := ValidateFlowAuthorization(identity, operation, authorization); err != nil { return nil, err }
 	mapping, _, err = model.PrepareQXChatIdentity(profile, &identity)
 	if err != nil { return nil, err }
-	if _, err := commitQXChatIdentity(ctx, mapping); err != nil { return nil, err }
+	if _, err := commitQXChatIdentity(ctx, mapping, &identity); err != nil { return nil, err }
 	return model.ResolveQXChatIdentity(mapping.SourceID)
 }

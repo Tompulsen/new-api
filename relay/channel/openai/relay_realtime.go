@@ -291,6 +291,9 @@ func preConsumeUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.R
 	totalUsage.InputTokenDetails.AudioTokens += usage.InputTokenDetails.AudioTokens
 	totalUsage.OutputTokenDetails.TextTokens += usage.OutputTokenDetails.TextTokens
 	totalUsage.OutputTokenDetails.AudioTokens += usage.OutputTokenDetails.AudioTokens
-	// clear usage
-	return service.PreWssConsumeQuota(ctx, info, usage)
+	// The response is already included in totalUsage even when charging stops
+ // the connection. Do not count it again during the final drain.
+ quota,err:=service.PreWssConsumeQuota(ctx, info, usage)
+ *usage=dto.RealtimeUsage{}
+ return quota,err
 }

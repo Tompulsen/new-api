@@ -474,7 +474,9 @@ func EpayNotify(c *gin.Context) {
 		// 数据库行锁 + 事务内状态校验保证（多实例部署下同样安全）。
 		LockOrder(verifyInfo.ServiceTradeNo)
 		defer UnlockOrder(verifyInfo.ServiceTradeNo)
-		alreadyDone, err := model.RechargeEpay(verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP())
+		payment,paymentErr:=model.VerifiedPaymentMajor("CNY",params["money"],params["trade_no"])
+		if paymentErr!=nil { c.String(http.StatusBadRequest,"fail");return }
+		alreadyDone, err := model.RechargeEpay(verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP(),payment)
 		if err != nil {
 			switch {
 			case errors.Is(err, model.ErrTopUpNotFound):

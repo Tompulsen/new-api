@@ -57,6 +57,7 @@ type UnifiedWalletLot struct {
 	Source string `gorm:"type:varchar(64);not null"`
 	InitialQuota int64 `gorm:"type:bigint;not null"`
 	RemainingQuota int64 `gorm:"type:bigint;not null"`
+	ReversedQuota int64 `gorm:"type:bigint;not null"`
 	InitialPoints int64 `gorm:"type:bigint;not null"`
 	ExpiresAt int64 `gorm:"type:bigint;not null"`
 	CreatedAt int64 `gorm:"type:bigint;not null"`
@@ -76,6 +77,7 @@ type UnifiedWalletOperation struct {
 	Quota int64 `gorm:"type:bigint;not null"`
 	TokenID int `gorm:"not null"`
 	TaskID int64 `gorm:"type:bigint;index;not null"`
+	MidjourneyID int `gorm:"index;not null"`
 	Allocations []WalletAllocation `gorm:"serializer:json;type:text"`
 	CreatedAt int64 `gorm:"type:bigint;not null"`
 	UpdatedAt int64 `gorm:"type:bigint;not null"`
@@ -136,7 +138,12 @@ type UnifiedWalletView struct {
 }
 
 func MigrateUnifiedWallet(db *gorm.DB) error {
-	return db.AutoMigrate(&UnifiedWalletAccount{}, &UnifiedWalletLot{}, &UnifiedWalletOperation{}, &UnifiedWalletEntry{}, &UnifiedWalletNonce{}, &UnifiedWalletReceipt{})
+	if err := db.AutoMigrate(&UnifiedWalletAccount{}, &UnifiedWalletLot{}, &UnifiedWalletOperation{}, &UnifiedWalletEntry{}, &UnifiedWalletNonce{}, &UnifiedWalletReceipt{}, &UnifiedWalletPaymentReceipt{}, &UnifiedWalletPaymentReversal{}); err != nil { return err }
+ if UnifiedWalletEnabled() { _,err:=UnifiedWalletQuotaPerPoint();return err }
+ var accounts int64
+ if err:=db.Model(&UnifiedWalletAccount{}).Limit(1).Count(&accounts).Error;err!=nil { return err }
+ if accounts>0 { return errors.New("unified wallet has been activated; keep UNIFIED_WALLET_ENABLED=true to prevent unclassified writes") }
+ return nil
 }
 
 func WalletReference(parts ...string) string {
@@ -223,14 +230,20 @@ func restoreWalletQuota(tx *gorm.DB, account *UnifiedWalletAccount, operation st
 		allocation := &allocations[i]
 		refund := min(amount, allocation.Quota)
 		if refund == 0 { continue }
+		restored:=refund
 		if allocation.Kind == WalletLegacy { account.LegacyQuota += refund } else {
 			var lot UnifiedWalletLot
 			if err := lockForUpdate(tx).First(&lot, allocation.LotID).Error; err != nil { return nil, err }
 			if lot.UserID != account.UserID || lot.Kind != allocation.Kind || refund > lot.InitialQuota-lot.RemainingQuota { return nil, ErrWalletInvariant }
-			if err := tx.Model(&lot).Update("remaining_quota", lot.RemainingQuota+refund).Error; err != nil { return nil, err }
-			if allocation.Kind == WalletPaid { account.PaidQuota += refund }
+			restored=min(refund,max(int64(0),lot.InitialQuota-lot.ReversedQuota-lot.RemainingQuota))
+   if err := tx.Model(&lot).Update("remaining_quota", lot.RemainingQuota+restored).Error; err != nil { return nil, err }
+   if allocation.Kind == WalletPaid {
+    account.PaidQuota += restored
+    account.LegacyQuota += refund-restored
+    if refund>restored { if err:=walletEntry(tx,account.UserID,operation,WalletAllocation{Kind:WalletLegacy},"refund_reversal_debt",refund-restored);err!=nil { return nil,err } }
+   } else if restored!=refund { return nil,ErrWalletInvariant }
 		}
-		if err := walletEntry(tx, account.UserID, operation, *allocation, "refund", refund); err != nil { return nil, err }
+		if restored>0 { if err := walletEntry(tx, account.UserID, operation, *allocation, "refund", restored); err != nil { return nil, err } }
 		allocation.Quota -= refund
 		amount -= refund
 	}
@@ -239,23 +252,29 @@ func restoreWalletQuota(tx *gorm.DB, account *UnifiedWalletAccount, operation st
 }
 
 func BeginWalletOperation(userID int, id, mode string, quota, tokenID int) error {
-	if !UnifiedWalletEnabled() { return ErrWalletUnavailable }
-	if len(id) != 64 || (mode != WalletAPI && mode != WalletCommunity) || quota < 0 || quota > common.MaxWalletQuota || tokenID < 0 { return ErrWalletConflict }
-	return DB.Transaction(func(tx *gorm.DB) error {
-		user, account, err := lockUnifiedWallet(tx, userID)
-		if err != nil { return err }
-		if user.Status != common.UserStatusEnabled { return ErrWalletUnavailable }
-		var count int64
-		if err := tx.Model(&UnifiedWalletOperation{}).Where("id = ?", id).Count(&count).Error; err != nil { return err }
-		if count != 0 { return ErrWalletDuplicate }
-		allocations, err := takeWalletQuota(tx, account, id, mode, int64(quota), true)
-		if err != nil { return err }
-		now := time.Now().Unix()
-		op := UnifiedWalletOperation{ID:id, UserID:userID, Mode:mode, State:"reserved", Quota:int64(quota), TokenID:tokenID, Allocations:allocations, CreatedAt:now, UpdatedAt:now}
-		if err := adjustWalletToken(tx, &op, int64(quota), true); err != nil { return err }
-		if err := tx.Create(&op).Error; err != nil { return err }
-		return saveUnifiedWallet(tx, user, account)
-	})
+ if !UnifiedWalletEnabled() { return ErrWalletUnavailable }
+ return DB.Transaction(func(tx *gorm.DB) error { return createWalletOperationTx(tx,userID,tokenID,id,mode,quota,"reserved",true) })
+}
+
+func createWalletOperationTx(tx *gorm.DB,userID,tokenID int,id,mode string,quota int,state string,requireAvailable bool) error {
+ if quota<0 || quota>common.MaxWalletQuota || len(id)!=64 || tokenID<0 || (mode!=WalletAPI && mode!=WalletCommunity) { return ErrWalletConflict }
+ user,account,err:=lockUnifiedWallet(tx,userID)
+ if err!=nil { return err }
+ if requireAvailable && user.Status!=common.UserStatusEnabled { return ErrWalletUnavailable }
+ var op UnifiedWalletOperation
+ err=tx.First(&op,"id = ?",id).Error
+ if err==nil {
+  if state=="settled" && op.UserID==userID && op.TokenID==tokenID && op.State==state && op.Mode==mode && op.Quota==int64(quota) { return nil }
+  return ErrWalletDuplicate
+ }
+ if !errors.Is(err,gorm.ErrRecordNotFound) { return err }
+ allocations,err:=takeWalletQuota(tx,account,id,mode,int64(quota),requireAvailable)
+ if err!=nil { return err }
+ now:=time.Now().Unix()
+ op=UnifiedWalletOperation{ID:id,UserID:userID,Mode:mode,State:state,Quota:int64(quota),TokenID:tokenID,Allocations:allocations,CreatedAt:now,UpdatedAt:now}
+ if err:=adjustWalletToken(tx,&op,int64(quota),requireAvailable);err!=nil { return err }
+ if err:=tx.Create(&op).Error;err!=nil { return err }
+ return saveUnifiedWallet(tx,user,account)
 }
 
 // ChangeWalletOperation uses an absolute target so callback retries cannot apply
@@ -311,26 +330,40 @@ func ChangeWalletTaskQuota(task *Task,quota int,state string) (delta int,applied
  return
 }
 
+// Commit the delivered response, then decide under the same locks whether the
+// stream has any remaining fund and token allowance for another response.
+func ReserveWalletRealtimeUsage(userID int,id string,target,consumed int) (exhausted bool,err error) {
+ if !UnifiedWalletEnabled() || consumed<0 || target<consumed { return false,ErrWalletConflict }
+ err=DB.Transaction(func(tx *gorm.DB) error {
+  if _,_,err:=changeWalletOperationTx(tx,userID,id,target,"reserved",false);err!=nil { return err }
+  var account UnifiedWalletAccount
+  if err:=tx.First(&account,"user_id = ?",userID).Error;err!=nil { return err }
+  var user User
+  if err:=tx.First(&user,userID).Error;err!=nil { return err }
+  var op UnifiedWalletOperation
+  if err:=tx.First(&op,"id = ?",id).Error;err!=nil { return err }
+  available:=max(int64(0),account.PaidQuota+account.LegacyQuota)
+  if op.Mode==WalletCommunity {
+   var charity int64
+   if err:=tx.Model(&UnifiedWalletLot{}).Select("COALESCE(SUM(remaining_quota), 0)").Where("user_id = ? AND kind = ? AND (expires_at = 0 OR expires_at > ?)",userID,WalletCharity,time.Now().Unix()).Scan(&charity).Error;err!=nil { return err }
+   available=max(int64(0),account.PaidQuota+min(int64(0),account.LegacyQuota))+charity
+  }
+  unused:=int64(target-consumed)
+  exhausted=user.Status!=common.UserStatusEnabled || available+unused<=0
+  if op.TokenID!=0 {
+   var token Token
+   if err:=tx.Unscoped().First(&token,op.TokenID).Error;err!=nil { return err }
+   exhausted=exhausted || token.DeletedAt.Valid || token.Status!=common.TokenStatusEnabled || (token.ExpiredTime!=-1 && token.ExpiredTime<time.Now().Unix()) || (!token.UnlimitedQuota && int64(token.RemainQuota)+unused<=0)
+  }
+  return nil
+ })
+ return
+}
+
 // Delivered usage without a reservation still uses one atomic fund/token write.
 func ApplyWalletUsage(userID,tokenID int,id,mode string,quota int) error {
- if !UnifiedWalletEnabled() || quota<0 || quota>common.MaxWalletQuota || len(id)!=64 || (mode!=WalletAPI && mode!=WalletCommunity) { return ErrWalletConflict }
- return DB.Transaction(func(tx *gorm.DB) error {
-  user,account,err:=lockUnifiedWallet(tx,userID)
-  if err!=nil { return err }
-  var op UnifiedWalletOperation
-  err=tx.First(&op,"id = ?",id).Error
-  if err==nil {
-   if op.UserID==userID && op.TokenID==tokenID && op.State=="settled" && op.Mode==mode && op.Quota==int64(quota) { return nil };return ErrWalletConflict
-  }
-  if !errors.Is(err,gorm.ErrRecordNotFound) { return err }
-  allocations,err:=takeWalletQuota(tx,account,id,mode,int64(quota),false)
-  if err!=nil { return err }
-  now:=time.Now().Unix()
-  op=UnifiedWalletOperation{ID:id,UserID:userID,Mode:mode,State:"settled",Quota:int64(quota),TokenID:tokenID,Allocations:allocations,CreatedAt:now,UpdatedAt:now}
-  if err:=adjustWalletToken(tx,&op,int64(quota),false);err!=nil { return err }
-  if err:=tx.Create(&op).Error;err!=nil { return err }
-  return saveUnifiedWallet(tx,user,account)
- })
+ if !UnifiedWalletEnabled() { return ErrWalletUnavailable }
+ return DB.Transaction(func(tx *gorm.DB) error { return createWalletOperationTx(tx,userID,tokenID,id,mode,quota,"settled",false) })
 }
 
 func adjustWalletToken(tx *gorm.DB, op *UnifiedWalletOperation, delta int64, requireAvailable bool) error {
@@ -340,6 +373,7 @@ func adjustWalletToken(tx *gorm.DB, op *UnifiedWalletOperation, delta int64, req
 	if errors.Is(err,gorm.ErrRecordNotFound) && delta<0 { return nil }
 	if err!=nil { return err }
 	if token.UserId!=op.UserID { return ErrWalletConflict }
+	if delta>0 && requireAvailable && (token.DeletedAt.Valid || token.Status!=common.TokenStatusEnabled || (token.ExpiredTime!=-1 && token.ExpiredTime<time.Now().Unix())) { return ErrWalletUnavailable }
 	if delta>0 && requireAvailable && !token.UnlimitedQuota && int64(token.RemainQuota)<delta { return ErrWalletInsufficient }
 	return tx.Unscoped().Model(&token).Updates(map[string]any{"remain_quota":gorm.Expr("remain_quota - ?",delta),"used_quota":gorm.Expr("used_quota + ?",delta),"accessed_time":time.Now().Unix()}).Error
 }
@@ -372,6 +406,7 @@ func CreditVerifiedPaymentTx(tx *gorm.DB, userID int, quota int, topup *TopUp, u
 		if len(updates)>0 { return tx.Model(user).Updates(updates).Error }
 		return nil
 	}
+	if err:=recordVerifiedPaymentTx(tx,topup);err!=nil { return err }
 	points, err := common.WalletQuotaFromDecimalStrict(decimal.NewFromInt(topup.PaymentPrincipalFen).Mul(decimal.NewFromInt(50)))
 	if err != nil { return err }
 	lot := UnifiedWalletLot{UserID:userID, Kind:WalletPaid, Reference:WalletReference("topup",topup.TradeNo), Source:topup.PaymentProvider, InitialQuota:int64(quota), RemainingQuota:int64(quota), InitialPoints:int64(points), CreatedAt:time.Now().Unix()}
@@ -414,13 +449,16 @@ func ImportQXChatWallet(request WalletImportRequest, digest string) (*UnifiedWal
 	if len(request.TransferID)<16 || len(request.TransferID)>96 || len(digest)!=64 || len(request.Lots)==0 || len(request.Lots)>1000 { return nil,ErrWalletConflict }
 	rate,err:=UnifiedWalletQuotaPerPoint()
 	if err!=nil { return nil,err }
-	identity,err:=ResolveQXChatIdentity(request.SourceUserID)
-	if err!=nil { return nil,err }
-	if identity.UserID!=request.NewAPIUserID || identity.AuthorityVersion!=request.BindingVersion { return nil,ErrWalletConflict }
+	if !qxchatSourceID.MatchString(request.SourceUserID) || request.NewAPIUserID<=0 || request.BindingVersion<=0 { return nil,ErrWalletConflict }
 	var receipt UnifiedWalletReceipt
 	err=DB.Transaction(func(tx *gorm.DB) error {
-		_,_,err:=lockUnifiedWallet(tx,identity.UserID)
+  var identity QXChatIdentity
+  if err:=lockForUpdate(tx).Where("source_id = ?",request.SourceUserID).First(&identity).Error;err!=nil { return err }
+  if identity.State!=QXChatIdentityActive { return ErrQXChatIdentityInactive }
+  if identity.UserID!=request.NewAPIUserID || identity.AuthorityVersion!=request.BindingVersion { return ErrWalletConflict }
+		user,_,err:=lockUnifiedWallet(tx,identity.UserID)
 		if err!=nil { return err }
+  if user.Status!=common.UserStatusEnabled { return ErrQXChatIdentityInactive }
 		err=tx.First(&receipt,"transfer_id = ?",request.TransferID).Error
 		if err==nil {
 			if receipt.UserID!=identity.UserID || receipt.Digest!=digest || receipt.Status!="credited" { return ErrWalletConflict }
@@ -430,6 +468,8 @@ func ImportQXChatWallet(request WalletImportRequest, digest string) (*UnifiedWal
 		now:=time.Now().Unix()
 		receipt=UnifiedWalletReceipt{TransferID:request.TransferID,SourceUserID:request.SourceUserID,UserID:identity.UserID,BindingVersion:request.BindingVersion,Status:"credited",Digest:digest,CreatedAt:now}
 		seen:=map[string]bool{}
+  var charityQuota int64
+  if err:=tx.Model(&UnifiedWalletLot{}).Select("COALESCE(SUM(remaining_quota), 0)").Where("user_id = ? AND kind = ? AND (expires_at = 0 OR expires_at > ?)",identity.UserID,WalletCharity,now).Scan(&charityQuota).Error;err!=nil { return err }
 		for _,source:=range request.Lots {
 			if source.Points<=0 || source.Points>int64(common.MaxWalletQuota)/rate || len(source.SourceLotID)==0 || len(source.SourceLotID)>96 || seen[source.SourceLotID] || receipt.Points>int64(common.MaxWalletQuota)-source.Points { return ErrWalletConflict }
 			seen[source.SourceLotID]=true
@@ -438,10 +478,26 @@ func ImportQXChatWallet(request WalletImportRequest, digest string) (*UnifiedWal
 			receipt.Points+=source.Points
 			lot:=UnifiedWalletLot{UserID:identity.UserID,Kind:WalletCharity,Reference:WalletReference("qxchat",request.TransferID,source.SourceLotID),Source:"qxchat_legacy",InitialQuota:source.Points*rate,RemainingQuota:source.Points*rate,InitialPoints:source.Points,ExpiresAt:expires,CreatedAt:now}
 			if expires>0 && expires<=now { lot.RemainingQuota=0;receipt.ExpiredPoints+=source.Points }
+   if charityQuota>int64(common.MaxWalletQuota)-lot.RemainingQuota { return ErrWalletQuotaLimitExceeded }
+   charityQuota+=lot.RemainingQuota
 			if err:=tx.Create(&lot).Error;err!=nil { return err }
 			if err:=walletEntry(tx,identity.UserID,WalletReference("qxchat",request.TransferID),WalletAllocation{Kind:WalletCharity,LotID:lot.ID},"import",lot.RemainingQuota);err!=nil { return err }
 		}
 		return tx.Create(&receipt).Error
 	})
 	return &receipt,err
+}
+
+func ChangeWalletMidjourneyQuota(task *Midjourney,quota int,state string) (delta int,applied bool,err error) {
+ if !UnifiedWalletEnabled() || task==nil || task.Id==0 || task.WalletOperationID=="" { return 0,false,ErrWalletConflict }
+ err=DB.Transaction(func(tx *gorm.DB) error {
+  var changeErr error
+  delta,applied,changeErr=changeWalletOperationTx(tx,task.UserId,task.WalletOperationID,quota,state,false)
+  if changeErr!=nil { return changeErr }
+  var stored Midjourney
+  if err:=lockForUpdate(tx).First(&stored,task.Id).Error;err!=nil { return err }
+  if stored.UserId!=task.UserId || stored.WalletOperationID!=task.WalletOperationID { return ErrWalletConflict }
+  return tx.Model(&stored).Update("quota",quota).Error
+ })
+ if err==nil { task.Quota=quota };return
 }

@@ -47,6 +47,7 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
 	}
 	if priceData.FreeModel {
+  if c.GetInt(common.CommunityWalletUserKey)>0 { return service.PreConsumeBilling(c,0,info) }
 		logger.LogInfo(c, common.LogText("model %s is free, skipping pre-consume", info.OriginModelName))
 		return nil
 	}

@@ -601,7 +601,9 @@ func (t *Task) UpdateQuota() error {
 // falls back to INSERT ON CONFLICT when the WHERE-guarded UPDATE matches
 // zero rows, which silently bypasses the CAS guard.
 func (t *Task) UpdateWithStatus(fromStatus TaskStatus) (bool, error) {
-	result := DB.Model(t).Where("status = ?", fromStatus).Select("*").Updates(t)
+	update:=DB.Model(t).Where("status = ?", fromStatus).Select("*")
+	if UnifiedWalletEnabled() && t.PrivateData.WalletOperationID!="" { update=update.Omit("quota") }
+	result := update.Updates(t)
 	if result.Error != nil {
 		return false, result.Error
 	}

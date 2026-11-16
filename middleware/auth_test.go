@@ -615,3 +615,40 @@ func TestApplyWebSocketSubprotocolAuthorizationReadsRepeatedHeaders(t *testing.T
 	assert.True(t, applyWebSocketSubprotocolAuthorization(header))
 	assert.Equal(t, "Bearer sk-later-field", header.Get("Authorization"))
 }
+
+func TestUnifiedWalletProofRejectsTamperingReplayAndWrongOwner(t *testing.T) {
+ setupDashboardAuthMiddlewareTest(t)
+ t.Setenv("UNIFIED_WALLET_ENABLED","true");t.Setenv("UNIFIED_WALLET_QUOTA_PER_CNY","5000")
+ secret:=strings.Repeat("wallet-proof-secret-",3)
+ t.Setenv("COMMUNITY_WALLET_SECRET",secret);t.Setenv("COMMUNITY_WALLET_CLIENT_ID","https://community.example")
+ require.NoError(t,model.MigrateUnifiedWallet(model.DB))
+ router:=gin.New()
+ router.Use(CommunityWalletProof(),func(c *gin.Context){c.Set("id",10);c.Next()},CommunityWalletOwner())
+ handler:=func(c *gin.Context){c.Status(http.StatusNoContent)}
+ router.POST("/v1/chat/completions",handler);router.POST("/v1/images/generations",handler)
+ for index,scenario:=range []string{"valid","body","query","user-header","wrong-owner","expired","future","signature","partial","compressed","replay"} {
+  t.Run(scenario,func(t *testing.T){
+   path,body,user:="/v1/chat/completions?model=one",`{"model":"one","messages":[]}`,"10"
+   timestamp:=time.Now().Unix()
+   if scenario=="expired" { timestamp-=61 };if scenario=="future" { timestamp+=61 };if scenario=="wrong-owner" { user="11" }
+   nonce:=fmt.Sprintf("%032x",index+1);stamp:=fmt.Sprint(timestamp);requestID:="community-request-00001"
+   bodyHash:=sha256.Sum256([]byte(body))
+   canonical:=strings.Join([]string{"community-wallet-v1","https://community.example",user,stamp,nonce,http.MethodPost,path,requestID,fmt.Sprintf("%x",bodyHash)},"\n")
+   mac:=hmac.New(sha256.New,[]byte(secret));_,err:=mac.Write([]byte(canonical));require.NoError(t,err)
+   signature:=fmt.Sprintf("%x",mac.Sum(nil))
+   if scenario=="body" { body=`{"model":"two","messages":[]}` };if scenario=="query" { path="/v1/chat/completions?model=two" };if scenario=="user-header" { user="11" };if scenario=="signature" { signature=strings.Repeat("0",64) }
+   makeRequest:=func()*http.Request{
+    request:=httptest.NewRequest(http.MethodPost,path,strings.NewReader(body))
+    request.Header.Set("Content-Type","application/json")
+    request.Header.Set("X-Community-Client","https://community.example");request.Header.Set("X-Community-User",user);request.Header.Set("X-Community-Timestamp",stamp);request.Header.Set("X-Community-Nonce",nonce);request.Header.Set("X-Community-Signature",signature);request.Header.Set("Idempotency-Key",requestID)
+    if scenario=="partial" { request.Header.Del("X-Community-Signature") };if scenario=="compressed" { request.Header.Set("Content-Encoding","gzip") }
+    return request
+   }
+   response:=httptest.NewRecorder();router.ServeHTTP(response,makeRequest())
+   expected:=http.StatusUnauthorized;if scenario=="valid" || scenario=="replay" { expected=http.StatusNoContent }
+   assert.Equal(t,expected,response.Code,response.Body.String())
+   if scenario=="replay" { response=httptest.NewRecorder();router.ServeHTTP(response,makeRequest());assert.Equal(t,http.StatusUnauthorized,response.Code) }
+  })
+ }
+ ordinary:=httptest.NewRecorder();router.ServeHTTP(ordinary,httptest.NewRequest(http.MethodPost,"/v1/chat/completions",strings.NewReader(`{}`)));assert.Equal(t,http.StatusNoContent,ordinary.Code)
+}

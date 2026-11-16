@@ -374,7 +374,18 @@ func WaffoWebhook(c *gin.Context) {
 	}
 
 	switch event.EventType {
-	case core.EventPayment:
+ case core.EventRefund:
+  var notification core.RefundNotification
+  if err:=common.Unmarshal(bodyBytes,&notification);err!=nil || notification.Result==nil { sendWaffoWebhookResponse(c,wh,false,"invalid refund payload");return }
+  result:=notification.Result
+  if result.RefundStatus!=core.RefundStatusFullyRefunded && result.RefundStatus!=core.RefundStatusPartiallyRefunded { sendWaffoWebhookResponse(c,wh,true,"");return }
+  payment,paymentErr:=model.VerifiedPaymentMajor(result.UserCurrency,result.RefundAmount,result.OrigPaymentRequestID)
+  if paymentErr!=nil { sendWaffoWebhookResponse(c,wh,false,"invalid refund amount");return }
+  if payment.Currency=="CNY" {
+   if err:=model.ReverseVerifiedPayment(model.PaymentProviderWaffo,payment.Reference,result.RefundRequestID,payment.PrincipalFen,false);err!=nil { sendWaffoWebhookResponse(c,wh,false,"refund reconciliation failed");return }
+  }
+  sendWaffoWebhookResponse(c,wh,true,"")
+ case core.EventPayment:
 		// 解析为扩展类型，区分普通支付和订阅支付
 		var payload webhookPayloadWithSubInfo
 		if err := common.Unmarshal(bodyBytes, &payload); err != nil {
@@ -411,7 +422,9 @@ func handleWaffoPayment(c *gin.Context, wh *core.WebhookHandler, result *core.Pa
 	LockOrder(merchantOrderId)
 	defer UnlockOrder(merchantOrderId)
 
-	if err := model.RechargeWaffo(merchantOrderId, c.ClientIP()); err != nil {
+	payment,paymentErr:=model.VerifiedPaymentMajor(result.OrderCurrency,result.OrderAmount,result.PaymentRequestID)
+	if paymentErr!=nil { sendWaffoWebhookResponse(c,wh,false,"invalid payment amount");return }
+	if err := model.RechargeWaffo(merchantOrderId, c.ClientIP(),payment); err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("Waffo top-up processing failed trade_no=%s client_ip=%s error=%q", merchantOrderId, c.ClientIP(), err.Error()))
 		sendWaffoWebhookResponse(c, wh, false, err.Error())
 		return

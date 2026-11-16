@@ -97,6 +97,7 @@ func PrepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 	var identity QXChatIdentity
 	var user User
 	err = DB.Transaction(func(tx *gorm.DB) error {
+		find := lockForUpdate(tx).Where("source_id = ?", profile.SourceID).First(&identity).Error
 		if target != nil {
 			if strings.HasPrefix(target.SessionID, "pat:") {
 				return ErrUserSessionInactive
@@ -105,7 +106,6 @@ func PrepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 				return err
 			}
 		}
-		find := lockForUpdate(tx).Where("source_id = ?", profile.SourceID).First(&identity).Error
 		if find == nil {
 			if target != nil && identity.UserID != target.UserID || target == nil && !identity.Imported {
 				return ErrQXChatIdentityConflict
@@ -166,7 +166,7 @@ func PrepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 	return &identity, &user, err
 }
 
-func ActivateQXChatIdentity(expected QXChatIdentity) (*User, error) {
+func ActivateQXChatIdentity(expected QXChatIdentity, target *AuthSessionIdentity) (*User, error) {
 	var user User
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var identity QXChatIdentity
@@ -175,6 +175,11 @@ func ActivateQXChatIdentity(expected QXChatIdentity) (*User, error) {
 		}
 		if identity.UserID != expected.UserID || identity.RequestID != expected.RequestID || identity.CredentialVersion != expected.CredentialVersion {
 			return ErrQXChatIdentityConflict
+		}
+		if !identity.Imported {
+			if target == nil || target.UserID != identity.UserID || strings.HasPrefix(target.SessionID, "pat:") { return ErrUserSessionInactive }
+			// A source commit cannot undo a target logout, password change or session revocation.
+			if err := ValidateAuthSessionWithTx(tx, *target); err != nil { return err }
 		}
 		if err := lockForUpdate(tx).First(&user, identity.UserID).Error; err != nil {
 			return ErrQXChatIdentityInactive

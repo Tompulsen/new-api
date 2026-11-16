@@ -58,6 +58,8 @@ func CommunityWalletProof() gin.HandlerFunc {
 			for _,header:=range []string{"X-Community-Client","X-Community-User","X-Community-Timestamp","X-Community-Nonce"} { if c.GetHeader(header)!="" { walletProofFailure(c);return } }
 			c.Next();return
 		}
+		defer common.CleanupBodyStorage(c)
+		if !strings.HasPrefix(c.Request.URL.Path,"/v1/") && !strings.HasPrefix(c.Request.URL.Path,"/v1beta/") { walletProofFailure(c);return }
 		client,userText:=c.GetHeader("X-Community-Client"),c.GetHeader("X-Community-User")
 		userID,err:=strconv.Atoi(userText)
 		requestID:=c.GetHeader("Idempotency-Key")
@@ -75,13 +77,13 @@ func CommunityWalletProof() gin.HandlerFunc {
 
 func QXChatWalletProof() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		defer common.CleanupBodyStorage(c)
 		c.Request.Body=http.MaxBytesReader(c.Writer,c.Request.Body,1024*1024)
 		timestamp,nonce:=c.GetHeader("X-Migration-Timestamp"),c.GetHeader("X-Migration-Nonce")
 		prefix:=[]string{"qxchat-wallet-v1",timestamp,nonce,c.Request.Method,c.Request.URL.RequestURI()}
 		digest,err:=verifyWalletProof(c,"qxchat-wallet",os.Getenv("QXCHAT_MIGRATION_SECRET"),timestamp,nonce,c.GetHeader("X-Migration-Signature"),prefix)
 		if err!=nil { walletProofFailure(c);return }
 		c.Set(MigrationWalletDigestKey,digest)
-		defer common.CleanupBodyStorage(c)
 		c.Next()
 	}
 }

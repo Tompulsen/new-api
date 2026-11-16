@@ -1,6 +1,9 @@
 package model
 
+import "gorm.io/gorm"
+
 type Midjourney struct {
+	WalletOperationID string `json:"-" gorm:"type:varchar(64);index"`
 	Id          int    `json:"id"`
 	Code        int    `json:"code"`
 	UserId      int    `json:"user_id" gorm:"index"`
@@ -97,7 +100,9 @@ func GetAllUnFinishTasks() []*Midjourney {
 	var tasks []*Midjourney
 	var err error
 	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").Find(&tasks).Error
+	query:=DB.Where("progress != ?", "100%")
+	if UnifiedWalletEnabled() { query=query.Or("id IN (?)",DB.Model(&UnifiedWalletOperation{}).Select("midjourney_id").Where("state = ? AND midjourney_id > 0","reserved")) }
+	err = query.Find(&tasks).Error
 	if err != nil {
 		return nil
 	}
@@ -109,6 +114,7 @@ func GetAllUnFinishTasks() []*Midjourney {
 // whether the midjourney_poll system task needs to run; when no task is pending
 // the scheduler skips creating a row entirely.
 func HasUnfinishedMidjourneyTasks() bool {
+	if UnifiedWalletEnabled() { var pending int64;if err:=DB.Model(&UnifiedWalletOperation{}).Where("state = ? AND midjourney_id > 0","reserved").Limit(1).Count(&pending).Error;err==nil && pending>0 { return true } }
 	var id int
 	err := DB.Model(&Midjourney{}).
 		Where("progress != ?", "100%").
@@ -162,6 +168,14 @@ func UpdateProgress(id int, progress string) error {
 }
 
 func (midjourney *Midjourney) Insert() error {
+ if UnifiedWalletEnabled() && midjourney.WalletOperationID!="" {
+  return DB.Transaction(func(tx *gorm.DB) error {
+   if err:=createWalletOperationTx(tx,midjourney.UserId,midjourney.TokenId,midjourney.WalletOperationID,WalletAPI,midjourney.Quota,"reserved",false);err!=nil { return err }
+   if err:=tx.Create(midjourney).Error;err!=nil { return err }
+   state:="reserved";if midjourney.Status=="SUCCESS" { state="settled" }
+   return tx.Model(&UnifiedWalletOperation{}).Where("id = ?",midjourney.WalletOperationID).Updates(map[string]any{"midjourney_id":midjourney.Id,"state":state}).Error
+  })
+ }
 	var err error
 	err = DB.Create(midjourney).Error
 	return err
@@ -192,7 +206,9 @@ func (midjourney *Midjourney) GetBillingChannelId() int {
 // UpdateWithStatus performs a conditional UPDATE guarded by fromStatus (CAS).
 // Uses Model().Select("*").Updates() to avoid GORM Save()'s INSERT fallback.
 func (midjourney *Midjourney) UpdateWithStatus(fromStatus string) (bool, error) {
-	result := DB.Model(midjourney).Where("status = ?", fromStatus).Select("*").Updates(midjourney)
+ query:=DB.Model(midjourney).Where("status = ?",fromStatus).Select("*")
+ if UnifiedWalletEnabled() && midjourney.WalletOperationID!="" { query=query.Omit("quota") }
+ result:=query.Updates(midjourney)
 	if result.Error != nil {
 		return false, result.Error
 	}

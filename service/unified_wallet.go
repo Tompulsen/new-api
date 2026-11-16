@@ -57,10 +57,11 @@ func (s *BillingSession) accumulateWalletUsage(quota int) error {
  if !ok || quota<0 || s.settled || s.refunded { return model.ErrWalletConflict }
  target:=s.walletUsage+quota
  if target<s.walletUsage { return model.ErrWalletConflict }
- if target>s.preConsumedQuota {
-  if err:=funding.reserve(target,false);err!=nil { return err }
-  s.preConsumedQuota=target;s.syncRelayInfo()
- }
- s.walletUsage=target
+ reserved:=max(target,s.preConsumedQuota)
+ exhausted,err:=model.ReserveWalletRealtimeUsage(funding.userID,funding.operationID,reserved,target)
+ if err!=nil { return err }
+ funding.consumed=reserved
+ s.preConsumedQuota=reserved;s.walletUsage=target;s.syncRelayInfo()
+ if exhausted { return ErrInsufficientWalletQuota }
  return nil
 }
