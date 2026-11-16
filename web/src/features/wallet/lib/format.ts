@@ -24,15 +24,24 @@ import { formatNumber } from '@/lib/format'
 import { DEFAULT_DISCOUNT_RATE } from '../constants'
 
 // Keep the server's six decimal places without losing fractions near Number.MAX_SAFE_INTEGER.
-export function formatCommunityPoints(value: string, language?: string): string {
+export function formatCommunityPoints(
+  value: string,
+  language?: string
+): string {
   if (!/^\d+(?:\.\d{1,6})?$/.test(value)) return '-'
   const [whole, fraction] = value.split('.')
   if (!Number.isSafeInteger(Number(whole))) return '-'
   const locale = toIntlLocale(language)
   const formatted = formatNumber(Number(whole), locale)
   if (!fraction) return formatted
-  const decimal = new Intl.NumberFormat(locale).formatToParts(1.1).find((part) => part.type === 'decimal')?.value ?? '.'
-  const digits = new Intl.NumberFormat(locale, { useGrouping: false, minimumIntegerDigits: fraction.length }).format(Number(fraction))
+  const decimal =
+    new Intl.NumberFormat(locale)
+      .formatToParts(1.1)
+      .find((part) => part.type === 'decimal')?.value ?? '.'
+  const digits = new Intl.NumberFormat(locale, {
+    useGrouping: false,
+    minimumIntegerDigits: fraction.length,
+  }).format(Number(fraction))
   return `${formatted}${decimal}${digits}`
 }
 

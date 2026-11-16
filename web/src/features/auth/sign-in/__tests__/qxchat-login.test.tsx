@@ -17,7 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router'
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from '@tanstack/react-router'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -32,7 +39,10 @@ let client: QueryClient
 beforeEach(() => {
   localStorage.clear()
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  client.setQueryData(STATUS_QUERY_KEY, { password_login_enabled: true, password_login_encryption_enabled: false })
+  client.setQueryData(STATUS_QUERY_KEY, {
+    password_login_enabled: true,
+    password_login_encryption_enabled: false,
+  })
 })
 afterEach(() => {
   cleanup()
@@ -43,50 +53,101 @@ afterEach(() => {
 })
 
 async function renderLogin(enabled: boolean) {
-  vi.spyOn(api, 'get').mockResolvedValue({ data: { success: true, data: { enabled } } })
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: { success: true, data: { enabled } },
+  })
   const root = createRootRoute({ component: Outlet })
   const router = createRouter({
     routeTree: root.addChildren([
-      createRoute({ getParentRoute: () => root, path: '/sign-in', component: UserAuthForm }),
-      createRoute({ getParentRoute: () => root, path: '/otp', component: () => <div>Complete account verification</div> }),
-      createRoute({ getParentRoute: () => root, path: '/forgot-password', component: () => <div>Reset password</div> }),
+      createRoute({
+        getParentRoute: () => root,
+        path: '/sign-in',
+        component: UserAuthForm,
+      }),
+      createRoute({
+        getParentRoute: () => root,
+        path: '/otp',
+        component: () => <div>Complete account verification</div>,
+      }),
+      createRoute({
+        getParentRoute: () => root,
+        path: '/forgot-password',
+        component: () => <div>Reset password</div>,
+      }),
     ]),
     history: createMemoryHistory({ initialEntries: ['/sign-in'] }),
   })
-  render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
+  render(
+    <QueryClientProvider client={client}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  )
   await screen.findByLabelText('Username or Email')
   return userEvent.setup()
 }
 
 it('uses the QXChat login endpoint only after selecting the available old-account option and preserves MFA', async () => {
-  const post = vi.spyOn(api, 'post').mockResolvedValue({ data: { success: true, data: {
-    require_verification: true,
-    flow_token: 'qxchat-mfa-challenge',
-    expires_at: Math.floor(Date.now() / 1000) + 300,
-    methods: [{ method: '2fa', available: true }],
-  } } })
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        require_verification: true,
+        flow_token: 'qxchat-mfa-challenge',
+        expires_at: Math.floor(Date.now() / 1000) + 300,
+        methods: [{ method: '2fa', available: true }],
+      },
+    },
+  })
   const user = await renderLogin(true)
-  const checkbox = await screen.findByRole('checkbox', { name: 'Sign in with a QXChat account' })
+  const checkbox = await screen.findByRole('checkbox', {
+    name: 'Sign in with a QXChat account',
+  })
   expect(checkbox).not.toBeChecked()
   checkbox.focus()
   await user.keyboard(' ')
   expect(checkbox).toBeChecked()
   await user.type(screen.getByLabelText('Username or Email'), 'legacy-user')
-  await user.type(screen.getByLabelText('Password', { exact: true }), 'old-password')
-  await user.click(screen.getByRole('button', { name: 'Sign in', exact: true }))
+  await user.type(
+    screen.getByLabelText('Password', { exact: true }),
+    'old-password'
+  )
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
   expect(await screen.findByText('Complete account verification')).toBeVisible()
-  expect(post).toHaveBeenCalledWith('/api/user/login/qxchat?turnstile=', { username: 'legacy-user', password: 'old-password' }, { skipAuthRefresh: true })
-  expect(useAuthStore.getState().auth.pendingLoginVerification?.challenge.flow_token).toBe('qxchat-mfa-challenge')
+  expect(post).toHaveBeenCalledWith(
+    '/api/user/login/qxchat?turnstile=',
+    { username: 'legacy-user', password: 'old-password' },
+    { skipAuthRefresh: true }
+  )
+  expect(
+    useAuthStore.getState().auth.pendingLoginVerification?.challenge.flow_token
+  ).toBe('qxchat-mfa-challenge')
   expect(useAuthStore.getState().auth.user).toBeNull()
 })
 
 it('hides the option when disabled and retains the normal login request', async () => {
-  const post = vi.spyOn(api, 'post').mockResolvedValue({ data: { success: false, message: 'Login failed' } })
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValue({ data: { success: false, message: 'Login failed' } })
   const user = await renderLogin(false)
-  await waitFor(() => expect(client.getQueryData(['qxchat', 'config'])).toEqual({ enabled: false }))
-  expect(screen.queryByRole('checkbox', { name: 'Sign in with a QXChat account' })).not.toBeInTheDocument()
+  await waitFor(() =>
+    expect(client.getQueryData(['qxchat', 'config'])).toEqual({
+      enabled: false,
+    })
+  )
+  expect(
+    screen.queryByRole('checkbox', { name: 'Sign in with a QXChat account' })
+  ).not.toBeInTheDocument()
   await user.type(screen.getByLabelText('Username or Email'), 'newapi-user')
-  await user.type(screen.getByLabelText('Password', { exact: true }), 'new-password')
-  await user.click(screen.getByRole('button', { name: 'Sign in', exact: true }))
-  await waitFor(() => expect(post).toHaveBeenCalledWith('/api/user/login?turnstile=', { username: 'newapi-user', password: 'new-password' }, { skipAuthRefresh: true }))
+  await user.type(
+    screen.getByLabelText('Password', { exact: true }),
+    'new-password'
+  )
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/user/login?turnstile=',
+      { username: 'newapi-user', password: 'new-password' },
+      { skipAuthRefresh: true }
+    )
+  )
 })

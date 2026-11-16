@@ -26,7 +26,14 @@ import type { z } from 'zod'
 import { Dialog } from '@/components/dialog'
 import { PasswordInput } from '@/components/password-input'
 import { Button } from '@/components/ui/button'
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { loginFormSchema } from '@/features/auth/constants'
@@ -71,11 +78,20 @@ export function QXChatBindDialog(props: QXChatBindDialogProps) {
   const submit = async (values: z.infer<typeof loginFormSchema>) => {
     const identifier = values.username.trim().toLowerCase()
     const result = await security.run(async (signal) => {
-      const proof = await security.verify({
-        scope: 'account.binding.bind',
-        context: { provider: 'qxchat', code: identifier },
-      }, signal)
-      return bindQXChatIdentity(identifier, values.password, props.passwordEncryptionEnabled, proof, signal)
+      const proof = await security.verify(
+        {
+          scope: 'account.binding.bind',
+          context: { provider: 'qxchat', code: identifier },
+        },
+        signal
+      )
+      return bindQXChatIdentity(
+        identifier,
+        values.password,
+        props.passwordEncryptionEnabled,
+        proof,
+        signal
+      )
     })
     if (!result) return
     toast.success(t('QXChat account connected'))
@@ -89,12 +105,24 @@ export function QXChatBindDialog(props: QXChatBindDialogProps) {
         open={props.open && !security.showVerification}
         onOpenChange={handleOpenChange}
         title={t('Connect QXChat account')}
-        description={t('Connect your QXChat account to this New API account. Future sign-ins use this New API account.')}
+        description={t(
+          'Connect your QXChat account to this New API account. Future sign-ins use this New API account.'
+        )}
         contentClassName='sm:max-w-md'
         footer={
           <>
-            <Button type='button' variant='outline' onClick={() => handleOpenChange(false)}>{t('Cancel')}</Button>
-            <Button type='submit' form='qxchat-bind-form' disabled={security.pending}>
+            <Button
+              type='button'
+              variant='outline'
+              onClick={() => handleOpenChange(false)}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button
+              type='submit'
+              form='qxchat-bind-form'
+              disabled={security.pending}
+            >
               {security.pending && <Spinner data-icon='inline-start' />}
               {t('Connect QXChat account')}
             </Button>
@@ -102,25 +130,54 @@ export function QXChatBindDialog(props: QXChatBindDialogProps) {
         }
       >
         <Form {...form}>
-          <form id='qxchat-bind-form' onSubmit={form.handleSubmit(submit)} className='space-y-4'>
-            <FormField control={form.control} name='username' render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('QXChat username or email')}</FormLabel>
-                <FormControl><Input {...field} autoComplete='username' maxLength={255} disabled={security.pending} autoFocus /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
-            <FormField control={form.control} name='password' render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('QXChat password')}</FormLabel>
-                <FormControl><PasswordInput {...field} autoComplete='current-password' maxLength={128} disabled={security.pending} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+          <form
+            id='qxchat-bind-form'
+            onSubmit={form.handleSubmit(submit)}
+            className='space-y-4'
+          >
+            <FormField
+              control={form.control}
+              name='username'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('QXChat username or email')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      autoComplete='username'
+                      maxLength={255}
+                      disabled={security.pending}
+                      autoFocus
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='password'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('QXChat password')}</FormLabel>
+                  <FormControl>
+                    <PasswordInput
+                      {...field}
+                      autoComplete='current-password'
+                      maxLength={128}
+                      disabled={security.pending}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
           </form>
         </Form>
       </Dialog>
-      {security.showVerification && <SecureVerificationDialog {...security.verificationDialogProps} />}
+      {security.showVerification && (
+        <SecureVerificationDialog {...security.verificationDialogProps} />
+      )}
     </>
   )
 }

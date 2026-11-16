@@ -20,7 +20,10 @@ import type { AccountSecurityResult } from '@/features/profile/types'
 import { api } from '@/lib/api'
 import { authRequestOptions, authResult } from '@/lib/secure-verification'
 
-import { clearPasswordEncryptionCache, encryptPassword } from './lib/password-encryption'
+import {
+  clearPasswordEncryptionCache,
+  encryptPassword,
+} from './lib/password-encryption'
 
 export interface QXChatIdentityStatus {
   enabled: boolean
@@ -28,12 +31,24 @@ export interface QXChatIdentityStatus {
   username?: string
 }
 
-export function getQXChatConfig(signal?: AbortSignal): Promise<{ enabled: boolean }> {
-  return authResult(api.get('/api/user/qxchat/config', { ...authRequestOptions, skipAuthRefresh: true, signal }))
+export function getQXChatConfig(
+  signal?: AbortSignal
+): Promise<{ enabled: boolean }> {
+  return authResult(
+    api.get('/api/user/qxchat/config', {
+      ...authRequestOptions,
+      skipAuthRefresh: true,
+      signal,
+    })
+  )
 }
 
-export function getQXChatIdentity(signal?: AbortSignal): Promise<QXChatIdentityStatus> {
-  return authResult(api.get('/api/user/qxchat', { ...authRequestOptions, signal }))
+export function getQXChatIdentity(
+  signal?: AbortSignal
+): Promise<QXChatIdentityStatus> {
+  return authResult(
+    api.get('/api/user/qxchat', { ...authRequestOptions, signal })
+  )
 }
 
 export async function bindQXChatIdentity(
@@ -48,12 +63,18 @@ export async function bindQXChatIdentity(
       ? await encryptPassword(password)
       : { password }
     signal.throwIfAborted()
-    return await authResult(api.post('/api/user/qxchat/bind', { username, ...passwordFields }, {
-      ...authRequestOptions,
-      headers: { 'X-Security-Proof': proofToken },
-      singleUseAuthorization: true,
-      signal,
-    }))
+    return await authResult(
+      api.post(
+        '/api/user/qxchat/bind',
+        { username, ...passwordFields },
+        {
+          ...authRequestOptions,
+          headers: { 'X-Security-Proof': proofToken },
+          singleUseAuthorization: true,
+          signal,
+        }
+      )
+    )
   } catch (error) {
     if (passwordEncryptionEnabled) clearPasswordEncryptionCache()
     throw error

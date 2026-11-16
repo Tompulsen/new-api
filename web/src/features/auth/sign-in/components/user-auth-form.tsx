@@ -373,7 +373,9 @@ export function UserAuthForm({
                   onCheckedChange={setQXChatLogin}
                   disabled={isLoading}
                 />
-                <Label htmlFor='qxchat-login'>{t('Sign in with a QXChat account')}</Label>
+                <Label htmlFor='qxchat-login'>
+                  {t('Sign in with a QXChat account')}
+                </Label>
               </Field>
             )}
             {/* Username Field */}

@@ -32,11 +32,11 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { createOAuthAuthorization } from '@/features/auth/api'
-import { getQXChatIdentity } from '@/features/auth/qxchat'
 import {
   openOAuthPopup,
   type OAuthPopupExchange,
 } from '@/features/auth/lib/oauth-popup'
+import { getQXChatIdentity } from '@/features/auth/qxchat'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 import type { CustomOAuthProviderInfo } from '@/features/auth/types'
 import { getSelfOAuthBindings, unbindCustomOAuth } from '@/features/profile/api'
@@ -340,7 +340,10 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
       >
         {bindings.map((binding) => {
           let actionLabel = t('Bind')
-          if (binding.id === 'qxchat' && qxchatIdentity.data?.state === 'pending') {
+          if (
+            binding.id === 'qxchat' &&
+            qxchatIdentity.data?.state === 'pending'
+          ) {
             actionLabel = t('Continue')
           }
           if (binding.isBound && binding.id === 'email') {
@@ -490,8 +493,12 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
       {/* Email Bind Dialog */}
       <QXChatBindDialog
         open={dialogs.isOpen('qxchat')}
-        passwordEncryptionEnabled={status.password_login_encryption_enabled === true}
-        onOpenChange={(open) => open ? dialogs.open('qxchat') : dialogs.close('qxchat')}
+        passwordEncryptionEnabled={
+          status.password_login_encryption_enabled === true
+        }
+        onOpenChange={(open) =>
+          open ? dialogs.open('qxchat') : dialogs.close('qxchat')
+        }
         onSuccess={() => {
           void qxchatIdentity.refetch()
           onUpdate()

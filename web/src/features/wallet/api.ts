@@ -43,7 +43,9 @@ import type {
   UnifiedWalletView,
 } from './types'
 
-export function getUnifiedWallet(signal?: AbortSignal): Promise<UnifiedWalletView> {
+export function getUnifiedWallet(
+  signal?: AbortSignal
+): Promise<UnifiedWalletView> {
   return authResult(api.get('/api/user/self/wallet', { signal }))
 }
 
