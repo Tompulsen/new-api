@@ -7772,6 +7772,7 @@
     "Wallet operation could not be completed": "Не удалось выполнить операцию с кошельком",
     "Task completed": "Задача завершена",
     "Community lottery reward: {{amount}} USD": "Награда розыгрыша сообщества: {{amount}} USD",
-    "Community lottery": "Розыгрыш сообщества"
+    "Community lottery": "Розыгрыш сообщества",
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "Не удалось завершить проверку безопасности. Повторите попытку, обновите приложение или откройте сайт в браузере телефона."
   }
 }

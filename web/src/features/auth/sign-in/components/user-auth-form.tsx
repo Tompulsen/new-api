@@ -445,19 +445,6 @@ export function UserAuthForm({
               )}
             />
 
-            {/* Submit Button */}
-            <Button
-              type='submit'
-              className='mt-2 w-full justify-center gap-2'
-              disabled={
-                isLoading ||
-                (qxchatLogin && qxchatConfig.data?.enabled !== true)
-              }
-            >
-              {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
-              {t('Sign in')}
-            </Button>
-
             {/* Turnstile */}
             {isTurnstileEnabled && (
               <div className='mt-2'>
@@ -469,6 +456,20 @@ export function UserAuthForm({
                 />
               </div>
             )}
+
+            {/* Submit Button */}
+            <Button
+              type='submit'
+              className='mt-2 w-full justify-center gap-2'
+              disabled={
+                isLoading ||
+                (isTurnstileEnabled && !turnstileToken) ||
+                (qxchatLogin && qxchatConfig.data?.enabled !== true)
+              }
+            >
+              {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
+              {t('Sign in')}
+            </Button>
           </>
         )}
 

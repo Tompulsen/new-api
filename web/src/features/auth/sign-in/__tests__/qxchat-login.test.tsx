@@ -248,6 +248,12 @@ it.each([false, true])(
     )
     const script = document.querySelector('#cf-turnstile')
     if (!script) throw new Error('Turnstile script was not created')
+    const submit = screen.getByRole('button', { name: 'Sign in' })
+    expect(submit).toBeDisabled()
+    expect(
+      screen.getByRole('status').compareDocumentPosition(submit) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).not.toBe(0)
     fireEvent.error(script)
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     expect(post).not.toHaveBeenCalled()
@@ -264,9 +270,11 @@ it.each([false, true])(
     const retryScript = document.querySelector('#cf-turnstile')
     if (!retryScript) throw new Error('Turnstile script was not retried')
     fireEvent.load(retryScript)
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     expect(post).not.toHaveBeenCalled()
     act(() => (options.callback as (token: string) => void)('fresh-token'))
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith(

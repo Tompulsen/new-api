@@ -51,18 +51,25 @@ export function Turnstile(props: TurnstileProps) {
 
   useEffect(() => {
     let active = true
+    let verified = false
     let widgetId: string | undefined
     let script = document.querySelector<HTMLScriptElement>('#cf-turnstile')
-    setStatus('loading')
-    const loadingTimeout = window.setTimeout(() => {
-      script?.remove()
-      fail()
-    }, 15000)
+    let loadingTimeout: number | undefined
     const fail = () => {
       if (!active) return
+      verified = false
       window.clearTimeout(loadingTimeout)
       setStatus('error')
       onExpire()
+    }
+    const waitForVerification = () => {
+      if (!active || verified) return
+      setStatus('loading')
+      window.clearTimeout(loadingTimeout)
+      loadingTimeout = window.setTimeout(() => {
+        if (!window.turnstile) script?.remove()
+        fail()
+      }, 15000)
     }
     const render = () => {
       if (
@@ -74,8 +81,8 @@ export function Turnstile(props: TurnstileProps) {
         return
       }
       try {
-        window.clearTimeout(loadingTimeout)
-        setStatus('ready')
+        // Creating a widget does not mean its iframe loaded or verification finished.
+        waitForVerification()
         widgetId = window.turnstile.render(ref.current, {
           sitekey: props.siteKey,
           action: props.action,
@@ -83,13 +90,30 @@ export function Turnstile(props: TurnstileProps) {
           retry: 'auto',
           callback: (token: string) => {
             if (active) {
+              if (!token) {
+                fail()
+                return
+              }
+              verified = true
+              window.clearTimeout(loadingTimeout)
               setStatus('ready')
               onVerify(token)
             }
           },
           'error-callback': fail,
+          'unsupported-callback': fail,
+          'before-interactive-callback': () => {
+            if (!active) return
+            window.clearTimeout(loadingTimeout)
+            setStatus('ready')
+          },
+          'after-interactive-callback': waitForVerification,
           'expired-callback': () => {
-            if (active) onExpire()
+            if (active) {
+              verified = false
+              onExpire()
+              waitForVerification()
+            }
           },
           'timeout-callback': fail,
         })
@@ -102,6 +126,7 @@ export function Turnstile(props: TurnstileProps) {
       fail()
     }
     const scriptId = 'cf-turnstile'
+    waitForVerification()
     if (!window.turnstile) {
       if (!script) {
         script = document.createElement('script')
@@ -143,7 +168,9 @@ export function Turnstile(props: TurnstileProps) {
           <ErrorState
             className='min-h-0 gap-3 p-3'
             title={t('Verification failed')}
-            description={t('Please complete the security check to continue.')}
+            description={t(
+              'Security verification could not finish. Retry, update your app, or open this site in your phone browser.'
+            )}
             onRetry={() => setAttempt((current) => current + 1)}
           />
         </div>

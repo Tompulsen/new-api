@@ -7772,6 +7772,7 @@
     "Wallet operation could not be completed": "L’opération du portefeuille n’a pas pu être effectuée",
     "Task completed": "Tâche terminée",
     "Community lottery reward: {{amount}} USD": "Récompense du tirage communautaire : {{amount}} USD",
-    "Community lottery": "Tirage communautaire"
+    "Community lottery": "Tirage communautaire",
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "La vérification de sécurité n’a pas abouti. Réessayez, mettez à jour votre application ou ouvrez ce site dans le navigateur de votre téléphone."
   }
 }

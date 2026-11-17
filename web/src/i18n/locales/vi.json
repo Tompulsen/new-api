@@ -7772,6 +7772,7 @@
     "Wallet operation could not be completed": "Không thể hoàn tất thao tác ví",
     "Task completed": "Đã hoàn thành tác vụ",
     "Community lottery reward: {{amount}} USD": "Phần thưởng bốc thăm cộng đồng: {{amount}} USD",
-    "Community lottery": "Bốc thăm cộng đồng"
+    "Community lottery": "Bốc thăm cộng đồng",
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "Không thể hoàn tất xác minh bảo mật. Hãy thử lại, cập nhật ứng dụng hoặc mở trang này bằng trình duyệt trên điện thoại."
   }
 }

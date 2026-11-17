@@ -7772,6 +7772,7 @@
     "Wallet operation could not be completed": "Wallet operation could not be completed",
     "Task completed": "Task completed",
     "Community lottery reward: {{amount}} USD": "Community lottery reward: {{amount}} USD",
-    "Community lottery": "Community lottery"
+    "Community lottery": "Community lottery",
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "Security verification could not finish. Retry, update your app, or open this site in your phone browser."
   }
 }

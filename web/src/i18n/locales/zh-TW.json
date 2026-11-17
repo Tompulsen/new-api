@@ -7772,6 +7772,7 @@
     "Wallet operation could not be completed": "錢包操作未能完成",
     "Task completed": "任務已完成",
     "Community lottery reward: {{amount}} USD": "社群抽獎獎勵：{{amount}} USD",
-    "Community lottery": "社群抽獎"
+    "Community lottery": "社群抽獎",
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "安全驗證未能完成。請重試、更新 App，或在手機瀏覽器中開啟本站。"
   }
 }
