@@ -203,50 +203,110 @@ func qxchatVerifiedNativeEmail(t *testing.T, user *model.User, email string) {
 	}))
 }
 
-func TestQXChatNativeRegistrationRetriesWithoutAnotherUserOrReward(t *testing.T) {
-	user, auth := setupQXChatIdentityTest(t)
-	source := startQXChatSourceFixture(t)
-	token := qxchatNativeGrant(t, auth)
-	_, err := service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
-	assert.Error(t, err, "an account without a verified stored email cannot provision QX")
-	assert.Zero(t, source.provisionCalls)
-	require.NoError(t, model.DB.Model(user).Update("email", "native@example.com").Error)
-	_, err = service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
-	assert.Error(t, err, "an OAuth-supplied email without local verification cannot provision QX")
-	assert.Zero(t, source.provisionCalls)
-	qxchatVerifiedNativeEmail(t, user, "native@example.com")
-	_, err = service.ExchangeQXChatIdentitySession(context.Background(), token, "https://other.example.com")
-	assert.Error(t, err)
-	assert.Zero(t, source.provisionCalls)
-	source.loseReceipt = true
-	_, err = service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
-	assert.ErrorIs(t, err, service.ErrQXChatUnavailable)
-	var first model.QXChatIdentity
-	require.NoError(t, model.DB.Where("user_id = ?", user.Id).First(&first).Error)
-	assert.Equal(t, model.QXChatIdentityProvisioning, first.State)
-	login := model.User{Username: user.Username, Password: "enrollment-password"}
-	require.NoError(t, login.ValidateAndFill(), "native account remains directly usable while QX sync is pending")
-	proof, err := service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
-	require.NoError(t, err)
-	assert.Equal(t, first.SourceID, proof.SourceID)
-	assert.Equal(t, user.Id, proof.UserID)
-	assert.Equal(t, 2, source.provisionCalls)
-	var count int64
-	require.NoError(t, model.DB.Model(&model.User{}).Count(&count).Error)
-	assert.EqualValues(t, 1, count)
-	var preserved model.User
-	require.NoError(t, model.DB.First(&preserved, user.Id).Error)
-	assert.Equal(t, user.Quota, preserved.Quota)
-	assert.Equal(t, user.AffQuota, preserved.AffQuota)
-	assert.Equal(t, user.Password, preserved.Password)
-	_, err = service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
-	assert.Error(t, err, "grant is still single use")
-	assert.Equal(t, 2, source.provisionCalls)
+func qxchatLegacyRegistration(t *testing.T, user *model.User, email string) model.QXChatIdentity {
+	t.Helper()
+	mapping := model.QXChatIdentity{SourceID: qxchatTestSource, UserID: user.Id, SourceUsername: user.Username, SourceEmail: email,
+		RequestID: qxchatTestRequest, CredentialVersion: strings.Repeat("b", 64), AuthorityVersion: 1, State: model.QXChatIdentityProvisioning}
+	require.NoError(t, model.DB.Create(&mapping).Error)
+	return mapping
 }
 
-func TestQXChatNativeCollisionRequiresExplicitOldAccountProof(t *testing.T) {
+func TestQXChatNativeRegistrationRetriesWithoutAnotherUserOrReward(t *testing.T) {
+	for _, scenario := range []struct{ name, email, username string }{
+		{name: "empty_email"},
+		{name: "unverified_email", email: "native@example.com"},
+		{name: "email_as_username", email: "native@example.com", username: "native@example.com"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			user, auth := setupQXChatIdentityTest(t)
+			updates := map[string]any{"email": scenario.email}
+			if scenario.username != "" {
+				updates["username"] = scenario.username
+			}
+			require.NoError(t, model.DB.Model(user).Updates(updates).Error)
+			source := startQXChatSourceFixture(t)
+			token := qxchatNativeGrant(t, auth)
+			_, err := service.ExchangeQXChatIdentitySession(context.Background(), token, "https://other.example.com")
+			assert.Error(t, err)
+			assert.Zero(t, source.provisionCalls)
+
+			source.loseReceipt = true
+			_, err = service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
+			assert.ErrorIs(t, err, service.ErrQXChatUnavailable)
+			var first model.QXChatIdentity
+			require.NoError(t, model.DB.Where("user_id = ?", user.Id).First(&first).Error)
+			assert.Equal(t, model.QXChatIdentityProvisioning, first.State)
+			assert.Empty(t, first.SourceEmail)
+			require.NotNil(t, source.provisioned)
+			assert.True(t, source.provisioned.IdentityOnly)
+			assert.Empty(t, source.provisioned.Email, "unverified profile email must not be asserted to QX")
+			assert.Equal(t, user.Username, source.provisioned.DisplayName)
+			login := model.User{Username: user.Username, Password: "enrollment-password"}
+			require.NoError(t, login.ValidateAndFill(), "native account remains directly usable while QX sync is pending")
+			require.NoError(t, model.DB.Model(user).Update("email", "changed@example.com").Error)
+			proof, err := service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
+			require.NoError(t, err, "the identity-only reservation is independent of profile email changes")
+			assert.Equal(t, first.SourceID, proof.SourceID)
+			assert.Equal(t, user.Id, proof.UserID)
+			assert.Equal(t, 2, source.provisionCalls)
+			var count int64
+			require.NoError(t, model.DB.Model(&model.User{}).Count(&count).Error)
+			assert.EqualValues(t, 1, count)
+			require.NoError(t, model.DB.Model(&model.ExternalIdentityClaim{}).Where("provider = ?", "qxchat_verified_email").Count(&count).Error)
+			assert.Zero(t, count, "SSO must not create an email verification claim")
+			var preserved model.User
+			require.NoError(t, model.DB.First(&preserved, user.Id).Error)
+			assert.Equal(t, user.Quota, preserved.Quota)
+			assert.Equal(t, user.AffQuota, preserved.AffQuota)
+			assert.Equal(t, user.Password, preserved.Password)
+			_, err = service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
+			assert.Error(t, err, "grant is still single use")
+			active, err := service.ExchangeQXChatIdentitySession(context.Background(), qxchatNativeGrant(t, auth), "https://qxchat.example.com")
+			require.NoError(t, err)
+			assert.Equal(t, first.SourceID, active.SourceID)
+			assert.Equal(t, 2, source.provisionCalls, "active mappings must not provision again")
+		})
+	}
+}
+
+func TestQXChatNativeIdentityDoesNotClaimLegacyAccount(t *testing.T) {
+	user, auth := setupQXChatIdentityTest(t)
+	require.NoError(t, model.DB.Model(user).Updates(map[string]any{"username": "legacy-user", "email": "legacy@example.com"}).Error)
+	legacyUser := model.User{Username: "previous-target", Password: user.Password, Status: common.UserStatusEnabled, Role: common.RoleCommonUser, Group: "default", AuthVersion: 1, AffCode: "previous-target", Quota: 4321}
+	require.NoError(t, model.DB.Create(&legacyUser).Error)
+	legacy := model.QXChatIdentity{SourceID: qxchatTestSource, UserID: legacyUser.Id, SourceUsername: "legacy-user", SourceEmail: "legacy@example.com",
+		RequestID: qxchatTestRequest, CredentialVersion: strings.Repeat("a", 64), AuthorityVersion: 1, State: model.QXChatIdentityActive}
+	require.NoError(t, model.DB.Create(&legacy).Error)
+	source := startQXChatSourceFixture(t)
+	proof, err := service.ExchangeQXChatIdentitySession(context.Background(), qxchatNativeGrant(t, auth), "https://qxchat.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, user.Id, proof.UserID)
+	assert.NotEqual(t, legacy.SourceID, proof.SourceID)
+	require.NotNil(t, source.provisioned)
+	assert.True(t, source.provisioned.IdentityOnly)
+	assert.Empty(t, source.provisioned.Email)
+	assert.Zero(t, source.prepareCalls)
+	assert.Zero(t, source.commitCalls)
+	for _, identifier := range []string{"legacy-user", "legacy@example.com"} {
+		found, err := model.FindQXChatIdentity(identifier)
+		require.NoError(t, err)
+		assert.Equal(t, legacy.SourceID, found.SourceID, "native profile fields must not take over the legacy login index")
+	}
+	var preserved model.QXChatIdentity
+	require.NoError(t, model.DB.First(&preserved, "source_id = ?", legacy.SourceID).Error)
+	assert.Equal(t, legacy.SourceID, preserved.SourceID)
+	assert.Equal(t, legacy.UserID, preserved.UserID)
+	assert.Equal(t, legacy.SourceEmail, preserved.SourceEmail)
+	assert.Equal(t, legacy.State, preserved.State)
+	assert.Equal(t, legacy.CredentialVersion, preserved.CredentialVersion)
+	require.NoError(t, model.DB.First(&legacyUser, legacyUser.Id).Error)
+	assert.Equal(t, 4321, legacyUser.Quota)
+}
+
+func TestQXChatLegacyProvisionCollisionRequiresExplicitOldAccountProof(t *testing.T) {
 	user, auth := setupQXChatIdentityTest(t)
 	qxchatVerifiedNativeEmail(t, user, "native@example.com")
+	qxchatLegacyRegistration(t, user, "native@example.com")
 	source := startQXChatSourceFixture(t)
 	source.provisionConflict = true
 	_, err := service.ExchangeQXChatIdentitySession(context.Background(), qxchatNativeGrant(t, auth), "https://qxchat.example.com")
@@ -262,10 +322,9 @@ func TestQXChatNativeCollisionRequiresExplicitOldAccountProof(t *testing.T) {
 }
 
 func TestQXChatNativeProvisionCannotBypassRevocationOrTamperedReceipt(t *testing.T) {
-	for _, scenario := range []string{"revoked", "banned", "tampered", "email_changed"} {
+	for _, scenario := range []string{"revoked", "banned", "tampered", "mapping_changed"} {
 		t.Run(scenario, func(t *testing.T) {
 			user, auth := setupQXChatIdentityTest(t)
-			qxchatVerifiedNativeEmail(t, user, "native@example.com")
 			source := startQXChatSourceFixture(t)
 			token := qxchatNativeGrant(t, auth)
 			if scenario == "tampered" {
@@ -275,8 +334,8 @@ func TestQXChatNativeProvisionCannotBypassRevocationOrTamperedReceipt(t *testing
 					if scenario == "banned" {
 						return model.DB.Model(user).Update("status", common.UserStatusDisabled).Error
 					}
-					if scenario == "email_changed" {
-						return model.DB.Model(user).Update("email", "changed@example.com").Error
+					if scenario == "mapping_changed" {
+						return model.DB.Model(&model.QXChatIdentity{}).Where("user_id = ?", user.Id).Update("source_email", "changed@example.com").Error
 					}
 					return model.DB.Model(&model.UserSession{}).Where("sid = ?", auth.SessionID).Update("revoked_at", time.Now().Unix()).Error
 				}
@@ -288,6 +347,50 @@ func TestQXChatNativeProvisionCannotBypassRevocationOrTamperedReceipt(t *testing
 			assert.Equal(t, model.QXChatIdentityProvisioning, mapping.State)
 			_, err = model.ResolveQXChatIdentity(mapping.SourceID)
 			assert.Error(t, err)
+		})
+	}
+}
+
+func TestQXChatLegacyProvisionPreservesVerifiedEmailReservation(t *testing.T) {
+	for _, scenario := range []string{"retry", "missing_claim", "email_changed_at_finish", "claim_removed_at_finish"} {
+		t.Run(scenario, func(t *testing.T) {
+			user, auth := setupQXChatIdentityTest(t)
+			qxchatVerifiedNativeEmail(t, user, "native@example.com")
+			original := qxchatLegacyRegistration(t, user, "native@example.com")
+			source := startQXChatSourceFixture(t)
+			token := qxchatNativeGrant(t, auth)
+			if scenario == "missing_claim" {
+				require.NoError(t, model.DB.Where("provider = ? AND user_id = ?", "qxchat_verified_email", user.Id).Delete(&model.ExternalIdentityClaim{}).Error)
+			} else if scenario == "retry" {
+				source.loseReceipt = true
+			} else {
+				source.onCommit = func() error {
+					if scenario == "email_changed_at_finish" {
+						return model.DB.Model(user).Update("email", "changed@example.com").Error
+					}
+					return model.DB.Where("provider = ? AND user_id = ?", "qxchat_verified_email", user.Id).Delete(&model.ExternalIdentityClaim{}).Error
+				}
+			}
+			_, err := service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
+			assert.Error(t, err)
+			var pending model.QXChatIdentity
+			require.NoError(t, model.DB.Where("user_id = ?", user.Id).First(&pending).Error)
+			assert.Equal(t, model.QXChatIdentityProvisioning, pending.State)
+			assert.Equal(t, original.SourceID, pending.SourceID)
+			assert.Equal(t, original.SourceEmail, pending.SourceEmail)
+			if scenario == "missing_claim" {
+				assert.Zero(t, source.provisionCalls)
+				return
+			}
+			require.NotNil(t, source.provisioned)
+			assert.False(t, source.provisioned.IdentityOnly)
+			assert.Equal(t, original.SourceEmail, source.provisioned.Email)
+			if scenario == "retry" {
+				proof, err := service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")
+				require.NoError(t, err)
+				assert.Equal(t, original.SourceID, proof.SourceID)
+				assert.Equal(t, 2, source.provisionCalls)
+			}
 		})
 	}
 }
@@ -369,6 +472,7 @@ func TestQXChatExistingNativeCanVerifySameEmail(t *testing.T) {
 	require.NoError(t, err)
 	_, err = service.FinishEmailBinding(identity, flow.FlowToken, mailbox.code(t, flow.Email), "")
 	assert.ErrorIs(t, err, model.ErrAuthFlowConsumed)
+	qxchatLegacyRegistration(t, user, "native@example.com")
 	token := qxchatNativeGrant(t, identity)
 	require.NoError(t, model.DB.Model(user).Update("email", "other@example.com").Error)
 	_, err = service.ExchangeQXChatIdentitySession(context.Background(), token, "https://qxchat.example.com")

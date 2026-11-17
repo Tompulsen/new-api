@@ -65,6 +65,7 @@ type QXChatRegistrationProfile struct {
 	Username          string `json:"username"`
 	Email             string `json:"email"`
 	DisplayName       string `json:"display_name"`
+	IdentityOnly      bool   `json:"identity_only"`
 }
 
 // Only local email-code verification may write this claim; OAuth profile emails are not proof.
@@ -123,19 +124,21 @@ func PrepareQXChatRegistration(token, origin string) (*QXChatIdentity, *QXChatRe
 		if err == nil && mapping.State != QXChatIdentityProvisioning {
 			return ErrQXChatIdentityInactive
 		}
-		if err := validateQXChatVerifiedEmailWithTx(tx, user); err != nil {
-			return err
-		}
-		email := NormalizeEmail(user.Email)
-		if err == nil && mapping.SourceEmail != email {
-			return ErrQXChatIdentityInactive
+		// Finish older reservations with their original verified-email contract.
+		if err == nil && mapping.SourceEmail != "" {
+			if mapping.SourceEmail != NormalizeEmail(user.Email) {
+				return ErrQXChatIdentityInactive
+			}
+			if err := validateQXChatVerifiedEmailWithTx(tx, user); err != nil {
+				return err
+			}
 		}
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			username := strings.ToLower(strings.TrimSpace(user.Username))
 			if username == "" || utf8.RuneCountInString(username) > 32 {
 				return ErrQXChatIdentityInactive
 			}
-			mapping = QXChatIdentity{SourceID: uuid.NewString(), UserID: user.Id, SourceUsername: username, SourceEmail: email,
+			mapping = QXChatIdentity{SourceID: uuid.NewString(), UserID: user.Id, SourceUsername: username,
 				RequestID: uuid.NewString(), AuthorityVersion: 1, State: QXChatIdentityProvisioning}
 			digest := sha256.Sum256([]byte(mapping.SourceID + "\n" + mapping.RequestID))
 			mapping.CredentialVersion = hex.EncodeToString(digest[:])
@@ -143,8 +146,13 @@ func PrepareQXChatRegistration(token, origin string) (*QXChatIdentity, *QXChatRe
 				return err
 			}
 		}
-		profile = &QXChatRegistrationProfile{mapping.RequestID, mapping.SourceID, mapping.UserID, mapping.AuthorityVersion,
-			mapping.CredentialVersion, mapping.SourceUsername, mapping.SourceEmail, user.DisplayName}
+		displayName := user.DisplayName
+		if displayName == "" {
+			displayName = user.Username
+		}
+		profile = &QXChatRegistrationProfile{RequestID: mapping.RequestID, SourceID: mapping.SourceID, NewAPIUserID: mapping.UserID,
+			AuthorityVersion: mapping.AuthorityVersion, CredentialVersion: mapping.CredentialVersion, Username: mapping.SourceUsername,
+			Email: mapping.SourceEmail, DisplayName: displayName, IdentityOnly: mapping.SourceEmail == ""}
 		return nil
 	})
 	return &mapping, profile, err
@@ -161,18 +169,24 @@ func FinishQXChatRegistration(expected QXChatIdentity, token, origin string) err
 			return err
 		}
 		var user User
-		if err := lockForUpdate(tx).First(&user, expected.UserID).Error; err != nil || user.Status != common.UserStatusEnabled || NormalizeEmail(user.Email) != expected.SourceEmail {
+		if err := lockForUpdate(tx).First(&user, expected.UserID).Error; err != nil || user.Status != common.UserStatusEnabled {
 			return ErrQXChatIdentityInactive
 		}
-		if err := validateQXChatVerifiedEmailWithTx(tx, user); err != nil {
-			return err
+		if expected.SourceEmail != "" {
+			if NormalizeEmail(user.Email) != expected.SourceEmail {
+				return ErrQXChatIdentityInactive
+			}
+			if err := validateQXChatVerifiedEmailWithTx(tx, user); err != nil {
+				return err
+			}
 		}
 		var mapping QXChatIdentity
 		if err := lockForUpdate(tx).Where("user_id = ?", expected.UserID).First(&mapping).Error; err != nil {
 			return err
 		}
 		if mapping.SourceID != expected.SourceID || mapping.RequestID != expected.RequestID ||
-			mapping.CredentialVersion != expected.CredentialVersion || mapping.Imported ||
+			mapping.CredentialVersion != expected.CredentialVersion || mapping.SourceUsername != expected.SourceUsername ||
+			mapping.SourceEmail != expected.SourceEmail || mapping.AuthorityVersion != expected.AuthorityVersion || mapping.Imported ||
 			(mapping.State != QXChatIdentityProvisioning && mapping.State != QXChatIdentityActive) {
 			return ErrQXChatIdentityConflict
 		}
@@ -208,7 +222,8 @@ func ResolveQXChatIdentity(sourceID string) (*QXChatIdentity, error) {
 func FindQXChatIdentity(identifier string) (*QXChatIdentity, error) {
 	identifier = strings.ToLower(strings.TrimSpace(identifier))
 	var rows []QXChatIdentity
-	if err := DB.Where("source_username = ? OR source_email = ?", identifier, identifier).Limit(2).Find(&rows).Error; err != nil {
+	// Native SSO display names must not shadow an unrelated legacy account login.
+	if err := DB.Where("source_email <> '' AND (source_username = ? OR source_email = ?)", identifier, identifier).Limit(2).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	if len(rows) != 1 {
