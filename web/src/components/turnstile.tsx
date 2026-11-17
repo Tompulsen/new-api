@@ -16,7 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useEffectEvent, useRef } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+
+import { ErrorState } from '@/components/error-state'
+import { LoadingState } from '@/components/loading-state'
 
 declare global {
   interface Window {
@@ -36,7 +40,10 @@ interface TurnstileProps {
 }
 
 export function Turnstile(props: TurnstileProps) {
+  const { t } = useTranslation()
   const ref = useRef<HTMLDivElement | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const onVerify = useEffectEvent((token: string) => props.onVerify(token))
   const onExpire = useEffectEvent(() => {
     props.onExpire?.()
@@ -45,6 +52,18 @@ export function Turnstile(props: TurnstileProps) {
   useEffect(() => {
     let active = true
     let widgetId: string | undefined
+    let script = document.querySelector<HTMLScriptElement>('#cf-turnstile')
+    setStatus('loading')
+    const loadingTimeout = window.setTimeout(() => {
+      script?.remove()
+      fail()
+    }, 15000)
+    const fail = () => {
+      if (!active) return
+      window.clearTimeout(loadingTimeout)
+      setStatus('error')
+      onExpire()
+    }
     const render = () => {
       if (
         !active ||
@@ -55,34 +74,34 @@ export function Turnstile(props: TurnstileProps) {
         return
       }
       try {
+        window.clearTimeout(loadingTimeout)
+        setStatus('ready')
         widgetId = window.turnstile.render(ref.current, {
           sitekey: props.siteKey,
           action: props.action,
           'refresh-expired': 'auto',
           retry: 'auto',
           callback: (token: string) => {
-            if (active) onVerify(token)
+            if (active) {
+              setStatus('ready')
+              onVerify(token)
+            }
           },
-          'error-callback': () => {
-            if (active) onExpire()
-          },
+          'error-callback': fail,
           'expired-callback': () => {
             if (active) onExpire()
           },
-          'timeout-callback': () => {
-            if (active) onExpire()
-          },
+          'timeout-callback': fail,
         })
       } catch {
-        onExpire()
+        fail()
       }
     }
     const onError = () => {
       script?.remove()
-      if (active) onExpire()
+      fail()
     }
     const scriptId = 'cf-turnstile'
-    let script = document.querySelector<HTMLScriptElement>(`#${scriptId}`)
     if (!window.turnstile) {
       if (!script) {
         script = document.createElement('script')
@@ -91,20 +110,44 @@ export function Turnstile(props: TurnstileProps) {
           'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
         script.async = true
         script.defer = true
-        document.head.appendChild(script)
       }
       script.addEventListener('load', render)
       script.addEventListener('error', onError)
+      if (!script.isConnected) document.head.appendChild(script)
     } else {
       render()
     }
     return () => {
       active = false
+      window.clearTimeout(loadingTimeout)
       script?.removeEventListener('load', render)
       script?.removeEventListener('error', onError)
       if (widgetId !== undefined) window.turnstile?.remove(widgetId)
     }
-  }, [props.siteKey, props.action])
+  }, [props.siteKey, props.action, attempt])
 
-  return <div ref={ref} className={props.className} />
+  return (
+    <div className={props.className}>
+      <div ref={ref} />
+      {status === 'loading' && (
+        <div role='status'>
+          <LoadingState
+            inline
+            size='sm'
+            message={t('Please wait a moment, human check is initializing...')}
+          />
+        </div>
+      )}
+      {status === 'error' && (
+        <div role='alert'>
+          <ErrorState
+            className='min-h-0 gap-3 p-3'
+            title={t('Verification failed')}
+            description={t('Please complete the security check to continue.')}
+            onRetry={() => setAttempt((current) => current + 1)}
+          />
+        </div>
+      )}
+    </div>
+  )
 }

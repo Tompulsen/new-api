@@ -1,10 +1,12 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { Turnstile } from '../turnstile'
 
 afterEach(() => {
+  vi.useRealTimers()
   delete window.turnstile
   document.querySelector('#cf-turnstile')?.remove()
 })
@@ -131,4 +133,71 @@ it('a failed script can be downloaded again after remounting the widget', () => 
   window.turnstile = { render: renderWidget, remove: vi.fn() }
   fireEvent.load(retryScript)
   expect(renderWidget).toHaveBeenCalledOnce()
+})
+
+it('offers a keyboard accessible retry after a failed script and only verifies a fresh challenge', async () => {
+  const user = userEvent.setup()
+  const verify = vi.fn()
+  const expire = vi.fn()
+  render(<Turnstile siteKey='test-site' onVerify={verify} onExpire={expire} />)
+  const failedScript = document.querySelector('#cf-turnstile')
+  if (!failedScript) throw new Error('Turnstile script was not created')
+  fireEvent.error(failedScript)
+  expect(verify).not.toHaveBeenCalled()
+  expect(expire).toHaveBeenCalled()
+  const retry = screen.getByRole('button', { name: 'Retry' })
+  expect(retry).toBeVisible()
+  retry.focus()
+  await user.keyboard('{Enter}')
+  const retryScript = document.querySelector('#cf-turnstile')
+  if (!retryScript) throw new Error('Turnstile script was not retried')
+  expect(retryScript).not.toBe(failedScript)
+  let options: Record<string, unknown> = {}
+  window.turnstile = {
+    render: (_element, value) => {
+      options = value
+      return 'recovered-widget'
+    },
+    remove: vi.fn(),
+  }
+  fireEvent.load(retryScript)
+  expect(verify).not.toHaveBeenCalled()
+  act(() => (options.callback as (value: string) => void)('fresh-token'))
+  expect(verify).toHaveBeenCalledWith('fresh-token')
+  expect(
+    screen.queryByRole('button', { name: 'Retry' })
+  ).not.toBeInTheDocument()
+})
+
+it('a stalled script stops initializing and allows a new download', () => {
+  vi.useFakeTimers()
+  const verify = vi.fn()
+  render(<Turnstile siteKey='test-site' onVerify={verify} />)
+  expect(screen.getByRole('status')).toHaveTextContent(
+    'Please wait a moment, human check is initializing...'
+  )
+  const stalledScript = document.querySelector('#cf-turnstile')
+  act(() => vi.advanceTimersByTime(15000))
+  expect(verify).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(document.querySelector('#cf-turnstile')).not.toBe(stalledScript)
+})
+
+it('a provider render error can be retried without accepting an empty token', () => {
+  const verify = vi.fn()
+  const expire = vi.fn()
+  const renderWidget = vi
+    .fn()
+    .mockImplementationOnce(() => {
+      throw new Error('Verification provider is not ready')
+    })
+    .mockReturnValue('recovered-widget')
+  window.turnstile = { render: renderWidget, remove: vi.fn() }
+  render(<Turnstile siteKey='test-site' onVerify={verify} onExpire={expire} />)
+  expect(expire).toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(verify).not.toHaveBeenCalled()
+  expect(
+    screen.queryByRole('button', { name: 'Retry' })
+  ).not.toBeInTheDocument()
 })

@@ -25,7 +25,14 @@ import {
   Outlet,
   RouterProvider,
 } from '@tanstack/react-router'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -50,6 +57,8 @@ afterEach(() => {
   vi.restoreAllMocks()
   useAuthStore.getState().auth.reset('idle')
   localStorage.clear()
+  delete window.turnstile
+  document.querySelector('#cf-turnstile')?.remove()
 })
 
 async function renderLogin(enabled: boolean) {
@@ -151,3 +160,59 @@ it('hides the option when disabled and retains the normal login request', async 
     )
   )
 })
+
+it.each([false, true])(
+  'requires a fresh verification after a script failure for QXChat login = %s',
+  async (qxchat) => {
+    client.setQueryData(STATUS_QUERY_KEY, {
+      password_login_enabled: true,
+      turnstile_check: true,
+      turnstile_site_key: 'test-site',
+    })
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: false, message: 'Login failed' } })
+    const user = await renderLogin(true)
+    if (qxchat) {
+      await user.click(
+        await screen.findByRole('checkbox', {
+          name: 'Sign in with a QXChat account',
+        })
+      )
+    }
+    await user.type(screen.getByLabelText('Username or Email'), 'existing-user')
+    await user.type(
+      screen.getByLabelText('Password', { exact: true }),
+      'existing-password'
+    )
+    const script = document.querySelector('#cf-turnstile')
+    if (!script) throw new Error('Turnstile script was not created')
+    fireEvent.error(script)
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(post).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(post).not.toHaveBeenCalled()
+    let options: Record<string, unknown> = {}
+    window.turnstile = {
+      render: (_element, value) => {
+        options = value
+        return 'recovered-widget'
+      },
+      remove: vi.fn(),
+    }
+    const retryScript = document.querySelector('#cf-turnstile')
+    if (!retryScript) throw new Error('Turnstile script was not retried')
+    fireEvent.load(retryScript)
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(post).not.toHaveBeenCalled()
+    act(() => (options.callback as (token: string) => void)('fresh-token'))
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        `${qxchat ? '/api/user/login/qxchat' : '/api/user/login'}?turnstile=fresh-token`,
+        { username: 'existing-user', password: 'existing-password' },
+        { skipAuthRefresh: true }
+      )
+    )
+  }
+)
