@@ -558,7 +558,7 @@ func TestQXChatOfflineImportResumesNativeLoginWithoutBinding(t *testing.T) {
 	assert.False(t, common.ValidatePasswordAndHash(qxchatTestPassword, user.Password))
 	assert.Zero(t, user.Quota)
 	assert.Zero(t, user.AffQuota)
-	assert.Zero(t, user.AffHistory)
+	assert.Zero(t, user.AffHistoryQuota)
 	assert.Equal(t, common.RoleCommonUser, user.Role)
 	_, err = service.ActivateQXChatImport(context.Background(), state, false)
 	require.NoError(t, err)
