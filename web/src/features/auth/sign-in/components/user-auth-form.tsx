@@ -67,11 +67,12 @@ import { cn } from '@/lib/utils'
 export function UserAuthForm({
   className,
   redirectTo,
+  initialQXChatLogin = false,
   ...props
-}: AuthFormProps) {
+}: AuthFormProps & { initialQXChatLogin?: boolean }) {
   const { t } = useTranslation()
   const [isLoading, setIsLoading] = useState(false)
-  const [qxchatLogin, setQXChatLogin] = useState(false)
+  const [qxchatLogin, setQXChatLogin] = useState(initialQXChatLogin)
   const qxchatConfig = useQuery({
     queryKey: ['qxchat', 'config'],
     queryFn: ({ signal }) => getQXChatConfig(signal),
@@ -171,6 +172,12 @@ export function UserAuthForm({
   }, [status])
 
   async function onSubmit(data: z.infer<typeof loginFormSchema>) {
+    if (qxchatLogin && qxchatConfig.data?.enabled !== true) {
+      toast.error(
+        t('QXChat sign-in is temporarily unavailable. Please try again.')
+      )
+      return
+    }
     if (requiresLegalConsent && !agreedToLegal) {
       toast.error(legalConsentErrorMessage)
       return
@@ -196,7 +203,7 @@ export function UserAuthForm({
 
       if (res.success) {
         form.setValue('password', '')
-        if (await handleLoginResult(res.data, redirectTo)) {
+        if (await handleLoginResult(res.data, redirectTo, qxchatLogin)) {
           toast.success(t('Welcome back!'))
         }
       } else {
@@ -361,7 +368,7 @@ export function UserAuthForm({
         className={cn('grid gap-4', className)}
         {...props}
       >
-        {hasAlternativeLogin && alternativeLoginMethods}
+        {!initialQXChatLogin && hasAlternativeLogin && alternativeLoginMethods}
 
         {passwordLoginEnabled && (
           <>
@@ -371,13 +378,29 @@ export function UserAuthForm({
                   id='qxchat-login'
                   checked={qxchatLogin}
                   onCheckedChange={setQXChatLogin}
-                  disabled={isLoading}
+                  disabled={isLoading || initialQXChatLogin}
                 />
                 <Label htmlFor='qxchat-login'>
                   {t('Sign in with a QXChat account')}
                 </Label>
               </Field>
             )}
+            {qxchatLogin && (
+              <p className='text-muted-foreground text-sm leading-6'>
+                {t(
+                  'Use your original QXChat username or email and password to open the same QXChat profile and points.'
+                )}
+              </p>
+            )}
+            {qxchatLogin &&
+              !qxchatConfig.isPending &&
+              !qxchatConfig.data?.enabled && (
+                <p role='alert' className='text-destructive text-sm'>
+                  {t(
+                    'QXChat sign-in is temporarily unavailable. Please try again.'
+                  )}
+                </p>
+              )}
             {/* Username Field */}
             <FormField
               control={form.control}
@@ -410,12 +433,14 @@ export function UserAuthForm({
                     />
                   </FormControl>
                   <FormMessage />
-                  <Link
-                    to='/forgot-password'
-                    className='text-muted-foreground absolute end-0 -top-0.5 z-10 text-sm font-medium hover:opacity-75'
-                  >
-                    {t('Forgot password?')}
-                  </Link>
+                  {!initialQXChatLogin && (
+                    <Link
+                      to='/forgot-password'
+                      className='text-muted-foreground absolute end-0 -top-0.5 z-10 text-sm font-medium hover:opacity-75'
+                    >
+                      {t('Forgot password?')}
+                    </Link>
+                  )}
                 </FormItem>
               )}
             />
@@ -424,7 +449,10 @@ export function UserAuthForm({
             <Button
               type='submit'
               className='mt-2 w-full justify-center gap-2'
-              disabled={isLoading}
+              disabled={
+                isLoading ||
+                (qxchatLogin && qxchatConfig.data?.enabled !== true)
+              }
             >
               {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
               {t('Sign in')}
@@ -451,7 +479,7 @@ export function UserAuthForm({
           className='mt-1'
         />
 
-        {!hasAlternativeLogin && alternativeLoginMethods}
+        {!initialQXChatLogin && !hasAlternativeLogin && alternativeLoginMethods}
       </form>
 
       {hasWeChatLogin && (

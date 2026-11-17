@@ -61,7 +61,7 @@ afterEach(() => {
   document.querySelector('#cf-turnstile')?.remove()
 })
 
-async function renderLogin(enabled: boolean) {
+async function renderLogin(enabled: boolean, initialQXChatLogin = false) {
   vi.spyOn(api, 'get').mockResolvedValue({
     data: { success: true, data: { enabled } },
   })
@@ -71,7 +71,9 @@ async function renderLogin(enabled: boolean) {
       createRoute({
         getParentRoute: () => root,
         path: '/sign-in',
-        component: UserAuthForm,
+        component: () => (
+          <UserAuthForm initialQXChatLogin={initialQXChatLogin} />
+        ),
       }),
       createRoute({
         getParentRoute: () => root,
@@ -159,6 +161,65 @@ it('hides the option when disabled and retains the normal login request', async 
       { skipAuthRefresh: true }
     )
   )
+})
+
+it('opens the original QXChat account flow directly from the dedicated entry', async () => {
+  client.setQueryData(STATUS_QUERY_KEY, {
+    password_login_enabled: true,
+    password_login_encryption_enabled: false,
+    github_oauth: true,
+  })
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: false, message: 'Login failed' },
+  })
+  const user = await renderLogin(true, true)
+  expect(
+    await screen.findByRole('checkbox', {
+      name: 'Sign in with a QXChat account',
+    })
+  ).toBeChecked()
+  expect(
+    screen.getByRole('checkbox', { name: 'Sign in with a QXChat account' })
+  ).toHaveAttribute('aria-disabled', 'true')
+  expect(
+    screen.queryByRole('button', { name: 'Continue with GitHub' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('link', { name: 'Forgot password?' })
+  ).not.toBeInTheDocument()
+  await user.type(
+    screen.getByLabelText('Username or Email'),
+    'original-qx-user'
+  )
+  await user.type(
+    screen.getByLabelText('Password', { exact: true }),
+    'old-password'
+  )
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/user/login/qxchat?turnstile=',
+      { username: 'original-qx-user', password: 'old-password' },
+      { skipAuthRefresh: true }
+    )
+  )
+})
+
+it('does not fall back to a different New API account if the original-account entry is unavailable', async () => {
+  const post = vi.spyOn(api, 'post')
+  const user = await renderLogin(false, true)
+  await waitFor(() =>
+    expect(client.getQueryData(['qxchat', 'config'])).toEqual({
+      enabled: false,
+    })
+  )
+  await user.type(screen.getByLabelText('Username or Email'), 'shared-username')
+  await user.type(
+    screen.getByLabelText('Password', { exact: true }),
+    'old-password'
+  )
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
+  expect(post).not.toHaveBeenCalled()
 })
 
 it.each([false, true])(

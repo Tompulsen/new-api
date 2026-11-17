@@ -27,7 +27,7 @@ import { UserAuthForm } from './components/user-auth-form'
 
 export function SignIn() {
   const { t } = useTranslation()
-  const { redirect } = useSearch({ from: '/(auth)/sign-in' })
+  const { redirect, qxchat } = useSearch({ from: '/(auth)/sign-in' })
   const { status } = useStatus()
 
   return (
@@ -35,9 +35,10 @@ export function SignIn() {
       <div className='w-full space-y-8'>
         <div className='space-y-2'>
           <h2 className='text-center text-2xl font-semibold tracking-tight sm:text-left'>
-            {t('Sign in')}
+            {t(qxchat === '1' ? 'Sign in with a QXChat account' : 'Sign in')}
           </h2>
-          {!status?.self_use_mode_enabled &&
+          {qxchat !== '1' &&
+            !status?.self_use_mode_enabled &&
             status?.register_enabled !== false && (
               <p className='text-muted-foreground text-left text-sm sm:text-base'>
                 {t("Don't have an account?")}{' '}
@@ -52,7 +53,11 @@ export function SignIn() {
             )}
         </div>
 
-        <UserAuthForm redirectTo={redirect} />
+        <UserAuthForm
+          key={qxchat ?? 'newapi'}
+          redirectTo={redirect}
+          initialQXChatLogin={qxchat === '1'}
+        />
 
         <TermsFooter
           variant='sign-in'

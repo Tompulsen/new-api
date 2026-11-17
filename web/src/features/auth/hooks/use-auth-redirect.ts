@@ -74,7 +74,11 @@ export function useAuthRedirect() {
    * Every primary login transport returns the same bundle-or-challenge contract.
    */
   const handleLoginResult = useCallback(
-    async (result: unknown, redirectTo?: string): Promise<boolean> => {
+    async (
+      result: unknown,
+      redirectTo?: string,
+      qxchatEntry = false
+    ): Promise<boolean> => {
       if (
         !mounted.current ||
         useAuthStore.getState().auth.session?.sid !== sessionID
@@ -93,12 +97,18 @@ export function useAuthRedirect() {
           'Login flow expired. Please sign in again.'
         )
       }
+      const target =
+        sanitizeAuthRedirect(redirectTo, window.location.origin) ?? undefined
       useAuthStore.getState().auth.setPendingLoginVerification({
         challenge: result,
-        redirectTo:
-          sanitizeAuthRedirect(redirectTo, window.location.origin) ?? undefined,
+        redirectTo: target,
+        qxchatEntry,
       })
-      await navigate({ to: '/otp', replace: true })
+      await navigate({
+        to: '/otp',
+        search: qxchatEntry ? { qxchat: '1', redirect: target } : {},
+        replace: true,
+      })
       return false
     },
     [handleLoginSuccess, navigate, sessionID]
@@ -107,9 +117,23 @@ export function useAuthRedirect() {
   /**
    * Redirect to login page
    */
-  const redirectToLogin = useCallback(() => {
-    void navigate({ to: '/sign-in', replace: true })
-  }, [navigate])
+  const redirectToLogin = useCallback(
+    (redirectTo?: string, qxchatEntry = false) => {
+      void navigate({
+        to: '/sign-in',
+        search: qxchatEntry
+          ? {
+              qxchat: '1',
+              redirect:
+                sanitizeAuthRedirect(redirectTo, window.location.origin) ??
+                undefined,
+            }
+          : {},
+        replace: true,
+      })
+    },
+    [navigate]
+  )
 
   /**
    * Redirect to register page
