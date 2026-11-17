@@ -697,7 +697,7 @@ func TestQXChatOfflineImportCollisionAndUnicode(t *testing.T) {
 				if scenario == "alias_cross_field" {
 					require.NoError(t, model.DB.Model(native).Update("email", alias).Error)
 				} else {
-					occupied := &model.User{Username: alias, Password: native.Password, Status: common.UserStatusEnabled, Quota: 5678}
+					occupied := &model.User{Username: alias, Password: native.Password, Status: common.UserStatusEnabled, Quota: 5678, AffCode: common.GetRandomString(16)}
 					require.NoError(t, model.DB.Create(occupied).Error)
 					if scenario == "deleted_alias_collision" {
 						require.NoError(t, model.DB.Delete(occupied).Error)
