@@ -533,6 +533,238 @@ func TestQXChatPendingImportIsDisabledAndIdempotent(t *testing.T) {
 	assert.EqualValues(t, 1, count)
 }
 
+func qxchatImportTestState(mapping *model.QXChatIdentity, user *model.User) service.QXChatImportState {
+	return service.QXChatImportState{QXChatCommitRequest: service.QXChatCommitRequest{
+		SourceID: mapping.SourceID, RequestID: mapping.RequestID, NewAPIUserID: mapping.UserID,
+		CredentialVersion: mapping.CredentialVersion, AuthorityVersion: mapping.AuthorityVersion},
+		State: mapping.State, Imported: mapping.Imported, PasswordDigest: model.QXChatImportPasswordDigest(user.Password)}
+}
+
+func TestQXChatOfflineImportResumesNativeLoginWithoutBinding(t *testing.T) {
+	setupQXChatIdentityTest(t)
+	source := startQXChatSourceFixture(t)
+	profile := qxchatTestProfile()
+	preview, _, err := model.PrepareQXChatImport(profile, false)
+	require.NoError(t, err)
+	assert.Zero(t, preview.UserID)
+	var count int64
+	require.NoError(t, model.DB.Model(&model.QXChatIdentity{}).Count(&count).Error)
+	assert.Zero(t, count)
+	mapping, user, err := model.PrepareQXChatImport(profile, true)
+	require.NoError(t, err)
+	state := qxchatImportTestState(mapping, user)
+	assert.Equal(t, model.QXChatUserPendingStatus, user.Status)
+	assert.True(t, strings.HasPrefix(user.Password, model.QXChatImportPasswordPrefix))
+	assert.False(t, common.ValidatePasswordAndHash(qxchatTestPassword, user.Password))
+	assert.Zero(t, user.Quota)
+	assert.Zero(t, user.AffQuota)
+	assert.Zero(t, user.AffHistory)
+	assert.Equal(t, common.RoleCommonUser, user.Role)
+	_, err = service.ActivateQXChatImport(context.Background(), state, false)
+	require.NoError(t, err)
+	assert.Zero(t, source.commitCalls)
+	source.loseReceipt = true
+	source.onCommit = func() error {
+		// This executes after the source commit and before its HTTP receipt reaches activation.
+		changed := profile
+		changed.CredentialVersion, changed.PasswordHash = strings.Repeat("b", 64), qxchatTestCurrentHash
+		_, _, err := model.PrepareQXChatIdentity(changed, nil)
+		assert.ErrorIs(t, err, model.ErrQXChatIdentityInactive)
+		_, err = model.ActivateQXChatIdentity(*mapping, nil)
+		assert.ErrorIs(t, err, model.ErrQXChatIdentityInactive)
+		var frozen model.User
+		require.NoError(t, model.DB.First(&frozen, user.Id).Error)
+		assert.Equal(t, user.Password, frozen.Password)
+		return nil
+	}
+	_, err = service.ActivateQXChatImport(context.Background(), state, true)
+	assert.ErrorIs(t, err, service.ErrQXChatUnavailable)
+	resumed, err := service.ActivateQXChatImport(context.Background(), state, true)
+	require.NoError(t, err)
+	assert.Equal(t, model.QXChatIdentityActive, resumed.State)
+	assert.Equal(t, 2, source.commitCalls)
+	for _, identifier := range []string{profile.Username, profile.Email} {
+		body, err := common.Marshal(map[string]string{"username": identifier, "password": qxchatTestPassword})
+		require.NoError(t, err)
+		response := securityEnrollmentRequest("POST", "/api/user/login", string(body), "", service.AuthIdentity{}, Login)
+		var result struct {
+			Success bool `json:"success"`
+			Data    struct {
+				AccessToken string `json:"access_token"`
+			} `json:"data"`
+		}
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+		require.True(t, result.Success, response.Body.String())
+		identity, err := service.ParseAccessToken(result.Data.AccessToken)
+		require.NoError(t, err)
+		proof, err := service.ExchangeQXChatIdentitySession(context.Background(), qxchatNativeGrant(t, identity), "https://qxchat.example.com")
+		require.NoError(t, err)
+		assert.Equal(t, profile.SourceID, proof.SourceID)
+		assert.Equal(t, user.Id, proof.UserID)
+	}
+	assert.Zero(t, source.provisionCalls)
+	password, err := common.HashAccountPassword("later-newapi-password")
+	require.NoError(t, err)
+	require.NoError(t, model.DB.Model(user).Updates(map[string]any{"password": password, "auth_version": 2, "quota": 12345}).Error)
+	_, err = service.ActivateQXChatImport(context.Background(), state, true)
+	require.NoError(t, err)
+	_, preserved, err := model.PrepareQXChatImport(profile, true)
+	require.NoError(t, err)
+	assert.Equal(t, password, preserved.Password)
+	assert.EqualValues(t, 12345, preserved.Quota)
+	assert.Equal(t, 2, source.commitCalls)
+	require.NoError(t, model.DB.Model(user).Update("status", common.UserStatusDisabled).Error)
+	_, err = service.ActivateQXChatImport(context.Background(), state, true)
+	assert.ErrorIs(t, err, model.ErrQXChatIdentityInactive)
+}
+
+func TestQXChatOfflineImportRejectsChangedReservation(t *testing.T) {
+	for _, scenario := range []string{"request", "profile", "unknown_marker", "valid_hash_changed", "invalid_hash", "auth_version", "disabled", "authority_during_commit", "signature"} {
+		t.Run(scenario, func(t *testing.T) {
+			setupQXChatIdentityTest(t)
+			source := startQXChatSourceFixture(t)
+			profile := qxchatTestProfile()
+			mapping, user, err := model.PrepareQXChatImport(profile, true)
+			require.NoError(t, err)
+			state := qxchatImportTestState(mapping, user)
+			switch scenario {
+			case "request", "profile":
+				changed := profile
+				if scenario == "request" {
+					changed.RequestID = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+				} else {
+					changed.CredentialVersion = strings.Repeat("b", 64)
+				}
+				_, _, err = model.PrepareQXChatImport(changed, true)
+				assert.ErrorIs(t, err, model.ErrQXChatIdentitySnapshotConflict)
+				return
+			case "unknown_marker":
+				require.NoError(t, model.DB.Model(user).Update("password", "!unknown!"+common.QXChatPasswordPrefix+qxchatTestLegacyHash).Error)
+			case "valid_hash_changed":
+				require.NoError(t, model.DB.Model(user).Update("password", model.QXChatImportPasswordPrefix+common.QXChatPasswordPrefix+qxchatTestCurrentHash).Error)
+			case "invalid_hash":
+				invalid := model.QXChatImportPasswordPrefix + common.QXChatPasswordPrefix + "invalid"
+				require.NoError(t, model.DB.Model(user).Update("password", invalid).Error)
+				state.PasswordDigest = model.QXChatImportPasswordDigest(invalid)
+			case "auth_version":
+				require.NoError(t, model.DB.Model(user).Update("auth_version", 2).Error)
+			case "disabled":
+				require.NoError(t, model.DB.Model(user).Update("status", common.UserStatusDisabled).Error)
+			case "authority_during_commit":
+				source.onCommit = func() error { return model.DB.Model(mapping).Update("authority_version", 2).Error }
+			case "signature":
+				source.tamperResponse = true
+			}
+			_, err = service.ActivateQXChatImport(context.Background(), state, true)
+			require.Error(t, err)
+			var stored model.QXChatIdentity
+			require.NoError(t, model.DB.Where("source_id = ?", profile.SourceID).First(&stored).Error)
+			assert.Equal(t, model.QXChatIdentityPending, stored.State)
+			var account model.User
+			require.NoError(t, model.DB.First(&account, user.Id).Error)
+			assert.NotEqual(t, common.UserStatusEnabled, account.Status)
+			assert.Zero(t, account.Quota)
+		})
+	}
+}
+
+func TestQXChatOfflineImportCollisionAndUnicode(t *testing.T) {
+	for _, scenario := range []string{"username_collision", "email_collision", "username_equals_email", "email_equals_username", "soft_deleted", "alias_collision", "deleted_alias_collision", "alias_cross_field", "unverified", "ineligible", "unicode", "long_username", "online_pending"} {
+		t.Run(scenario, func(t *testing.T) {
+			native, _ := setupQXChatIdentityTest(t)
+			native.Quota = 98765
+			require.NoError(t, model.DB.Model(native).Update("quota", native.Quota).Error)
+			profile := qxchatTestProfile()
+			emailConflict, aliased := false, false
+			switch scenario {
+			case "username_collision", "soft_deleted":
+				profile.Username, aliased = native.Username, true
+				if scenario == "soft_deleted" {
+					require.NoError(t, model.DB.Delete(native).Error)
+				}
+			case "email_collision":
+				aliased, emailConflict = true, true
+				require.NoError(t, model.DB.Model(native).Update("email", profile.Email).Error)
+			case "username_equals_email":
+				aliased = true
+				require.NoError(t, model.DB.Model(native).Update("email", profile.Username).Error)
+			case "email_equals_username":
+				aliased, emailConflict = true, true
+				require.NoError(t, model.DB.Model(native).Update("username", profile.Email).Error)
+			case "alias_collision", "deleted_alias_collision", "alias_cross_field":
+				profile.Username, aliased = native.Username, true
+				alias := "qx_" + strings.ReplaceAll(profile.SourceID, "-", "")[:16]
+				if scenario == "alias_cross_field" {
+					require.NoError(t, model.DB.Model(native).Update("email", alias).Error)
+				} else {
+					occupied := &model.User{Username: alias, Password: native.Password, Status: common.UserStatusEnabled, Quota: 5678}
+					require.NoError(t, model.DB.Create(occupied).Error)
+					if scenario == "deleted_alias_collision" {
+						require.NoError(t, model.DB.Delete(occupied).Error)
+					}
+				}
+			case "unverified":
+				profile.EmailVerified = false
+			case "ineligible":
+				profile.Eligible = false
+			case "unicode":
+				profile.Username = strings.Repeat("中", 16)
+			case "long_username":
+				profile.Username, aliased = strings.Repeat("中", 32), true
+			case "online_pending":
+				_, _, err := model.PrepareQXChatIdentity(profile, nil)
+				require.NoError(t, err)
+			}
+			mapping, user, err := model.PrepareQXChatImport(profile, true)
+			if scenario == "unverified" || scenario == "ineligible" || scenario == "online_pending" {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotEqual(t, native.Id, user.Id)
+			assert.Zero(t, user.Quota)
+			assert.Equal(t, profile.Username, mapping.SourceUsername)
+			assert.Equal(t, profile.Email, mapping.SourceEmail)
+			if aliased {
+				assert.True(t, strings.HasPrefix(user.Username, "qx_"))
+			} else {
+				assert.Equal(t, profile.Username, user.Username)
+			}
+			if emailConflict {
+				assert.Empty(t, user.Email)
+			} else {
+				assert.Equal(t, profile.Email, user.Email)
+			}
+			if strings.Contains(scenario, "alias_") {
+				assert.NotEqual(t, "qx_"+strings.ReplaceAll(profile.SourceID, "-", "")[:16], user.Username)
+			}
+			_, repeated, err := model.PrepareQXChatImport(profile, true)
+			require.NoError(t, err)
+			assert.Equal(t, user.Id, repeated.Id)
+			assert.Equal(t, user.Username, repeated.Username)
+			source := startQXChatSourceFixture(t)
+			source.profile = profile
+			_, err = service.ActivateQXChatImport(context.Background(), qxchatImportTestState(mapping, user), true)
+			require.NoError(t, err)
+			login := model.User{Username: user.Username, Password: qxchatTestPassword}
+			require.NoError(t, login.ValidateAndFill())
+			assert.Equal(t, user.Id, login.Id)
+			legacy, err := service.LoginQXChatIdentity(context.Background(), profile.Username, qxchatTestPassword)
+			require.NoError(t, err)
+			assert.Equal(t, user.Id, legacy.Id)
+			if scenario == "username_collision" {
+				ambiguous := model.User{Username: profile.Username, Password: qxchatTestPassword}
+				assert.Error(t, ambiguous.ValidateAndFill(), "native login must not claim the existing same-name account")
+			}
+			var preserved model.User
+			require.NoError(t, model.DB.Unscoped().First(&preserved, native.Id).Error)
+			assert.Equal(t, native.Password, preserved.Password)
+			assert.Equal(t, native.Quota, preserved.Quota)
+			assert.Equal(t, native.Role, preserved.Role)
+		})
+	}
+}
+
 func TestQXChatLostReceiptResumesAndNewPasswordIsAuthoritative(t *testing.T) {
 	setupQXChatIdentityTest(t)
 	source := startQXChatSourceFixture(t)

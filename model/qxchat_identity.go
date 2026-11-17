@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,10 +20,12 @@ const QXChatIdentityPending = "pending"
 const QXChatIdentityActive = "active"
 const QXChatIdentityProvisioning = "provisioning"
 const QXChatUserPendingStatus = 3
+const QXChatImportPasswordPrefix = "!qxchat-import!"
 const qxchatSessionPurpose = "qxchat_session"
 const qxchatVerifiedEmailProvider = "qxchat_verified_email"
 
 var ErrQXChatIdentityConflict = errors.New("QXChat identity requires explicit account binding")
+var ErrQXChatIdentitySnapshotConflict = fmt.Errorf("%w: frozen migration snapshot differs", ErrQXChatIdentityConflict)
 var ErrQXChatIdentityInactive = errors.New("QXChat identity is not active")
 var qxchatSourceID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 var qxchatCredentialVersion = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -233,17 +236,40 @@ func FindQXChatIdentity(identifier string) (*QXChatIdentity, error) {
 }
 
 func PrepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdentity) (*QXChatIdentity, *User, error) {
+	return prepareQXChatIdentity(profile, target, false, true)
+}
+
+// Offline imports never refresh an existing reservation or turn a dry run into a write.
+func PrepareQXChatImport(profile QXChatSourceProfile, apply bool) (*QXChatIdentity, *User, error) {
+	return prepareQXChatIdentity(profile, nil, true, apply)
+}
+
+func qxchatImportUsername(sourceID string, attempt int) string {
+	if attempt == 0 {
+		return "qx_" + strings.ReplaceAll(sourceID, "-", "")[:16]
+	}
+	digest := sha256.Sum256([]byte(sourceID + "\n" + strconv.Itoa(attempt)))
+	return "qx_" + hex.EncodeToString(digest[:])[:16]
+}
+
+func prepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdentity, offline, apply bool) (*QXChatIdentity, *User, error) {
 	profile.Username = strings.ToLower(strings.TrimSpace(profile.Username))
 	profile.Email = NormalizeEmail(profile.Email)
 	if !qxchatSourceID.MatchString(profile.SourceID) || !qxchatSourceID.MatchString(profile.RequestID) ||
 		!qxchatCredentialVersion.MatchString(profile.CredentialVersion) || profile.Authority != "qxchat" ||
-		profile.NewAPIUserID != 0 || !profile.Eligible || !profile.EmailVerified || profile.Username == "" || len(profile.Username) > 32 ||
+		profile.NewAPIUserID != 0 || !profile.Eligible || !profile.EmailVerified || profile.Username == "" || utf8.RuneCountInString(profile.Username) > 32 ||
 		len(profile.Email) > 191 || common.Validate.Var(profile.Email, "required,email") != nil {
 		return nil, nil, ErrQXChatIdentityInactive
 	}
 	hash, err := common.ImportQXChatPasswordHash(profile.PasswordHash)
 	if err != nil {
+		if offline {
+			return nil, nil, ErrQXChatIdentityInactive
+		}
 		return nil, nil, err
+	}
+	if offline {
+		hash = QXChatImportPasswordPrefix + hash
 	}
 	var identity QXChatIdentity
 	var user User
@@ -261,13 +287,36 @@ func PrepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 			if target != nil && identity.UserID != target.UserID || target == nil && !identity.Imported {
 				return ErrQXChatIdentityConflict
 			}
-			if err := lockForUpdate(tx).First(&user, identity.UserID).Error; err != nil || (identity.Imported && user.Status != QXChatUserPendingStatus) || (!identity.Imported && user.Status != common.UserStatusEnabled) {
+			if err := lockForUpdate(tx).First(&user, identity.UserID).Error; err != nil {
+				if offline && !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
 				return ErrQXChatIdentityInactive
+			}
+			if offline && identity.RequestID != profile.RequestID {
+				return ErrQXChatIdentitySnapshotConflict
 			}
 			if identity.State == QXChatIdentityActive {
+				if offline && identity.CredentialVersion == profile.CredentialVersion &&
+					identity.SourceUsername == profile.Username && identity.SourceEmail == profile.Email && user.Status == common.UserStatusEnabled {
+					return nil
+				}
 				return ErrQXChatIdentityInactive
 			}
+			if identity.State != QXChatIdentityPending ||
+				(identity.Imported && user.Status != QXChatUserPendingStatus) ||
+				(!identity.Imported && user.Status != common.UserStatusEnabled) {
+				return ErrQXChatIdentityInactive
+			}
+			if offline {
+				if identity.CredentialVersion != profile.CredentialVersion || identity.SourceUsername != profile.Username ||
+					identity.SourceEmail != profile.Email || user.AuthVersion != 1 || user.Password != hash {
+					return ErrQXChatIdentitySnapshotConflict
+				}
+				return nil
+			}
 			if identity.Imported {
+				// Offline reservations deliberately fail this guard, including on older deployed servers.
 				if !strings.HasPrefix(user.Password, common.QXChatPasswordPrefix) {
 					return ErrQXChatIdentityInactive
 				}
@@ -290,22 +339,55 @@ func PrepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 		} else {
 			username := profile.Username
 			if utf8.RuneCountInString(username) > UserNameMaxLength {
-				username = "qx_" + strings.ReplaceAll(profile.SourceID, "-", "")[:16]
+				username = qxchatImportUsername(profile.SourceID, 0)
 			}
 			if err := withNormalizedEmailLock(tx, profile.Email, func(tx *gorm.DB) error {
+				email := profile.Email
+				identifiers := []string{username, profile.Email}
+				if offline {
+					identifiers = append(identifiers, profile.Username)
+				}
 				var collisions int64
-				if err := tx.Unscoped().Model(&User{}).Where("LOWER(username) IN ? OR LOWER(email) IN ?", []string{username, profile.Email}, []string{username, profile.Email}).Count(&collisions).Error; err != nil {
+				if err := tx.Unscoped().Model(&User{}).Where("LOWER(username) IN ? OR LOWER(email) IN ?", identifiers, identifiers).Count(&collisions).Error; err != nil {
 					return err
 				}
-				if collisions > 0 {
+				if collisions > 0 && !offline {
 					return ErrQXChatIdentityConflict
+				}
+				if offline {
+					if collisions > 0 {
+						username = qxchatImportUsername(profile.SourceID, 0)
+					}
+					available := false
+					for attempt := range 100 {
+						if err := tx.Unscoped().Model(&User{}).Where("LOWER(username) = ? OR LOWER(email) = ?", username, username).Count(&collisions).Error; err != nil {
+							return err
+						}
+						if collisions == 0 {
+							available = true
+							break
+						}
+						username = qxchatImportUsername(profile.SourceID, attempt+1)
+					}
+					if !available {
+						return ErrQXChatIdentityConflict
+					}
+					if err := tx.Unscoped().Model(&User{}).Where("LOWER(username) = ? OR LOWER(email) = ?", email, email).Count(&collisions).Error; err != nil {
+						return err
+					}
+					if collisions > 0 {
+						email = ""
+					}
 				}
 				name := []rune(profile.DisplayName)
 				if len(name) > UserNameMaxLength {
 					name = name[:UserNameMaxLength]
 				}
-				user = User{Username: username, Email: profile.Email, Password: hash, DisplayName: string(name), Role: common.RoleCommonUser,
+				user = User{Username: username, Email: email, Password: hash, DisplayName: string(name), Role: common.RoleCommonUser,
 					Status: QXChatUserPendingStatus, Group: "default", AffCode: common.GetRandomString(16), AuthVersion: 1}
+				if !apply {
+					return nil
+				}
 				// Deliberately bypass Insert/FinishInsert: migration is not registration.
 				return tx.Create(&user).Error
 			}); err != nil {
@@ -314,12 +396,28 @@ func PrepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 		}
 		identity = QXChatIdentity{SourceID: profile.SourceID, UserID: user.Id, SourceUsername: profile.Username, SourceEmail: profile.Email,
 			RequestID: profile.RequestID, CredentialVersion: profile.CredentialVersion, AuthorityVersion: 1, State: QXChatIdentityPending, Imported: target == nil}
+		if !apply {
+			return nil
+		}
 		return tx.Create(&identity).Error
 	})
 	return &identity, &user, err
 }
 
 func ActivateQXChatIdentity(expected QXChatIdentity, target *AuthSessionIdentity) (*User, error) {
+	return activateQXChatIdentity(expected, target, false, "")
+}
+
+func QXChatImportPasswordDigest(password string) string {
+	digest := sha256.Sum256([]byte(password))
+	return hex.EncodeToString(digest[:])
+}
+
+func ActivateQXChatImportIdentity(expected QXChatIdentity, passwordDigest string) (*User, error) {
+	return activateQXChatIdentity(expected, nil, true, passwordDigest)
+}
+
+func activateQXChatIdentity(expected QXChatIdentity, target *AuthSessionIdentity, offline bool, passwordDigest string) (*User, error) {
 	var user User
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var identity QXChatIdentity
@@ -328,6 +426,10 @@ func ActivateQXChatIdentity(expected QXChatIdentity, target *AuthSessionIdentity
 		}
 		if identity.UserID != expected.UserID || identity.RequestID != expected.RequestID || identity.CredentialVersion != expected.CredentialVersion {
 			return ErrQXChatIdentityConflict
+		}
+		if offline && (!identity.Imported || identity.AuthorityVersion != expected.AuthorityVersion ||
+			(identity.State != QXChatIdentityPending && identity.State != QXChatIdentityActive)) {
+			return ErrQXChatIdentitySnapshotConflict
 		}
 		if !identity.Imported {
 			if target == nil || target.UserID != identity.UserID || strings.HasPrefix(target.SessionID, "pat:") {
@@ -339,6 +441,9 @@ func ActivateQXChatIdentity(expected QXChatIdentity, target *AuthSessionIdentity
 			}
 		}
 		if err := lockForUpdate(tx).First(&user, identity.UserID).Error; err != nil {
+			if offline && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
 			return ErrQXChatIdentityInactive
 		}
 		if identity.State == QXChatIdentityActive {
@@ -348,10 +453,27 @@ func ActivateQXChatIdentity(expected QXChatIdentity, target *AuthSessionIdentity
 			return nil
 		}
 		if identity.Imported {
-			if user.Status != QXChatUserPendingStatus || !strings.HasPrefix(user.Password, common.QXChatPasswordPrefix) || user.AuthVersion != 1 {
+			prefix := common.QXChatPasswordPrefix
+			if offline {
+				prefix = QXChatImportPasswordPrefix + common.QXChatPasswordPrefix
+			}
+			if user.Status != QXChatUserPendingStatus || !strings.HasPrefix(user.Password, prefix) || user.AuthVersion != 1 ||
+				(offline && identity.State != QXChatIdentityPending) {
 				return ErrQXChatIdentityInactive
 			}
-			if err := tx.Model(&user).Update("status", common.UserStatusEnabled).Error; err != nil {
+			updates := map[string]any{"status": common.UserStatusEnabled}
+			if offline {
+				if !qxchatCredentialVersion.MatchString(passwordDigest) || QXChatImportPasswordDigest(user.Password) != passwordDigest {
+					return ErrQXChatIdentitySnapshotConflict
+				}
+				hash, err := common.ImportQXChatPasswordHash(strings.TrimPrefix(user.Password, prefix))
+				if err != nil || QXChatImportPasswordPrefix+hash != user.Password {
+					return ErrQXChatIdentityInactive
+				}
+				updates["password"] = hash
+				user.Password = hash
+			}
+			if err := tx.Model(&user).Updates(updates).Error; err != nil {
 				return err
 			}
 			user.Status = common.UserStatusEnabled

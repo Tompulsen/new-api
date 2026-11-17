@@ -141,7 +141,90 @@ type QXChatCommitRequest struct {
 	AuthorityVersion  int64  `json:"authority_version"`
 }
 
-func commitQXChatIdentity(ctx context.Context, identity *model.QXChatIdentity, target *AuthIdentity) (*model.User, error) {
+// Private import journals omit password hashes; activation always obtains a fresh signed source receipt.
+type QXChatImportState struct {
+	QXChatCommitRequest
+	State          string `json:"state,omitempty"`
+	Imported       bool   `json:"imported"`
+	Authority      string `json:"authority,omitempty"`
+	PasswordDigest string `json:"password_digest,omitempty"`
+	TargetUsername string `json:"target_username"`
+	TargetEmail    string `json:"target_email"`
+}
+
+func InspectQXChatImport(expected QXChatImportState) (*QXChatImportState, error) {
+	var mapping model.QXChatIdentity
+	if expected.NewAPIUserID <= 0 {
+		return nil, model.ErrQXChatIdentityInactive
+	}
+	if err := model.DB.Where("source_id = ?", expected.SourceID).First(&mapping).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, model.ErrQXChatIdentityInactive
+		}
+		return nil, err
+	}
+	if mapping.UserID != expected.NewAPIUserID || mapping.RequestID != expected.RequestID ||
+		mapping.CredentialVersion != expected.CredentialVersion || mapping.AuthorityVersion != expected.AuthorityVersion {
+		return nil, model.ErrQXChatIdentitySnapshotConflict
+	}
+	var user model.User
+	if err := model.DB.First(&user, mapping.UserID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, model.ErrQXChatIdentityInactive
+		}
+		return nil, err
+	}
+	if mapping.State == model.QXChatIdentityActive {
+		if user.Status != common.UserStatusEnabled {
+			return nil, model.ErrQXChatIdentityInactive
+		}
+		expected.PasswordDigest = ""
+	} else if mapping.State != model.QXChatIdentityPending || !mapping.Imported || user.Status != model.QXChatUserPendingStatus ||
+		user.AuthVersion != 1 || !strings.HasPrefix(user.Password, model.QXChatImportPasswordPrefix+common.QXChatPasswordPrefix) {
+		return nil, model.ErrQXChatIdentityInactive
+	} else if expected.PasswordDigest == "" || expected.PasswordDigest != model.QXChatImportPasswordDigest(user.Password) {
+		return nil, model.ErrQXChatIdentitySnapshotConflict
+	} else {
+		prefix := model.QXChatImportPasswordPrefix + common.QXChatPasswordPrefix
+		if _, err := common.ImportQXChatPasswordHash(strings.TrimPrefix(user.Password, prefix)); err != nil {
+			return nil, model.ErrQXChatIdentityInactive
+		}
+	}
+	return &QXChatImportState{QXChatCommitRequest: expected.QXChatCommitRequest, State: mapping.State, Imported: mapping.Imported,
+		PasswordDigest: expected.PasswordDigest, TargetUsername: user.Username, TargetEmail: user.Email}, nil
+}
+
+// The existing signed source commit is idempotent after a lost receipt or an interrupted target activation.
+func ActivateQXChatImport(ctx context.Context, expected QXChatImportState, apply bool) (*QXChatImportState, error) {
+	state, err := InspectQXChatImport(expected)
+	if err != nil {
+		return nil, err
+	}
+	if !state.Imported {
+		return nil, model.ErrQXChatIdentityConflict
+	}
+	if !apply {
+		return state, nil
+	}
+	if state.State == model.QXChatIdentityActive {
+		return state, model.PublishUserAuthCache(state.NewAPIUserID)
+	}
+	identity := model.QXChatIdentity{SourceID: state.SourceID, UserID: state.NewAPIUserID, RequestID: state.RequestID,
+		CredentialVersion: state.CredentialVersion, AuthorityVersion: state.AuthorityVersion, State: state.State, Imported: true}
+	if err := commitQXChatSource(ctx, &identity); err != nil {
+		return nil, err
+	}
+	user, err := model.ActivateQXChatImportIdentity(identity, state.PasswordDigest)
+	if err != nil {
+		return nil, err
+	}
+	if err := model.PublishUserAuthCache(user.Id); err != nil {
+		return nil, err
+	}
+	return InspectQXChatImport(expected)
+}
+
+func commitQXChatSource(ctx context.Context, identity *model.QXChatIdentity) error {
 	request := QXChatCommitRequest{identity.RequestID, identity.SourceID, identity.UserID, identity.CredentialVersion, identity.AuthorityVersion}
 	var receipt struct {
 		RequestID        string `json:"request_id"`
@@ -151,11 +234,18 @@ func commitQXChatIdentity(ctx context.Context, identity *model.QXChatIdentity, t
 		AuthorityVersion int64  `json:"authority_version"`
 	}
 	if err := callQXChatSource(ctx, qxchatCommitPath, request, &receipt); err != nil {
-		return nil, err
+		return err
 	}
 	if receipt.RequestID != request.RequestID || receipt.SourceID != request.SourceID || receipt.NewAPIUserID != request.NewAPIUserID ||
 		receipt.Authority != "newapi" || receipt.AuthorityVersion != request.AuthorityVersion {
-		return nil, ErrQXChatUnavailable
+		return ErrQXChatUnavailable
+	}
+	return nil
+}
+
+func commitQXChatIdentity(ctx context.Context, identity *model.QXChatIdentity, target *AuthIdentity) (*model.User, error) {
+	if err := commitQXChatSource(ctx, identity); err != nil {
+		return nil, err
 	}
 	user, err := model.ActivateQXChatIdentity(*identity, target)
 	if err != nil {
