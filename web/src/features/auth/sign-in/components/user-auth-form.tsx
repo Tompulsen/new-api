@@ -114,6 +114,7 @@ export function UserAuthForm({
     setTurnstileToken,
     validateTurnstile,
   } = useTurnstile()
+  const requiresTurnstile = isTurnstileEnabled && !qxchatLogin
   const { handleLoginResult } = useAuthRedirect()
 
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
@@ -183,10 +184,10 @@ export function UserAuthForm({
       return
     }
 
-    if (!validateTurnstile()) return
+    if (requiresTurnstile && !validateTurnstile()) return
 
-    const submittedTurnstileToken = turnstileToken
-    if (isTurnstileEnabled) {
+    const submittedTurnstileToken = requiresTurnstile ? turnstileToken : ''
+    if (requiresTurnstile) {
       setTurnstileToken('')
       setTurnstileWidgetKey((current) => current + 1)
     }
@@ -446,7 +447,7 @@ export function UserAuthForm({
             />
 
             {/* Turnstile */}
-            {isTurnstileEnabled && (
+            {requiresTurnstile && (
               <div className='mt-2'>
                 <Turnstile
                   key={turnstileWidgetKey}
@@ -463,7 +464,7 @@ export function UserAuthForm({
               className='mt-2 w-full justify-center gap-2'
               disabled={
                 isLoading ||
-                (isTurnstileEnabled && !turnstileToken) ||
+                (requiresTurnstile && !turnstileToken) ||
                 (qxchatLogin && qxchatConfig.data?.enabled !== true)
               }
             >

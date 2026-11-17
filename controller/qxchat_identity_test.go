@@ -849,7 +849,9 @@ func TestQXChatCollisionRequiresBothAccountsAndProofCannotReplay(t *testing.T) {
 	_, err = service.LoginQXChatIdentity(context.Background(), "legacy-user", qxchatTestPassword)
 	assert.ErrorIs(t, err, model.ErrInvalidCredentials)
 	_, err = service.LoginQXChatIdentity(context.Background(), "legacy-user", "enrollment-password")
-	assert.NoError(t, err)
+	assert.ErrorIs(t, err, model.ErrInvalidCredentials, "New API accounts must use the regular login endpoint, which still requires Turnstile")
+	regularLogin := model.User{Username: user.Username, Password: "enrollment-password"}
+	assert.NoError(t, regularLogin.ValidateAndFill(), "the New API account remains usable through regular login")
 }
 
 func TestQXChatBindingCannotFinishWithRevokedTargetAuthorization(t *testing.T) {

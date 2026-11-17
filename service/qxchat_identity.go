@@ -275,7 +275,7 @@ func LoginQXChatIdentity(ctx context.Context, identifier, password string) (*mod
 			return nil, model.ErrInvalidCredentials
 		}
 		if mapping.State == model.QXChatIdentityActive {
-			if user.Status != common.UserStatusEnabled || !common.ValidatePasswordAndHash(password, user.Password) {
+			if !mapping.Imported || user.Status != common.UserStatusEnabled || !common.ValidatePasswordAndHash(password, user.Password) {
 				return nil, model.ErrInvalidCredentials
 			}
 			return &user, nil

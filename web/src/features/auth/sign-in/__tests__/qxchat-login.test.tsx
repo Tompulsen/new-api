@@ -222,66 +222,81 @@ it('does not fall back to a different New API account if the original-account en
   expect(post).not.toHaveBeenCalled()
 })
 
-it.each([false, true])(
-  'requires a fresh verification after a script failure for QXChat login = %s',
-  async (qxchat) => {
-    client.setQueryData(STATUS_QUERY_KEY, {
-      password_login_enabled: true,
-      turnstile_check: true,
-      turnstile_site_key: 'test-site',
+it('bypasses the unavailable Turnstile widget only for QXChat account login', async () => {
+  client.setQueryData(STATUS_QUERY_KEY, {
+    password_login_enabled: true,
+    turnstile_check: true,
+    turnstile_site_key: 'test-site',
+  })
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValue({ data: { success: false, message: 'Login failed' } })
+  const user = await renderLogin(true, true)
+  expect(
+    await screen.findByRole('checkbox', {
+      name: 'Sign in with a QXChat account',
     })
-    const post = vi
-      .spyOn(api, 'post')
-      .mockResolvedValue({ data: { success: false, message: 'Login failed' } })
-    const user = await renderLogin(true)
-    if (qxchat) {
-      await user.click(
-        await screen.findByRole('checkbox', {
-          name: 'Sign in with a QXChat account',
-        })
-      )
-    }
-    await user.type(screen.getByLabelText('Username or Email'), 'existing-user')
-    await user.type(
-      screen.getByLabelText('Password', { exact: true }),
-      'existing-password'
+  ).toBeChecked()
+  expect(document.querySelector('#cf-turnstile')).toBeNull()
+  await user.type(screen.getByLabelText('Username or Email'), 'existing-user')
+  await user.type(
+    screen.getByLabelText('Password', { exact: true }),
+    'existing-password'
+  )
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/user/login/qxchat?turnstile=',
+      { username: 'existing-user', password: 'existing-password' },
+      { skipAuthRefresh: true }
     )
-    const script = document.querySelector('#cf-turnstile')
-    if (!script) throw new Error('Turnstile script was not created')
-    const submit = screen.getByRole('button', { name: 'Sign in' })
-    expect(submit).toBeDisabled()
-    expect(
-      screen.getByRole('status').compareDocumentPosition(submit) &
-        Node.DOCUMENT_POSITION_FOLLOWING
-    ).not.toBe(0)
-    fireEvent.error(script)
-    await user.click(screen.getByRole('button', { name: 'Sign in' }))
-    expect(post).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(post).not.toHaveBeenCalled()
-    let options: Record<string, unknown> = {}
-    window.turnstile = {
-      render: (_element, value) => {
-        options = value
-        return 'recovered-widget'
-      },
-      remove: vi.fn(),
-    }
-    const retryScript = document.querySelector('#cf-turnstile')
-    if (!retryScript) throw new Error('Turnstile script was not retried')
-    fireEvent.load(retryScript)
-    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: 'Sign in' }))
-    expect(post).not.toHaveBeenCalled()
-    act(() => (options.callback as (token: string) => void)('fresh-token'))
-    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
-    await user.click(screen.getByRole('button', { name: 'Sign in' }))
-    await waitFor(() =>
-      expect(post).toHaveBeenCalledWith(
-        `${qxchat ? '/api/user/login/qxchat' : '/api/user/login'}?turnstile=fresh-token`,
-        { username: 'existing-user', password: 'existing-password' },
-        { skipAuthRefresh: true }
-      )
-    )
+  )
+})
+
+it('still requires a fresh verification after a script failure for New API login', async () => {
+  client.setQueryData(STATUS_QUERY_KEY, {
+    password_login_enabled: true,
+    turnstile_check: true,
+    turnstile_site_key: 'test-site',
+  })
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValue({ data: { success: false, message: 'Login failed' } })
+  const user = await renderLogin(true)
+  await user.type(screen.getByLabelText('Username or Email'), 'existing-user')
+  await user.type(
+    screen.getByLabelText('Password', { exact: true }),
+    'existing-password'
+  )
+  const script = document.querySelector('#cf-turnstile')
+  if (!script) throw new Error('Turnstile script was not created')
+  fireEvent.error(script)
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
+  expect(post).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(post).not.toHaveBeenCalled()
+  let options: Record<string, unknown> = {}
+  window.turnstile = {
+    render: (_element, value) => {
+      options = value
+      return 'recovered-widget'
+    },
+    remove: vi.fn(),
   }
-)
+  const retryScript = document.querySelector('#cf-turnstile')
+  if (!retryScript) throw new Error('Turnstile script was not retried')
+  fireEvent.load(retryScript)
+  expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
+  expect(post).not.toHaveBeenCalled()
+  act(() => (options.callback as (token: string) => void)('fresh-token'))
+  expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/user/login?turnstile=fresh-token',
+      { username: 'existing-user', password: 'existing-password' },
+      { skipAuthRefresh: true }
+    )
+  )
+})
