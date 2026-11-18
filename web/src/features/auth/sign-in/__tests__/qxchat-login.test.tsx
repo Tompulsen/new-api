@@ -34,8 +34,10 @@ import {
   waitFor,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { AxiosError, type AxiosAdapter } from 'axios'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { selectLoginIdentity } from '@/features/auth/api'
 import { api } from '@/lib/api'
 import { STATUS_QUERY_KEY } from '@/lib/status-query'
 import { useAuthStore } from '@/stores/auth-store'
@@ -43,6 +45,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { UserAuthForm } from '../components/user-auth-form'
 
 let client: QueryClient
+const originalAdapter = api.defaults.adapter
 beforeEach(() => {
   localStorage.clear()
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -52,6 +55,7 @@ beforeEach(() => {
   })
 })
 afterEach(() => {
+  api.defaults.adapter = originalAdapter
   cleanup()
   client.clear()
   vi.restoreAllMocks()
@@ -148,20 +152,30 @@ it.each([1, 2])(
       username: `user-${i}`,
       account_label: `Account ${i}`,
     }))
-    const post = vi
-      .spyOn(api, 'post')
-      .mockResolvedValueOnce({
-        data: {
-          success: true,
-          data: {
-            requires_identity_selection: true,
-            flow_token: 'private-choice',
-            expires_at: Math.floor(Date.now() / 1000) + 300,
-            candidates,
-          },
-        },
+    const send = vi
+      .spyOn(XMLHttpRequest.prototype, 'send')
+      .mockImplementation(() => {
+        throw new Error('Anonymous login must not refresh a session')
       })
-      .mockResolvedValueOnce({ data: { success: true, data: challenge() } })
+    const adapter = vi.fn<AxiosAdapter>(async (config) => ({
+      data:
+        config.url === '/api/user/login?turnstile='
+          ? {
+              success: true,
+              data: {
+                requires_identity_selection: true,
+                flow_token: 'private-choice',
+                expires_at: Math.floor(Date.now() / 1000) + 300,
+                candidates,
+              },
+            }
+          : { success: true, data: challenge() },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }))
+    api.defaults.adapter = adapter
     const { user } = await renderLogin()
     await user.type(screen.getByLabelText('Username or Email'), 'shared-name')
     await user.type(
@@ -172,22 +186,55 @@ it.each([1, 2])(
     const choose = await screen.findByRole('button', {
       name: `Sign in as user-${count - 1} Account ${count - 1}`,
     })
-    expect(post).toHaveBeenCalledTimes(1)
+    expect(adapter).toHaveBeenCalledTimes(1)
     expect(useAuthStore.getState().auth.user).toBeNull()
     expect(useAuthStore.getState().auth.pendingLoginVerification).toBeNull()
     expect(JSON.stringify(localStorage)).not.toContain('private-choice')
     await user.click(choose)
     await screen.findByText('Complete account verification')
-    expect(post).toHaveBeenLastCalledWith(
+    expect(adapter.mock.calls.map(([config]) => config.url)).toEqual([
+      '/api/user/login?turnstile=',
       '/api/user/login/select',
+    ])
+    expect(JSON.parse(adapter.mock.calls[1][0].data)).toEqual({
+      flow_token: 'private-choice',
+      selection_id: `choice-${count - 1}`,
+    })
+    expect(send).not.toHaveBeenCalled()
+    expect(useAuthStore.getState().auth.pendingLoginVerification).toMatchObject(
       {
-        flow_token: 'private-choice',
-        selection_id: `choice-${count - 1}`,
-      },
-      { skipAuthRefresh: true, singleUseAuthorization: true }
+        challenge: { flow_token: 'mfa-challenge' },
+      }
     )
+    expect(useAuthStore.getState().auth.user).toBeNull()
   }
 )
+
+it('does not refresh or replay an anonymous account selection rejected with 401', async () => {
+  const send = vi
+    .spyOn(XMLHttpRequest.prototype, 'send')
+    .mockImplementation(() => {
+      throw new Error('Anonymous login must not refresh a session')
+    })
+  const adapter = vi.fn<AxiosAdapter>(async (config) => {
+    throw new AxiosError('Unauthorized', 'ERR_BAD_REQUEST', config, undefined, {
+      data: { success: false, message: 'Invalid credentials' },
+      status: 401,
+      statusText: 'Unauthorized',
+      headers: {},
+      config,
+    })
+  })
+  api.defaults.adapter = adapter
+  await expect(
+    selectLoginIdentity('private-choice', 'only-choice')
+  ).rejects.toMatchObject({
+    response: { status: 401 },
+  })
+  expect(adapter).toHaveBeenCalledTimes(1)
+  expect(send).not.toHaveBeenCalled()
+  expect(useAuthStore.getState().auth.user).toBeNull()
+})
 
 it('cancels account selection without authenticating or retaining the password', async () => {
   const post = vi.spyOn(api, 'post').mockResolvedValue({

@@ -96,7 +96,8 @@ export async function selectLoginIdentity(
       flow_token: flowToken,
       selection_id: selectionId,
     },
-    { skipAuthRefresh: true, singleUseAuthorization: true }
+    // This one-time login flow precedes session creation; never refresh or replay it.
+    { skipAuthRefresh: true }
   )
   return res.data
 }
