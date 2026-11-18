@@ -1,14 +1,20 @@
 package model
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 func unifiedLoginOwner(t *testing.T) User {
@@ -88,6 +94,7 @@ func TestUnifiedLoginCollisionRequiresConfirmationEvenWhenOnlyOnePasswordMatches
 				}
 			}
 			require.Len(t, candidate.SelectionID, 22)
+			assert.Equal(t, fmt.Sprintf("原 QX 资料 · tomplusen · 账号 #%d", owner.Id), candidate.AccountLabel)
 			flow, err := GetAuthFlow(selection.FlowToken, AuthFlowMatch{Purpose: AuthFlowPurposeLoginIdentity})
 			require.NoError(t, err)
 			assert.NotContains(t, flow.Payload, "NewAPI-password-123")
@@ -101,6 +108,70 @@ func TestUnifiedLoginCollisionRequiresConfirmationEvenWhenOnlyOnePasswordMatches
 			assert.ErrorIs(t, err, ErrInvalidCredentials)
 			legacy := User{Username: "tomplusen", Password: "NewAPI-password-123"}
 			assert.ErrorIs(t, legacy.ValidateAndFill(), ErrLoginIdentifierAmbiguous)
+		})
+	}
+}
+
+func TestUnifiedLoginCandidateLabelsDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var driver gorm.Dialector
+			switch dialect {
+			case "sqlite":
+				driver = sqlite.Open(":memory:")
+			case "mysql":
+				dsn := os.Getenv("TEST_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("TEST_MYSQL_DSN is not configured")
+				}
+				driver = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("TEST_POSTGRES_DSN is not configured")
+				}
+				driver = postgres.New(postgres.Config{DSN: dsn, PreferSimpleProtocol: true})
+			}
+			db, err := gorm.Open(driver, &gorm.Config{NamingStrategy: schema.NamingStrategy{TablePrefix: fmt.Sprintf("login_label_%d_", time.Now().UnixNano())}})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			sqlDB.SetMaxOpenConns(1)
+			previousDB, previousType := DB, common.MainDatabaseType()
+			DB = db
+			common.SetMainDatabaseType(common.DatabaseType(dialect))
+			initCol()
+			tables := []any{&User{}, &LoginIdentifierReservation{}, &QXChatIdentity{}, &AuthFlow{}}
+			t.Cleanup(func() {
+				require.NoError(t, db.Migrator().DropTable(tables...))
+				DB = previousDB
+				common.SetMainDatabaseType(previousType)
+				initCol()
+				require.NoError(t, sqlDB.Close())
+			})
+			require.NoError(t, db.AutoMigrate(tables...))
+			hash, err := common.Password2Hash("Label-check-password-123")
+			require.NoError(t, err)
+			original := User{Username: "qx_original_profile", Password: hash, Status: common.UserStatusEnabled, AuthVersion: 1, AffCode: "label-original"}
+			native := User{Username: "aas200", Email: "owner@example.com", Password: hash, Status: common.UserStatusEnabled, AuthVersion: 1, AffCode: "label-native"}
+			require.NoError(t, db.Create(&original).Error)
+			require.NoError(t, db.Create(&native).Error)
+			require.NoError(t, db.Create(&QXChatIdentity{SourceID: "11111111-2222-4333-8444-555555555555", UserID: original.Id,
+				SourceUsername: native.Username, SourceEmail: native.Email, State: QXChatIdentityActive, Imported: true}).Error)
+			require.NoError(t, db.Create(&QXChatIdentity{SourceID: "66666666-7777-4888-9999-aaaaaaaaaaaa", UserID: native.Id,
+				SourceUsername: native.Username, State: QXChatIdentityActive}).Error)
+			require.NoError(t, InitializeLoginIdentifiers())
+			user, selection, err := AuthenticatePasswordIdentifier(native.Username, "Label-check-password-123", "https://accounts.example")
+			require.NoError(t, err)
+			require.Nil(t, user)
+			require.Len(t, selection.Candidates, 2)
+			assert.Equal(t, original.Username, selection.Candidates[0].Username, "display labels must not replace the canonical account name")
+			assert.Equal(t, fmt.Sprintf("原 QX 资料 · aas200 · 账号 #%d", original.Id), selection.Candidates[0].AccountLabel)
+			assert.Equal(t, native.Username, selection.Candidates[1].Username)
+			assert.Equal(t, fmt.Sprintf("独立资料 · 账号 #%d", native.Id), selection.Candidates[1].AccountLabel, "a synthetic profile must not look like the original profile")
+			selected, err := ConfirmPasswordLoginIdentity(selection.FlowToken, selection.Candidates[0].SelectionID, "https://accounts.example")
+			require.NoError(t, err)
+			assert.Equal(t, original.Id, selected.Id)
 		})
 	}
 }

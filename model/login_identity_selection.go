@@ -86,12 +86,12 @@ func AuthenticatePasswordIdentifier(identifier, password, origin string) (*User,
 		payload.Proofs = append(payload.Proofs, loginIdentityProof{SelectionID: selectionID, UserID: user.Id,
 			AuthVersion: user.AuthVersion, PasswordDigest: loginPasswordDigest(user.Password)})
 		label := fmt.Sprintf("独立资料 · 账号 #%d", user.Id)
-		var count int64
-		if err := DB.Model(&QXChatIdentity{}).Where("user_id = ? AND state = ? AND source_email <> ?", user.Id, QXChatIdentityActive, "").Count(&count).Error; err != nil {
+		var mapping QXChatIdentity
+		if err := DB.Select("source_username").Where("user_id = ? AND state = ? AND source_email <> ?", user.Id, QXChatIdentityActive, "").Find(&mapping).Error; err != nil {
 			return nil, nil, err
 		}
-		if count > 0 {
-			label = fmt.Sprintf("原 QX 资料 · 账号 #%d", user.Id)
+		if mapping.SourceUsername != "" {
+			label = fmt.Sprintf("原 QX 资料 · %s · 账号 #%d", mapping.SourceUsername, user.Id)
 		}
 		result.Candidates = append(result.Candidates, LoginIdentityCandidate{SelectionID: selectionID, Username: user.Username, AccountLabel: label})
 	}
