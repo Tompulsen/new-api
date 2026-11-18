@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -16,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
@@ -30,7 +31,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { formatTimestampToDate } from '@/lib/format'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getUnifiedWallet } from '../api'
@@ -45,8 +45,21 @@ export function UnifiedWalletCard() {
     queryFn: ({ signal }) => getUnifiedWallet(signal),
     enabled: Boolean(userID),
     retry: false,
+    refetchInterval: 15_000,
     meta: { errorToast: false },
   })
+  const expiry = query.data?.charity_expiring_at
+  const refetch = query.refetch
+  useEffect(() => {
+    if (!userID || !expiry || expiry * 1000 <= Date.now()) return
+    const timer = setTimeout(
+      () => {
+        void refetch()
+      },
+      Math.min(2_147_483_647, expiry * 1000 - Date.now() + 50)
+    )
+    return () => clearTimeout(timer)
+  }, [userID, expiry, refetch])
   if (!userID) return null
   if (query.isPending) {
     return <LoadingState inline message={t('Loading community points')} />
@@ -66,7 +79,11 @@ export function UnifiedWalletCard() {
     <Card>
       <CardHeader>
         <CardTitle>{t('Community points')}</CardTitle>
-        <CardDescription>{t('100 points = ¥0.02')}</CardDescription>
+        <CardDescription>
+          {t(
+            '¥1 = 5,000 points. Welfare points are used first in the community.'
+          )}
+        </CardDescription>
         <CardAction>
           <Button
             variant='outline'
@@ -82,22 +99,15 @@ export function UnifiedWalletCard() {
       <CardContent>
         <dl className='grid gap-4 sm:grid-cols-2'>
           <div>
-            <dt className='font-medium'>{t('Charity points')}</dt>
+            <dt className='font-medium'>{t('Welfare points')}</dt>
             <dd className='mt-1 font-mono text-xl break-all tabular-nums'>
               {formatCommunityPoints(query.data.charity_points, language)}
             </dd>
             <dd className='text-muted-foreground mt-1 text-sm'>
               {t(
-                'Only available in the community. Original expiry dates are preserved.'
+                'Your valid QX points are shared automatically. Spending and expiry update this balance.'
               )}
             </dd>
-            {query.data.charity_expiring_at != null && (
-              <dd className='text-muted-foreground mt-1 text-sm'>
-                {t('Next charity expiry: {{date}}', {
-                  date: formatTimestampToDate(query.data.charity_expiring_at),
-                })}
-              </dd>
-            )}
           </div>
           <div>
             <dt className='font-medium'>{t('Permanent points')}</dt>
@@ -105,7 +115,9 @@ export function UnifiedWalletCard() {
               {formatCommunityPoints(query.data.permanent_points, language)}
             </dd>
             <dd className='text-muted-foreground mt-1 text-sm'>
-              {t('The community view of your paid New API balance.')}
+              {t(
+                'All available New API balance, shown as permanent community points.'
+              )}
             </dd>
           </div>
         </dl>

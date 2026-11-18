@@ -7776,6 +7776,10 @@
     "Task completed": "Tâche terminée",
     "Community lottery reward: {{amount}} USD": "Récompense du tirage communautaire : {{amount}} USD",
     "Community lottery": "Tirage communautaire",
-    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "La vérification de sécurité n’a pas abouti. Réessayez, mettez à jour votre application ou ouvrez ce site dans le navigateur de votre téléphone."
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "La vérification de sécurité n’a pas abouti. Réessayez, mettez à jour votre application ou ouvrez ce site dans le navigateur de votre téléphone.",
+    "Welfare points": "Points bonus",
+    "Your valid QX points are shared automatically. Spending and expiry update this balance.": "Vos points QX valides sont partagés automatiquement. Les dépenses et expirations actualisent ce solde.",
+    "All available New API balance, shown as permanent community points.": "Tout le solde New API disponible est affiché en points permanents de la communauté.",
+    "¥1 = 5,000 points. Welfare points are used first in the community.": "1 ¥ = 5 000 points. Les points bonus sont utilisés en premier dans la communauté."
   }
 }

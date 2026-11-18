@@ -72,13 +72,14 @@ func TestUnifiedWalletSourceIsolationAndOriginalRefund(t *testing.T) {
 	view, err = GetUnifiedWallet(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, "50", view.CharityPoints)
-	assert.Equal(t, "100", view.PermanentPoints)
+	assert.Equal(t, "150", view.PermanentPoints)
 	assert.Equal(t, int64(150), view.TotalAPIQuota)
 	require.NoError(t, DB.First(&charity, charity.ID).Error)
 	assert.Equal(t, int64(50), charity.RemainingQuota)
-	// Unknown legacy money never authorizes community consumption.
+	// All existing available New API credit is permanent community credit.
 	legacy := createReserveTestUser(t, 100)
-	assert.ErrorIs(t, BeginWalletOperation(legacy.Id, WalletReference("legacy-community"), WalletCommunity, 1, 0), ErrWalletInsufficient)
+	require.NoError(t, BeginWalletOperation(legacy.Id, WalletReference("legacy-community"), WalletCommunity, 1, 0))
+	assert.Equal(t, 99, getUserQuotaFromDB(t, legacy.Id))
 }
 
 func TestUnifiedWalletCharityOnlyAndTokenAtomicity(t *testing.T) {
@@ -164,7 +165,7 @@ func TestUnifiedWalletImportIdempotencyAndExpiry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "100", view.CharityPoints)
 	assert.Equal(t, int64(7), view.TotalAPIQuota)
-	assert.Equal(t, "0", view.PermanentPoints)
+	assert.Equal(t, "7", view.PermanentPoints)
 }
 
 func TestUnifiedWalletTaskPersistenceAndZeroDelta(t *testing.T) {
@@ -234,6 +235,7 @@ func TestUnifiedWalletDebtAndPaymentReversal(t *testing.T) {
 
 func TestUnifiedWalletPaymentClassificationAndRatio(t *testing.T) {
 	unifiedWalletDatabase(t)
+	t.Setenv("UNIFIED_WALLET_QUOTA_PER_CNY", "500000")
 	user := createReserveTestUser(t, 0)
 	topup := TopUp{UserId: user.Id, TradeNo: "verified-epay", Amount: 1, Money: 1, Status: common.TopUpStatusPending, PaymentProvider: PaymentProviderEpay}
 	require.NoError(t, DB.Create(&topup).Error)
@@ -257,20 +259,20 @@ func TestUnifiedWalletPaymentClassificationAndRatio(t *testing.T) {
 	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error { return CreditVerifiedPaymentTx(tx, other.Id, 10, &unknown, nil) }))
 	view, err = GetUnifiedWallet(other.Id)
 	require.NoError(t, err)
-	assert.Equal(t, "0", view.PermanentPoints)
+	assert.Equal(t, "0.1", view.PermanentPoints)
 	assert.Equal(t, int64(10), view.LegacyAPIQuota)
 	fractional := createReserveTestUser(t, 0)
 	unifiedWalletPayment(t, fractional.Id, 3, 1)
 	require.NoError(t, BeginWalletOperation(fractional.Id, WalletReference("fraction"), WalletAPI, 1, 0))
 	view, err = GetUnifiedWallet(fractional.Id)
 	require.NoError(t, err)
-	assert.Equal(t, "33.333333", view.PermanentPoints)
+	assert.Equal(t, "0.02", view.PermanentPoints)
 	original := common.QuotaPerUnit
 	common.QuotaPerUnit = original * 3
 	t.Cleanup(func() { common.QuotaPerUnit = original })
 	view, err = GetUnifiedWallet(fractional.Id)
 	require.NoError(t, err)
-	assert.Equal(t, "33.333333", view.PermanentPoints)
+	assert.Equal(t, "0.02", view.PermanentPoints)
 }
 
 func TestUnifiedWalletMigrationPreservesLegacyBalanceAndUniqueness(t *testing.T) {
@@ -428,7 +430,7 @@ func TestUnifiedWalletTopUpSchemaUpgrade(t *testing.T) {
 	view, err := GetUnifiedWallet(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, int64(123), view.LegacyAPIQuota)
-	assert.Equal(t, "0", view.PermanentPoints)
+	assert.Equal(t, "123", view.PermanentPoints)
 }
 
 func TestUnifiedWalletImportedCharityNeverBecomesAPIQuota(t *testing.T) {

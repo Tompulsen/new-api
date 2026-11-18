@@ -76,11 +76,13 @@ it('displays separate charity and permanent balances and changes formatting with
   expect(screen.getByText('2,500')).toBeVisible()
   expect(
     screen.getByText(
-      'Only available in the community. Original expiry dates are preserved.'
+      'Your valid QX points are shared automatically. Spending and expiry update this balance.'
     )
   ).toBeVisible()
   expect(
-    screen.getByText('The community view of your paid New API balance.')
+    screen.getByText(
+      'All available New API balance, shown as permanent community points.'
+    )
   ).toBeVisible()
   await act(() => i18n.changeLanguage('fr'))
   expect(screen.getByText('100,000001')).toBeVisible()
@@ -101,7 +103,7 @@ it('hides balances when disabled and does not use a previous account balance for
       enabled: false,
     })
   )
-  expect(screen.queryByText('Charity points')).not.toBeInTheDocument()
+  expect(screen.queryByText('Welfare points')).not.toBeInTheDocument()
   get.mockResolvedValue({
     data: { success: true, data: { ...wallet, charity_points: '42' } },
   })

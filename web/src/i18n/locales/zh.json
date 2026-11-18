@@ -7776,6 +7776,10 @@
     "Task completed": "任务已完成",
     "Community lottery reward: {{amount}} USD": "社区抽奖奖励：{{amount}} USD",
     "Community lottery": "社区抽奖",
-    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "安全验证未能完成。请重试、更新 App，或在手机浏览器中打开本站。"
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "安全验证未能完成。请重试、更新 App，或在手机浏览器中打开本站。",
+    "Welfare points": "福利积分",
+    "Your valid QX points are shared automatically. Spending and expiry update this balance.": "QX 有效积分自动共享，消费和限时积分过期后余额同步更新。",
+    "All available New API balance, shown as permanent community points.": "New API 全部可用余额折算为社区永久积分。",
+    "¥1 = 5,000 points. Welfare points are used first in the community.": "¥1 = 5,000 积分。社区优先使用福利积分。"
   }
 }

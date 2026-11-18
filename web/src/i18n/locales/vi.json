@@ -7776,6 +7776,10 @@
     "Task completed": "Đã hoàn thành tác vụ",
     "Community lottery reward: {{amount}} USD": "Phần thưởng bốc thăm cộng đồng: {{amount}} USD",
     "Community lottery": "Bốc thăm cộng đồng",
-    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "Không thể hoàn tất xác minh bảo mật. Hãy thử lại, cập nhật ứng dụng hoặc mở trang này bằng trình duyệt trên điện thoại."
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "Không thể hoàn tất xác minh bảo mật. Hãy thử lại, cập nhật ứng dụng hoặc mở trang này bằng trình duyệt trên điện thoại.",
+    "Welfare points": "Điểm phúc lợi",
+    "Your valid QX points are shared automatically. Spending and expiry update this balance.": "Điểm QX còn hiệu lực được tự động chia sẻ. Chi tiêu và hết hạn sẽ cập nhật số dư.",
+    "All available New API balance, shown as permanent community points.": "Toàn bộ số dư New API khả dụng được hiển thị thành điểm cộng đồng vĩnh viễn.",
+    "¥1 = 5,000 points. Welfare points are used first in the community.": "1 ¥ = 5.000 điểm. Cộng đồng ưu tiên sử dụng điểm phúc lợi."
   }
 }

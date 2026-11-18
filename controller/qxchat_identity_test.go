@@ -900,7 +900,7 @@ func TestQXChatLoginPreservesMFA(t *testing.T) {
 	user, _ := setupQXChatIdentityTest(t)
 	startQXChatSourceFixture(t)
 	require.NoError(t, model.DB.Create(&model.QXChatIdentity{SourceID: qxchatTestSource, UserID: user.Id, SourceUsername: "legacy-user", SourceEmail: "legacy@example.com", RequestID: qxchatTestRequest,
-		CredentialVersion: strings.Repeat("a", 64), AuthorityVersion: 1, State: model.QXChatIdentityActive}).Error)
+		CredentialVersion: strings.Repeat("a", 64), AuthorityVersion: 1, State: model.QXChatIdentityActive, Imported: true}).Error)
 	require.NoError(t, model.DB.Create(&model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}).Error)
 	response := securityEnrollmentRequest("POST", "/api/user/login/qxchat", `{"username":"legacy-user","password":"enrollment-password"}`, "", service.AuthIdentity{}, QXChatIdentityLogin)
 	var result struct {

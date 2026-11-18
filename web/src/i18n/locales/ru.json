@@ -7776,6 +7776,10 @@
     "Task completed": "Задача завершена",
     "Community lottery reward: {{amount}} USD": "Награда розыгрыша сообщества: {{amount}} USD",
     "Community lottery": "Розыгрыш сообщества",
-    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "Не удалось завершить проверку безопасности. Повторите попытку, обновите приложение или откройте сайт в браузере телефона."
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "Не удалось завершить проверку безопасности. Повторите попытку, обновите приложение или откройте сайт в браузере телефона.",
+    "Welfare points": "Бонусные баллы",
+    "Your valid QX points are shared automatically. Spending and expiry update this balance.": "Действующие баллы QX доступны автоматически. Расходы и истечение срока обновляют баланс.",
+    "All available New API balance, shown as permanent community points.": "Весь доступный баланс New API отображается как постоянные баллы сообщества.",
+    "¥1 = 5,000 points. Welfare points are used first in the community.": "1 ¥ = 5 000 баллов. В сообществе сначала расходуются бонусные баллы."
   }
 }

@@ -7776,6 +7776,10 @@
     "Task completed": "タスクが完了しました",
     "Community lottery reward: {{amount}} USD": "コミュニティ抽選報酬：{{amount}} USD",
     "Community lottery": "コミュニティ抽選",
-    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "セキュリティ確認を完了できませんでした。再試行するか、アプリを更新するか、スマートフォンのブラウザーでこのサイトを開いてください。"
+    "Security verification could not finish. Retry, update your app, or open this site in your phone browser.": "セキュリティ確認を完了できませんでした。再試行するか、アプリを更新するか、スマートフォンのブラウザーでこのサイトを開いてください。",
+    "Welfare points": "ボーナスポイント",
+    "Your valid QX points are shared automatically. Spending and expiry update this balance.": "有効な QX ポイントは自動で共有され、使用や有効期限に応じて残高が更新されます。",
+    "All available New API balance, shown as permanent community points.": "New API の利用可能な全残高をコミュニティの無期限ポイントとして表示します。",
+    "¥1 = 5,000 points. Welfare points are used first in the community.": "1 元 = 5,000 ポイント。コミュニティではボーナスポイントから使用します。"
   }
 }

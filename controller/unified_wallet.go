@@ -1,8 +1,12 @@
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
@@ -12,6 +16,7 @@ import (
 )
 
 func RegisterUnifiedWalletRoutes(api *gin.RouterGroup) {
+	api.POST("/qxchat/wallet/reservations/status", middleware.QXChatWalletProof(), getQXChatWalletReservationStatus)
 	api.GET("/user/self/wallet", middleware.UserAuth(), middleware.DisableCache(), getUnifiedWallet)
 	api.POST("/qxchat/wallet/import", middleware.CommunitySSOExchangeRateLimit(), middleware.QXChatWalletProof(), importQXChatWallet)
 	api.GET("/qxchat/wallet/receipts/:transfer_id", middleware.CommunitySSOExchangeRateLimit(), middleware.QXChatWalletProof(), getQXChatWalletReceipt)
@@ -58,4 +63,27 @@ func getQXChatWalletReceipt(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": receipt})
+}
+
+func getQXChatWalletReservationStatus(c *gin.Context) {
+	var request model.QXChatWalletReservationStatus
+	if err := common.UnmarshalBodyReusable(c, &request); err != nil {
+		walletAPIError(c, model.ErrWalletConflict)
+		return
+	}
+	result, err := model.GetQXChatWalletReservationStatus(request)
+	if err != nil {
+		walletAPIError(c, err)
+		return
+	}
+	body, err := common.Marshal(result)
+	if err != nil {
+		walletAPIError(c, err)
+		return
+	}
+	digest := sha256.Sum256(body)
+	canonical := strings.Join([]string{"qxchat-wallet-response-v1", c.GetHeader("X-Migration-Nonce"), "200", hex.EncodeToString(digest[:])}, "\n")
+	c.Header("X-Migration-Signature", common.GenerateHMACWithKey([]byte(os.Getenv("QXCHAT_MIGRATION_SECRET")), canonical))
+	c.Header("Cache-Control", "no-store")
+	c.Data(http.StatusOK, "application/json", body)
 }

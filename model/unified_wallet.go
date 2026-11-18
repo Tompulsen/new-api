@@ -20,6 +20,7 @@ const (
 	WalletLegacy    = "legacy"
 	WalletPaid      = "paid"
 	WalletCharity   = "charity"
+	WalletQXChat    = "qxchat"
 )
 
 var (
@@ -64,9 +65,10 @@ type UnifiedWalletLot struct {
 }
 
 type WalletAllocation struct {
-	LotID int64  `json:"lot_id"`
-	Kind  string `json:"kind"`
-	Quota int64  `json:"quota"`
+	Reference string `json:"reference,omitempty"`
+	LotID     int64  `json:"lot_id"`
+	Kind      string `json:"kind"`
+	Quota     int64  `json:"quota"`
 }
 
 type UnifiedWalletOperation struct {
@@ -167,7 +169,7 @@ func WalletReference(parts ...string) string {
 // serializes new accounts and all payment, API, community and import writers.
 func lockUnifiedWallet(tx *gorm.DB, userID int) (*User, *UnifiedWalletAccount, error) {
 	var user User
-	if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
+	if err := lockWalletUser(tx, userID, &user); err != nil {
 		return nil, nil, err
 	}
 	var account UnifiedWalletAccount
@@ -203,6 +205,16 @@ func walletEntry(tx *gorm.DB, userID int, operation string, allocation WalletAll
 func takeWalletQuota(tx *gorm.DB, account *UnifiedWalletAccount, operation, mode string, amount int64, requireAvailable bool) ([]WalletAllocation, error) {
 	allocations := []WalletAllocation{}
 	remaining := amount
+	if mode == WalletCommunity && remaining > 0 {
+		allocation, err := reserveQXChatWallet(tx, account.UserID, operation, remaining)
+		if err != nil {
+			return nil, err
+		}
+		if allocation.Quota > 0 {
+			allocations = append(allocations, allocation)
+			remaining -= allocation.Quota
+		}
+	}
 	if mode == WalletAPI && account.LegacyQuota > 0 {
 		take := min(remaining, account.LegacyQuota)
 		account.LegacyQuota -= take
@@ -250,6 +262,12 @@ func takeWalletQuota(tx *gorm.DB, account *UnifiedWalletAccount, operation, mode
 			}
 		}
 	}
+	if mode == WalletCommunity && remaining > 0 && account.LegacyQuota > 0 {
+		take := min(remaining, account.LegacyQuota)
+		account.LegacyQuota -= take
+		remaining -= take
+		allocations = append(allocations, WalletAllocation{Kind: WalletLegacy, Quota: take})
+	}
 	if remaining > 0 {
 		if requireAvailable {
 			return nil, ErrWalletInsufficient
@@ -281,6 +299,11 @@ func restoreWalletQuota(tx *gorm.DB, account *UnifiedWalletAccount, operation st
 		restored := refund
 		if allocation.Kind == WalletLegacy {
 			account.LegacyQuota += refund
+		} else if allocation.Kind == WalletQXChat {
+			if len(allocation.Reference) != 64 {
+				return nil, ErrWalletInvariant
+			}
+			// The source reconciles this committed target, preserving its original expiry.
 		} else {
 			var lot UnifiedWalletLot
 			if err := lockForUpdate(tx).First(&lot, allocation.LotID).Error; err != nil {
@@ -479,7 +502,11 @@ func ReserveWalletRealtimeUsage(userID int, id string, target, consumed int) (ex
 			if err := tx.Model(&UnifiedWalletLot{}).Select("COALESCE(SUM(remaining_quota), 0)").Where("user_id = ? AND kind = ? AND (expires_at = 0 OR expires_at > ?)", userID, WalletCharity, time.Now().Unix()).Scan(&charity).Error; err != nil {
 				return err
 			}
-			available = max(int64(0), account.PaidQuota+min(int64(0), account.LegacyQuota)) + charity
+			shared, err := qxchatWalletBalance(tx, userID)
+			if err != nil {
+				return err
+			}
+			available += charity + shared.Quota
 		}
 		unused := int64(target - consumed)
 		exhausted = user.Status != common.UserStatusEnabled || available+unused <= 0
@@ -616,29 +643,44 @@ func GetUnifiedWallet(userID int) (*UnifiedWalletView, error) {
 		if err := tx.Where("user_id = ? AND remaining_quota > 0 AND (expires_at = 0 OR expires_at > ?)", userID, time.Now().Unix()).Order("id").Find(&lots).Error; err != nil {
 			return err
 		}
-		charity, paid := decimal.Zero, decimal.Zero
-		paidDebt := max(int64(0), -account.LegacyQuota)
+		rate, err := UnifiedWalletQuotaPerPoint()
+		if err != nil {
+			return err
+		}
+		charity := decimal.Zero
 		for _, lot := range lots {
-			remaining := lot.RemainingQuota
-			if lot.Kind == WalletPaid {
-				offset := min(remaining, paidDebt)
-				remaining -= offset
-				paidDebt -= offset
+			if lot.Kind != WalletCharity {
+				continue
 			}
-			points := decimal.NewFromInt(lot.InitialPoints).Mul(decimal.NewFromInt(remaining)).Div(decimal.NewFromInt(lot.InitialQuota))
-			if lot.Kind == WalletPaid {
-				paid = paid.Add(points)
-			} else {
-				charity = charity.Add(points)
-				if lot.ExpiresAt > 0 && (view.CharityExpiringAt == nil || lot.ExpiresAt < *view.CharityExpiringAt) {
-					expiry := lot.ExpiresAt
-					view.CharityExpiringAt = &expiry
-				}
+			if lot.InitialQuota <= 0 {
+				return ErrWalletInvariant
+			}
+			points := decimal.NewFromInt(lot.InitialPoints).Mul(decimal.NewFromInt(lot.RemainingQuota)).Div(decimal.NewFromInt(lot.InitialQuota))
+			charity = charity.Add(points)
+			if lot.ExpiresAt > 0 && (view.CharityExpiringAt == nil || lot.ExpiresAt < *view.CharityExpiringAt) {
+				expiry := lot.ExpiresAt
+				view.CharityExpiringAt = &expiry
 			}
 		}
-		view.CharityPoints, view.PermanentPoints = charity.Truncate(6).String(), paid.Truncate(6).String()
+		view.CharityPoints = charity.Truncate(6).String()
+		view.PermanentPoints = decimal.NewFromInt(max(int64(0), int64(user.Quota))).Div(decimal.NewFromInt(rate)).Truncate(6).String()
 		return nil
 	})
+	if err == nil {
+		// No local wallet lock is held while reading the source balance.
+		shared, sourceErr := qxchatWalletBalance(DB, userID)
+		if sourceErr != nil {
+			return nil, sourceErr
+		}
+		local, parseErr := decimal.NewFromString(view.CharityPoints)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		view.CharityPoints = local.Add(shared.Points).Truncate(6).String()
+		if shared.ExpiresAt != nil && (view.CharityExpiringAt == nil || *shared.ExpiresAt < *view.CharityExpiringAt) {
+			view.CharityExpiringAt = shared.ExpiresAt
+		}
+	}
 	return view, err
 }
 

@@ -1,12 +1,16 @@
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Calcium-Ion/go-epay/epay"
 	"github.com/QuantumNous/new-api/common"
@@ -82,7 +86,10 @@ func TestUnifiedWalletEpayVerifiedCallbackFreezesActualPrincipal(t *testing.T) {
 			}
 			view, err := model.GetUnifiedWallet(user.Id)
 			require.NoError(t, err)
-			assert.Equal(t, row.points, view.PermanentPoints)
+			assert.Equal(t, "50000", view.PermanentPoints, "permanent points represent the entire available quota")
+			var principal model.UnifiedWalletLot
+			require.NoError(t, db.Where("user_id = ? AND kind = ?", user.Id, model.WalletPaid).First(&principal).Error)
+			assert.Equal(t, row.points, fmt.Sprint(principal.InitialPoints), "the paid principal remains preserved for payment reversals")
 			assert.Equal(t, "0", view.CharityPoints)
 			assert.Equal(t, int64(5000000), view.TotalAPIQuota)
 			assert.Equal(t, view.TotalAPIQuota, view.PaidAPIQuota)
@@ -97,4 +104,55 @@ func TestUnifiedWalletEpayVerifiedCallbackFreezesActualPrincipal(t *testing.T) {
 			assert.Equal(t, row.charged, fmt.Sprintf("%.2f", float64(order.PaymentPrincipalFen)/100))
 		})
 	}
+}
+
+func TestSharedWalletStatusSignsCommittedAmountAndRejectsReplay(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	t.Setenv("UNIFIED_WALLET_ENABLED", "true")
+	t.Setenv("UNIFIED_WALLET_QUOTA_PER_CNY", "500000")
+	t.Setenv("QXCHAT_SHARED_WALLET_ENABLED", "1")
+	secret := "shared-wallet-callback-test-secret-32-characters"
+	t.Setenv("QXCHAT_MIGRATION_SECRET", secret)
+	require.NoError(t, model.MigrateUnifiedWallet(db))
+	user := model.User{Username: "wallet-callback", Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&user).Error)
+	reservation := model.WalletReference("callback-reservation")
+	operation := model.UnifiedWalletOperation{ID: model.WalletReference("callback-operation"), UserID: user.Id,
+		Mode: model.WalletCommunity, State: "settled", Quota: 123,
+		Allocations: []model.WalletAllocation{{Kind: model.WalletQXChat, Reference: reservation, Quota: 123}}}
+	require.NoError(t, db.Create(&operation).Error)
+	input := model.QXChatWalletReservationStatus{ReservationID: reservation, OperationID: operation.ID, UserID: user.Id}
+	body, err := common.Marshal(input)
+	require.NoError(t, err)
+	const path = "/api/qxchat/wallet/reservations/status"
+	stamp := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := strings.Repeat("a", 32)
+	digest := sha256.Sum256(body)
+	canonical := strings.Join([]string{"qxchat-wallet-v1", stamp, nonce, "POST", path, hex.EncodeToString(digest[:])}, "\n")
+	router := gin.New()
+	RegisterUnifiedWalletRoutes(router.Group("/api"))
+	call := func(signature string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Migration-Timestamp", stamp)
+		request.Header.Set("X-Migration-Nonce", nonce)
+		request.Header.Set("X-Migration-Signature", signature)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	assert.Equal(t, http.StatusUnauthorized, call(strings.Repeat("0", 64)).Code)
+	signature := common.GenerateHMACWithKey([]byte(secret), canonical)
+	response := call(signature)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var status model.QXChatWalletReservationStatus
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &status))
+	assert.Equal(t, reservation, status.ReservationID)
+	assert.Equal(t, int64(123), status.Quota)
+	assert.True(t, status.Terminal)
+	digest = sha256.Sum256(response.Body.Bytes())
+	canonical = strings.Join([]string{"qxchat-wallet-response-v1", nonce, "200", hex.EncodeToString(digest[:])}, "\n")
+	assert.Equal(t, common.GenerateHMACWithKey([]byte(secret), canonical), response.Header().Get("X-Migration-Signature"))
+	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+	assert.Equal(t, http.StatusUnauthorized, call(signature).Code)
 }
