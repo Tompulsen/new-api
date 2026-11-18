@@ -961,6 +961,10 @@ func DeleteUser(c *gin.Context) {
 	}
 	revokedAccessTokens, err := model.HardDeleteUserById(id)
 	if err != nil {
+		if errors.Is(err, model.ErrQXChatAccountDeletionBlocked) {
+			writeSecurityOperationError(c, err)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -1150,6 +1154,10 @@ func ManageUser(c *gin.Context) {
 		}
 		revokedAccessTokens, err := user.Delete()
 		if err != nil {
+			if errors.Is(err, model.ErrQXChatAccountDeletionBlocked) {
+				writeSecurityOperationError(c, err)
+				return
+			}
 			common.ApiError(c, err)
 			return
 		}

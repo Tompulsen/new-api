@@ -27,6 +27,7 @@ const qxchatVerifiedEmailProvider = "qxchat_verified_email"
 var ErrQXChatIdentityConflict = errors.New("QXChat identity requires explicit account binding")
 var ErrQXChatIdentitySnapshotConflict = fmt.Errorf("%w: frozen migration snapshot differs", ErrQXChatIdentityConflict)
 var ErrQXChatIdentityInactive = errors.New("QXChat identity is not active")
+var ErrQXChatAccountDeletionBlocked = errors.New("This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.")
 var qxchatSourceID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 var qxchatCredentialVersion = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -547,4 +548,22 @@ func ValidateQXChatSession(proof, origin, sourceID string, userID int) (*QXChatS
 		return nil
 	})
 	return &result, err
+}
+
+// Provisioning and binding also lock the user before creating their mapping.
+// Keep that lock until deletion commits, and do not depend on feature flags.
+func requireNoQXChatIdentityForDeletion(tx *gorm.DB, userID int) error {
+	var user User
+	if err := lockForUpdate(tx.Unscoped()).Select("id").First(&user, userID).Error; err != nil {
+		return err
+	}
+	var identity QXChatIdentity
+	err := tx.Select("source_id").Where("user_id = ?", userID).First(&identity).Error
+	if err == nil {
+		return ErrQXChatAccountDeletionBlocked
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return nil
 }

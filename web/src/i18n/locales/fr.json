@@ -7780,6 +7780,26 @@
     "Welfare points": "Points bonus",
     "Your valid QX points are shared automatically. Spending and expiry update this balance.": "Vos points QX valides sont partagés automatiquement. Les dépenses et expirations actualisent ce solde.",
     "All available New API balance, shown as permanent community points.": "Tout le solde New API disponible est affiché en points permanents de la communauté.",
-    "¥1 = 5,000 points. Welfare points are used first in the community.": "1 ¥ = 5 000 points. Les points bonus sont utilisés en premier dans la communauté."
+    "¥1 = 5,000 points. Welfare points are used first in the community.": "1 ¥ = 5 000 points. Les points bonus sont utilisés en premier dans la communauté.",
+    "Choose your QXChat profile": "Choisir votre profil QXChat",
+    "Original QXChat points and records belong to their original profile. Accounts are not merged by a matching email or display name.": "Les points et l’historique QXChat restent dans leur profil d’origine. Une adresse e-mail ou un nom d’affichage identique ne fusionne pas les comptes.",
+    "Current account:": "Compte actuel :",
+    "Checking your QXChat profile…": "Vérification de votre profil QXChat…",
+    "QXChat profile unavailable": "Profil QXChat indisponible",
+    "Your account could not be checked. Retry before continuing.": "Impossible de vérifier votre compte. Réessayez avant de continuer.",
+    "Original QXChat profile: {{username}}": "Profil QXChat d’origine : {{username}}",
+    "This New API account uses a separate QXChat profile. On first entry it starts with 0 points; original QXChat points and records stay in the original account. To use them, choose your original QXChat account below.": "Ce compte New API utilise un profil QXChat distinct, avec 0 point à la première connexion. Les points et l’historique QXChat d’origine restent dans le compte d’origine. Pour les retrouver, choisissez votre compte QXChat d’origine ci-dessous.",
+    "Use my original QXChat account": "Utiliser mon compte QXChat d’origine",
+    "Continue with this separate profile": "Continuer avec ce profil distinct",
+    "Continue with this account": "Continuer avec ce compte",
+    "Continuing…": "Connexion en cours…",
+    "Continue to the community": "Continuer vers la communauté",
+    "Continue to the creation studio": "Continuer vers le studio de création",
+    "Your first sign-in creates a community profile. Future sign-ins use the same profile. Your 章鱼 balance and API keys stay with this account.": "La première connexion crée un profil communautaire, réutilisé ensuite. Votre solde 章鱼 et vos clés API restent liés à ce compte.",
+    "The studio will use this account. Model usage is charged to this 章鱼 account through your own API key.": "Le studio utilisera ce compte. L’utilisation des modèles sera facturée à ce compte 章鱼 via votre propre clé API.",
+    "This sign-in request is invalid. Return to the originating site and try again.": "Cette demande de connexion est invalide. Revenez au site d’origine et réessayez.",
+    "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.": "Ce compte 章鱼 n’est pas lié à votre profil communautaire. Changez de compte dans le centre de compte avant de continuer.",
+    "Could not continue. Please try again.": "Impossible de continuer. Réessayez.",
+    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "Ce compte est lié à un profil QXChat. Contactez l’assistance avant de le supprimer pour conserver l’accès à ses points et à son historique."
   }
 }

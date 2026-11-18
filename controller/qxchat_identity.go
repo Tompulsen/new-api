@@ -33,7 +33,7 @@ func QXChatIdentityStatus(c *gin.Context) {
 	var mapping model.QXChatIdentity
 	err := model.DB.Where("user_id = ?", c.GetInt("id")).First(&mapping).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		common.ApiSuccess(c, gin.H{"enabled": true, "state": "unbound"})
+		common.ApiSuccess(c, gin.H{"enabled": true, "state": "unbound", "profile_kind": "independent"})
 		return
 	}
 	if err != nil {
@@ -44,7 +44,13 @@ func QXChatIdentityStatus(c *gin.Context) {
 	if state == model.QXChatIdentityProvisioning {
 		state = model.QXChatIdentityPending
 	}
-	common.ApiSuccess(c, gin.H{"enabled": true, "state": state, "username": mapping.SourceUsername})
+	profileKind := "original"
+	// Native reservations use a generated digest; original profiles retain their credential fingerprint, even without email.
+	registrationVersion := sha256.Sum256([]byte(mapping.SourceID + "\n" + mapping.RequestID))
+	if !mapping.Imported && mapping.CredentialVersion == hex.EncodeToString(registrationVersion[:]) {
+		profileKind = "independent"
+	}
+	common.ApiSuccess(c, gin.H{"enabled": true, "state": state, "username": mapping.SourceUsername, "profile_kind": profileKind})
 }
 
 func qxchatLoginPassword(request LoginRequest) (string, error) {

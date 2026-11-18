@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,180 @@ const qxchatTestCurrentHash = "scrypt$v1$131072$8$1$" + qxchatTestSalt + "$5f89a
 const qxchatTestSource = "11111111-2222-4333-8444-555555555555"
 const qxchatTestRequest = "66666666-7777-4888-9999-aaaaaaaaaaaa"
 const qxchatTestSecret = "qxchat-identity-isolated-test-secret-123456"
+
+func TestQXChatLinkedAccountDeletionPreservesIdentityAndCredentials(t *testing.T) {
+	for _, scenario := range []struct {
+		name, state, endpoint string
+		imported              bool
+	}{
+		{"original_self", model.QXChatIdentityActive, "self", true},
+		{"independent_admin_soft", model.QXChatIdentityActive, "admin_soft", false},
+		{"pending_admin_hard", model.QXChatIdentityPending, "admin_hard", true},
+		{"provisioning_direct_hard", model.QXChatIdentityProvisioning, "direct_hard", false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			user, identity := setupQXChatIdentityTest(t)
+			t.Setenv("QXCHAT_IDENTITY_ENABLED", "0")
+			require.NoError(t, model.DB.Model(user).Update("quota", 19381).Error)
+			mapping := model.QXChatIdentity{SourceID: qxchatTestSource, UserID: user.Id, SourceUsername: "original-profile", State: scenario.state, Imported: scenario.imported}
+			require.NoError(t, model.DB.Create(&mapping).Error)
+			accessToken := model.UserAccessToken{UserId: user.Id, TokenHash: strings.Repeat("a", 64)}
+			require.NoError(t, model.DB.Create(&accessToken).Error)
+			var response *httptest.ResponseRecorder
+			if scenario.endpoint == "self" {
+				proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: service.VerificationScopeAccountDelete}, "password")
+				response = securityEnrollmentRequest("DELETE", "/api/user/self", "", proof, identity, DeleteSelf)
+				var audit model.AuditLog
+				require.NoError(t, model.LOG_DB.Where("action = ?", "user.account_delete").Last(&audit).Error)
+				assert.False(t, audit.Success)
+				assert.Empty(t, response.Header().Get("Set-Cookie"))
+			} else if scenario.endpoint == "direct_hard" {
+				revoked, err := user.HardDelete()
+				assert.ErrorIs(t, err, model.ErrQXChatAccountDeletionBlocked)
+				assert.Zero(t, revoked)
+			} else {
+				require.NoError(t, model.DB.AutoMigrate(&model.CasbinRule{}, &model.AuthzRole{}))
+				operation := service.VerificationOperation{Scope: service.VerificationScopeAdminUserDelete, Context: []byte(`{"user_id":` + strconv.Itoa(user.Id) + `}`)}
+				operator, proof := manageUserProof(t, model.DB, operation)
+				if scenario.endpoint == "admin_soft" {
+					response = performVerifiedManageUserRequest(t, `{"id":`+strconv.Itoa(user.Id)+`,"action":"delete"}`, operator, proof)
+				} else {
+					response = securityEnrollmentRequest("DELETE", "/api/user/"+strconv.Itoa(user.Id), "", proof, operator, func(c *gin.Context) {
+						c.Set("role", common.RoleRootUser)
+						withAccessTokenID(DeleteUser, user.Id)(c)
+					})
+				}
+			}
+			if response != nil {
+				assert.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+				assert.Contains(t, response.Body.String(), `"code":"QXCHAT_ACCOUNT_LINKED"`)
+				assert.Contains(t, response.Body.String(), model.ErrQXChatAccountDeletionBlocked.Error())
+			}
+			var stored model.User
+			require.NoError(t, model.DB.First(&stored, user.Id).Error)
+			assert.Equal(t, user.AuthVersion, stored.AuthVersion)
+			assert.Equal(t, user.Password, stored.Password)
+			assert.Equal(t, 19381, stored.Quota)
+			assert.False(t, stored.DeletedAt.Valid)
+			var preservedMapping model.QXChatIdentity
+			require.NoError(t, model.DB.First(&preservedMapping, "source_id = ?", mapping.SourceID).Error)
+			assert.Equal(t, mapping.State, preservedMapping.State)
+			assert.Equal(t, mapping.UserID, preservedMapping.UserID)
+			var count int64
+			require.NoError(t, model.DB.Model(&model.UserAccessToken{}).Where("user_id = ?", user.Id).Count(&count).Error)
+			assert.EqualValues(t, 1, count)
+			_, _, err := service.ValidateLoginSession(identity)
+			assert.NoError(t, err, "a refused deletion must leave the current session usable")
+		})
+	}
+}
+
+func TestQXChatDeletionFailsClosedWhenMappingLookupFails(t *testing.T) {
+	user, identity := setupQXChatIdentityTest(t)
+	injected := errors.New("mapping database unavailable")
+	require.NoError(t, model.DB.Callback().Query().Before("gorm:query").Register("qxchat-deletion-lookup-failure", func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.ModelType.Name() == "QXChatIdentity" {
+			_ = tx.AddError(injected)
+		}
+	}))
+	t.Cleanup(func() { _ = model.DB.Callback().Query().Remove("qxchat-deletion-lookup-failure") })
+	for _, deleteAccount := range []func() (int64, error){user.Delete, user.HardDelete} {
+		revoked, err := deleteAccount()
+		assert.ErrorIs(t, err, injected)
+		assert.Zero(t, revoked)
+	}
+	var stored model.User
+	require.NoError(t, model.DB.First(&stored, user.Id).Error)
+	assert.Equal(t, user.AuthVersion, stored.AuthVersion)
+	_, _, err := service.ValidateLoginSession(identity)
+	assert.NoError(t, err)
+}
+
+func TestQXChatProfileCreationAndDeletionCannotOrphanProfile(t *testing.T) {
+	for _, scenario := range []string{"native", "original_binding"} {
+		t.Run(scenario, func(t *testing.T) {
+			user, identity := setupQXChatIdentityTest(t)
+			token := qxchatNativeGrant(t, identity)
+			start := make(chan struct{})
+			created, deleted := make(chan error, 1), make(chan error, 1)
+			go func() {
+				<-start
+				var err error
+				if scenario == "native" {
+					_, _, err = model.PrepareQXChatRegistration(token, "https://qxchat.example.com")
+				} else {
+					_, _, err = model.PrepareQXChatIdentity(qxchatTestProfile(), &identity)
+				}
+				created <- err
+			}()
+			go func() {
+				<-start
+				_, err := user.Delete()
+				deleted <- err
+			}()
+			close(start)
+			createErr, deleteErr := <-created, <-deleted
+			var mappingCount int64
+			require.NoError(t, model.DB.Model(&model.QXChatIdentity{}).Where("user_id = ?", user.Id).Count(&mappingCount).Error)
+			var stored model.User
+			require.NoError(t, model.DB.Unscoped().First(&stored, user.Id).Error)
+			if createErr == nil {
+				assert.ErrorIs(t, deleteErr, model.ErrQXChatAccountDeletionBlocked)
+				assert.EqualValues(t, 1, mappingCount)
+				assert.False(t, stored.DeletedAt.Valid)
+			} else {
+				require.NoError(t, deleteErr)
+				assert.Zero(t, mappingCount)
+				assert.True(t, stored.DeletedAt.Valid)
+			}
+		})
+	}
+}
+
+func TestQXChatIdentityStatusSeparatesOriginalAndIndependentProfiles(t *testing.T) {
+	for _, scenario := range []struct {
+		name, email, kind        string
+		mapped, imported, native bool
+	}{
+		{name: "unbound", kind: "independent"},
+		{name: "imported", kind: "original", mapped: true, imported: true},
+		{name: "explicit_binding_without_email", kind: "original", mapped: true},
+		{name: "native", kind: "independent", mapped: true, native: true},
+		{name: "older_native_with_email", email: "shared@example.com", kind: "independent", mapped: true, native: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			user, identity := setupQXChatIdentityTest(t)
+			t.Setenv("QXCHAT_IDENTITY_ENABLED", "1")
+			t.Setenv("QXCHAT_IDENTITY_SECRET", qxchatTestSecret)
+			t.Setenv("QXCHAT_IDENTITY_SOURCE_URL", "https://qxchat.example.com")
+			if scenario.mapped {
+				mapping := model.QXChatIdentity{SourceID: qxchatTestSource, UserID: user.Id, SourceUsername: "linked-profile", SourceEmail: scenario.email, RequestID: qxchatTestRequest, CredentialVersion: strings.Repeat("a", 64), State: model.QXChatIdentityActive, Imported: scenario.imported}
+				if scenario.native {
+					digest := sha256.Sum256([]byte(mapping.SourceID + "\n" + mapping.RequestID))
+					mapping.CredentialVersion = hex.EncodeToString(digest[:])
+				}
+				require.NoError(t, model.DB.Create(&mapping).Error)
+			}
+			response := securityEnrollmentRequest("GET", "/api/user/qxchat", "", "", identity, QXChatIdentityStatus)
+			assert.Equal(t, http.StatusOK, response.Code)
+			var result struct {
+				Success bool `json:"success"`
+				Data    struct {
+					Kind     string `json:"profile_kind"`
+					Username string `json:"username"`
+				} `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+			assert.True(t, result.Success)
+			assert.Equal(t, scenario.kind, result.Data.Kind)
+			if scenario.mapped {
+				assert.Equal(t, "linked-profile", result.Data.Username)
+			}
+			assert.NotContains(t, response.Body.String(), "credential_version")
+			assert.NotContains(t, response.Body.String(), "source_email")
+		})
+	}
+}
 
 func qxchatTestProfile() model.QXChatSourceProfile {
 	return model.QXChatSourceProfile{RequestID: qxchatTestRequest, SourceID: qxchatTestSource, Username: "legacy-user", Email: "legacy@example.com", DisplayName: "Legacy user",

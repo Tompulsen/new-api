@@ -29,6 +29,7 @@ export interface QXChatIdentityStatus {
   enabled: boolean
   state: 'unbound' | 'pending' | 'active'
   username?: string
+  profile_kind?: 'original' | 'independent'
 }
 
 export function getQXChatConfig(

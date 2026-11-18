@@ -16,17 +16,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
+import {
+  createFileRoute,
+  redirect,
+  useLocation,
+  useNavigate,
+} from '@tanstack/react-router'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ErrorState } from '@/components/error-state'
+import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
+import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import {
   communitySsoSearchSchema,
   communitySsoTargetOrigin,
   communitySsoCallback,
   type CommunitySsoConfig,
 } from '@/features/auth/lib/community-sso-search'
+import { getQXChatIdentity } from '@/features/auth/qxchat'
 import { api, resolveAuthentication } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -51,37 +61,57 @@ function CommunityAuthorize() {
   const search = Route.useSearch()
   const config = Route.useLoaderData()
   const user = useAuthStore((state) => state.auth.user)
-  const { i18n } = useTranslation()
-  const en = i18n.language.startsWith('en')
-  const copy = en
-    ? {
-        studioTitle: 'Continue to the creation studio',
-        communityTitle: 'Continue to the community',
-        studioHint:
-          'The studio will use this account. Model usage is charged to this 章鱼 account through your own API key.',
-        communityHint:
-          'Your first sign-in creates a community profile. Future sign-ins use the same profile. Your 章鱼 balance and API keys stay with this account.',
-        continuing: 'Continuing…',
-        continue: 'Continue with this account',
-      }
-    : {
-        studioTitle: '使用对应账号进入制作空间',
-        communityTitle: '使用章鱼账号进入社区',
-        studioHint:
-          '制作空间将使用当前账号。调用模型时，通过你自己的密钥使用此章鱼账号的余额。',
-        communityHint:
-          '首次登录会自动建立社区账号，之后登录使用同一账号。章鱼的余额和 API 密钥仍保留在当前账号中。',
-        continuing: '正在进入…',
-        continue: '使用此账号继续',
-      }
+  const { t } = useTranslation()
+  const navigate = useNavigate()
+  const destination = useLocation({ select: (location) => location.href })
+  const { redirectToLogin } = useAuthRedirect()
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
   const studio = search.scope === 'chat_session'
   const targetOrigin = communitySsoTargetOrigin(search, config)
+  const qxchat =
+    !studio &&
+    Boolean(targetOrigin && config.qxchat_origins?.includes(targetOrigin))
+  const identity = useQuery({
+    queryKey: ['qxchat', 'identity', user?.id],
+    queryFn: ({ signal }) => getQXChatIdentity(signal),
+    enabled: qxchat && Boolean(user?.id),
+    staleTime: 0,
+    refetchOnMount: 'always',
+    retry: false,
+    meta: { errorToast: false },
+  })
+  const profileReady =
+    identity.isSuccess &&
+    !identity.isFetching &&
+    identity.data.enabled &&
+    (identity.data.profile_kind === 'original' ||
+      identity.data.profile_kind === 'independent')
+  const independent =
+    qxchat && profileReady && identity.data.profile_kind === 'independent'
   const accountMatches = !studio || String(user?.id) === search.expected_subject
   const valid = Boolean(targetOrigin)
+  const canContinue = valid && accountMatches && (!qxchat || profileReady)
+  let title = t('Continue to the community')
+  let hint = t(
+    'Your first sign-in creates a community profile. Future sign-ins use the same profile. Your 章鱼 balance and API keys stay with this account.'
+  )
+  if (studio) {
+    title = t('Continue to the creation studio')
+    hint = t(
+      'The studio will use this account. Model usage is charged to this 章鱼 account through your own API key.'
+    )
+  } else if (qxchat) {
+    title = t('Choose your QXChat profile')
+    hint = t(
+      'Original QXChat points and records belong to their original profile. Accounts are not merged by a matching email or display name.'
+    )
+  }
+  let continueText = t('Continue with this account')
+  if (independent) continueText = t('Continue with this separate profile')
+  if (busy) continueText = t('Continuing…')
   async function authorize() {
-    if (!valid || !accountMatches || busy) return
+    if (!canContinue || busy) return
     setBusy(true)
     setFailed(false)
     try {
@@ -98,58 +128,95 @@ function CommunityAuthorize() {
   }
   return (
     <main className='bg-background text-foreground flex min-h-svh items-center justify-center px-5 py-12'>
-      <section className='w-full max-w-md space-y-6' aria-busy={busy}>
-        <h1 className='text-2xl font-semibold'>
-          {studio ? copy.studioTitle : copy.communityTitle}
-        </h1>
-        <p className='text-base leading-7'>
-          {en ? 'Current account: ' : '当前账号：'}
-          <strong>{user?.display_name || user?.username}</strong>
-        </p>
-        <p className='text-muted-foreground text-sm leading-6'>
-          {studio ? copy.studioHint : copy.communityHint}
-        </p>
+      <section
+        className='w-full max-w-md space-y-6'
+        aria-busy={busy || (qxchat && identity.isFetching)}
+      >
+        <h1 className='text-2xl font-semibold'>{title}</h1>
+        <div className='space-y-1 text-base leading-7 break-words'>
+          <p>{t('Current account:')}</p>
+          <p className='font-semibold'>
+            {user?.username} · #{user?.id}
+          </p>
+          {user?.display_name && user.display_name !== user.username && (
+            <p className='text-muted-foreground text-sm'>{user.display_name}</p>
+          )}
+        </div>
+        <p className='text-muted-foreground text-sm leading-6'>{hint}</p>
+        {qxchat && identity.isFetching && (
+          <LoadingState inline message={t('Checking your QXChat profile…')} />
+        )}
+        {qxchat && !identity.isFetching && !profileReady && (
+          <ErrorState
+            className='min-h-0 py-3'
+            title={t('QXChat profile unavailable')}
+            description={t(
+              'Your account could not be checked. Retry before continuing.'
+            )}
+            onRetry={() => void identity.refetch()}
+          />
+        )}
+        {qxchat &&
+          profileReady &&
+          identity.data.profile_kind === 'original' && (
+            <p className='rounded-lg border p-4 text-sm leading-6 break-words'>
+              {t('Original QXChat profile: {{username}}', {
+                username: identity.data.username,
+              })}
+            </p>
+          )}
+        {independent && (
+          <p className='rounded-lg border p-4 text-sm leading-6'>
+            {t(
+              'This New API account uses a separate QXChat profile. On first entry it starts with 0 points; original QXChat points and records stay in the original account. To use them, choose your original QXChat account below.'
+            )}
+          </p>
+        )}
         {valid ? (
           <p className='text-sm break-all'>{targetOrigin}</p>
         ) : (
           <p role='alert'>
-            {en
-              ? 'This sign-in request is invalid. Return to the community and try again.'
-              : '登录请求无效，请返回社区重新发起登录。'}
+            {t(
+              'This sign-in request is invalid. Return to the originating site and try again.'
+            )}
           </p>
         )}
         {!accountMatches && (
           <p role='alert'>
-            {en
-              ? 'This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.'
-              : '当前章鱼账号与社区对应的账号不一致。请先到账号中心切换账号，再返回继续。'}{' '}
-            <a className='underline' href='/dashboard'>
-              {en ? 'Account center' : '账号中心'}
-            </a>
+            {t(
+              'This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.'
+            )}
           </p>
         )}
         {failed && (
-          <p role='alert'>
-            {en
-              ? 'Could not continue. Please try again.'
-              : '暂时无法继续，请重试。'}
-          </p>
+          <p role='alert'>{t('Could not continue. Please try again.')}</p>
         )}
-        <div className='flex flex-wrap gap-3'>
+        <div className='flex flex-col gap-3'>
+          {qxchat && (
+            <Button
+              className='h-auto min-h-11 py-2 whitespace-normal'
+              variant={independent ? 'default' : 'outline'}
+              disabled={busy || !valid}
+              onClick={() => redirectToLogin(destination, true)}
+            >
+              {t('Use my original QXChat account')}
+            </Button>
+          )}
           <Button
-            className='min-h-11'
-            disabled={!valid || !accountMatches || busy}
+            className='h-auto min-h-11 py-2 whitespace-normal'
+            variant={independent ? 'outline' : 'default'}
+            disabled={!canContinue || busy}
             onClick={() => void authorize()}
           >
-            {busy ? copy.continuing : copy.continue}
+            {continueText}
           </Button>
           <Button
             className='min-h-11'
-            variant='outline'
+            variant='ghost'
             disabled={busy}
-            onClick={() => window.location.assign('/dashboard')}
+            onClick={() => void navigate({ to: '/dashboard' })}
           >
-            {en ? 'Cancel' : '取消'}
+            {t('Cancel')}
           </Button>
         </div>
       </section>

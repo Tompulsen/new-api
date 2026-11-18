@@ -39,6 +39,9 @@ func writeSecurityOperationError(c *gin.Context, err error) {
 	var code, message string
 	var protocolError *protocol.Error
 	switch {
+	case errors.Is(err, model.ErrQXChatAccountDeletionBlocked):
+		status = http.StatusConflict
+		code, message = "QXCHAT_ACCOUNT_LINKED", model.ErrQXChatAccountDeletionBlocked.Error()
 	case errors.Is(err, passkeysvc.ErrRPIDUnavailable):
 		code, message = "PASSKEY_RP_ID_UNAVAILABLE", "This Passkey domain is not available on this website. Use its original website or another verification method."
 	case errors.Is(err, system_setting.ErrPasskeyRPIDInvalid):

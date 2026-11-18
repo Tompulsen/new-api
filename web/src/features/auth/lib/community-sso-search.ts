@@ -46,6 +46,7 @@ export type CommunitySsoConfig = {
   studio_origin: string
   community_origins?: string[]
   studio_origins?: string[]
+  qxchat_origins?: string[]
 }
 
 export function communitySsoTargetOrigin(
@@ -83,7 +84,8 @@ export function communitySsoCallback(
     target.searchParams.get('state') !== search.state ||
     target.searchParams.getAll('code').length !== 1 ||
     !/^[A-Za-z0-9_-]{43}$/.test(target.searchParams.get('code') ?? '')
-  )
+  ) {
     throw new Error('Invalid callback')
+  }
   return target.href
 }

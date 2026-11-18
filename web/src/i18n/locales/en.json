@@ -7780,6 +7780,26 @@
     "Welfare points": "Welfare points",
     "Your valid QX points are shared automatically. Spending and expiry update this balance.": "Your valid QX points are shared automatically. Spending and expiry update this balance.",
     "All available New API balance, shown as permanent community points.": "All available New API balance, shown as permanent community points.",
-    "¥1 = 5,000 points. Welfare points are used first in the community.": "¥1 = 5,000 points. Welfare points are used first in the community."
+    "¥1 = 5,000 points. Welfare points are used first in the community.": "¥1 = 5,000 points. Welfare points are used first in the community.",
+    "Choose your QXChat profile": "Choose your QXChat profile",
+    "Original QXChat points and records belong to their original profile. Accounts are not merged by a matching email or display name.": "Original QXChat points and records belong to their original profile. Accounts are not merged by a matching email or display name.",
+    "Current account:": "Current account:",
+    "Checking your QXChat profile…": "Checking your QXChat profile…",
+    "QXChat profile unavailable": "QXChat profile unavailable",
+    "Your account could not be checked. Retry before continuing.": "Your account could not be checked. Retry before continuing.",
+    "Original QXChat profile: {{username}}": "Original QXChat profile: {{username}}",
+    "This New API account uses a separate QXChat profile. On first entry it starts with 0 points; original QXChat points and records stay in the original account. To use them, choose your original QXChat account below.": "This New API account uses a separate QXChat profile. On first entry it starts with 0 points; original QXChat points and records stay in the original account. To use them, choose your original QXChat account below.",
+    "Use my original QXChat account": "Use my original QXChat account",
+    "Continue with this separate profile": "Continue with this separate profile",
+    "Continue with this account": "Continue with this account",
+    "Continuing…": "Continuing…",
+    "Continue to the community": "Continue to the community",
+    "Continue to the creation studio": "Continue to the creation studio",
+    "Your first sign-in creates a community profile. Future sign-ins use the same profile. Your 章鱼 balance and API keys stay with this account.": "Your first sign-in creates a community profile. Future sign-ins use the same profile. Your 章鱼 balance and API keys stay with this account.",
+    "The studio will use this account. Model usage is charged to this 章鱼 account through your own API key.": "The studio will use this account. Model usage is charged to this 章鱼 account through your own API key.",
+    "This sign-in request is invalid. Return to the originating site and try again.": "This sign-in request is invalid. Return to the originating site and try again.",
+    "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.": "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.",
+    "Could not continue. Please try again.": "Could not continue. Please try again.",
+    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records."
   }
 }
