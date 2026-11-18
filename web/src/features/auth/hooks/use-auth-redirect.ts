@@ -106,7 +106,7 @@ export function useAuthRedirect() {
       })
       await navigate({
         to: '/otp',
-        search: qxchatEntry ? { qxchat: '1', redirect: target } : {},
+        search: { qxchat: qxchatEntry ? '1' : undefined, redirect: target },
         replace: true,
       })
       return false
@@ -121,14 +121,12 @@ export function useAuthRedirect() {
     (redirectTo?: string, qxchatEntry = false) => {
       void navigate({
         to: '/sign-in',
-        search: qxchatEntry
-          ? {
-              qxchat: '1',
-              redirect:
-                sanitizeAuthRedirect(redirectTo, window.location.origin) ??
-                undefined,
-            }
-          : {},
+        search: {
+          qxchat: qxchatEntry ? '1' : undefined,
+          redirect:
+            sanitizeAuthRedirect(redirectTo, window.location.origin) ??
+            undefined,
+        },
         replace: true,
       })
     },

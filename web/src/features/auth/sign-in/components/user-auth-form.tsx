@@ -115,7 +115,7 @@ export function UserAuthForm({
     validateTurnstile,
   } = useTurnstile()
   const requiresTurnstile = isTurnstileEnabled && !qxchatLogin
-  const { handleLoginResult } = useAuthRedirect()
+  const { handleLoginResult, redirectToLogin } = useAuthRedirect()
 
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
   const hasPrivacyPolicy = Boolean(status?.privacy_policy_enabled)
@@ -387,11 +387,33 @@ export function UserAuthForm({
               </Field>
             )}
             {qxchatLogin && (
-              <p className='text-muted-foreground text-sm leading-6'>
-                {t(
-                  'Use your original QXChat username or email and password to open the same QXChat profile and points.'
-                )}
-              </p>
+              <div className='space-y-3'>
+                <p className='text-muted-foreground text-sm leading-6'>
+                  {t(
+                    'If you have not connected QXChat to a New API account, use your original QXChat username or email and password.'
+                  )}
+                </p>
+                <p className='text-muted-foreground text-sm leading-6'>
+                  {t(
+                    'Already connected? Use the connected New API account and its current password to return to your original QXChat profile and points.'
+                  )}
+                </p>
+                <Button
+                  type='button'
+                  variant='outline'
+                  className='h-auto min-h-11 w-full px-3 py-2 whitespace-normal'
+                  disabled={isLoading}
+                  onClick={() => {
+                    form.reset()
+                    setQXChatLogin(false)
+                    setTurnstileToken('')
+                    setTurnstileWidgetKey((current) => current + 1)
+                    redirectToLogin(redirectTo)
+                  }}
+                >
+                  {t('Sign in with a connected New API account')}
+                </Button>
+              </div>
             )}
             {qxchatLogin &&
               !qxchatConfig.isPending &&

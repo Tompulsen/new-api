@@ -313,9 +313,16 @@ it('rejects submission after the five-minute challenge deadline without sending 
 const originalQXChatRedirect =
   '/community-authorize?state=original-state&code_challenge=original-pkce&redirect_uri=https%3A%2F%2Fpai.zaiduyu.top%2Fapi%2Fnewapi%2Fcallback'
 
-it.each(['cancel', 'expired', 'server failure'] as const)(
-  'returns a QXChat MFA %s to the dedicated original-account entry while retaining the other session',
-  async (outcome) => {
+it.each(
+  [true, false].flatMap((qxchatEntry) =>
+    ['cancel', 'expired', 'server failure'].map((outcome) => ({
+      qxchatEntry,
+      outcome,
+    }))
+  )
+)(
+  'returns MFA $outcome to the same login mode ($qxchatEntry) and SSO destination while retaining the other session',
+  async ({ outcome, qxchatEntry }) => {
     const post = vi
       .spyOn(api, 'post')
       .mockRejectedValue(new Error('Verification unavailable'))
@@ -328,7 +335,7 @@ it.each(['cancel', 'expired', 'server failure'] as const)(
         methods: [{ method: '2fa', available: true }],
       },
       {
-        qxchatEntry: true,
+        qxchatEntry,
         redirectTo: originalQXChatRedirect,
         existingAccount: true,
       }
@@ -342,10 +349,10 @@ it.each(['cancel', 'expired', 'server failure'] as const)(
     const input = await screen.findByLabelText(
       'Authenticator code or backup code'
     )
-    expect(router.state.location.search).toMatchObject({
-      qxchat: '1',
-      redirect: originalQXChatRedirect,
-    })
+    expect(router.state.location.search.qxchat).toBe(
+      qxchatEntry ? '1' : undefined
+    )
+    expect(router.state.location.search.redirect).toBe(originalQXChatRedirect)
     expect(router.state.location.href).not.toContain('flow_token')
     expect(router.state.location.href).not.toContain(
       'original-account-challenge'
@@ -360,10 +367,10 @@ it.each(['cancel', 'expired', 'server failure'] as const)(
     }
     await user.keyboard('{Escape}')
     await waitFor(() => expect(router.state.location.pathname).toBe('/sign-in'))
-    expect(router.state.location.search).toMatchObject({
-      qxchat: '1',
-      redirect: originalQXChatRedirect,
-    })
+    expect(router.state.location.search.qxchat).toBe(
+      qxchatEntry ? '1' : undefined
+    )
+    expect(router.state.location.search.redirect).toBe(originalQXChatRedirect)
     expect(useAuthStore.getState().auth.user?.id).toBe(1520)
     expect(useAuthStore.getState().auth.pendingLoginVerification).toBeNull()
     if (outcome !== 'server failure') expect(post).not.toHaveBeenCalled()
@@ -391,16 +398,26 @@ it('completes QXChat MFA with the authenticated account and the unchanged author
   expect(useAuthStore.getState().auth.user?.id).toBe(42)
 })
 
-it.each([originalQXChatRedirect, 'https://untrusted.example/'])(
-  'retains the original-account entry after an OTP reload and sanitizes its destination %s',
-  async (destination) => {
+it.each(
+  [true, false].flatMap((qxchatEntry) =>
+    [
+      originalQXChatRedirect,
+      'https://untrusted.example/',
+      '//untrusted.example/',
+    ].map((destination) => ({ qxchatEntry, destination }))
+  )
+)(
+  'retains login mode $qxchatEntry after an OTP reload and sanitizes $destination',
+  async ({ destination, qxchatEntry }) => {
     const post = vi.spyOn(api, 'post')
     const { router } = renderLoginVerification(false, undefined, {
       existingAccount: true,
-      entry: `/otp?qxchat=1&redirect=${encodeURIComponent(destination)}`,
+      entry: `/otp?${qxchatEntry ? 'qxchat=1&' : ''}redirect=${encodeURIComponent(destination)}`,
     })
     await waitFor(() => expect(router.state.location.pathname).toBe('/sign-in'))
-    expect(router.state.location.search.qxchat).toBe('1')
+    expect(router.state.location.search.qxchat).toBe(
+      qxchatEntry ? '1' : undefined
+    )
     expect(router.state.location.search.redirect).toBe(
       destination === originalQXChatRedirect
         ? originalQXChatRedirect

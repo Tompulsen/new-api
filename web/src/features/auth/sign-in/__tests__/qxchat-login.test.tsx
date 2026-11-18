@@ -61,7 +61,11 @@ afterEach(() => {
   document.querySelector('#cf-turnstile')?.remove()
 })
 
-async function renderLogin(enabled: boolean, initialQXChatLogin = false) {
+async function renderLogin(
+  enabled: boolean,
+  initialQXChatLogin = false,
+  redirectTo?: string
+) {
   vi.spyOn(api, 'get').mockResolvedValue({
     data: { success: true, data: { enabled } },
   })
@@ -72,7 +76,10 @@ async function renderLogin(enabled: boolean, initialQXChatLogin = false) {
         getParentRoute: () => root,
         path: '/sign-in',
         component: () => (
-          <UserAuthForm initialQXChatLogin={initialQXChatLogin} />
+          <UserAuthForm
+            initialQXChatLogin={initialQXChatLogin}
+            redirectTo={redirectTo}
+          />
         ),
       }),
       createRoute({
@@ -94,7 +101,7 @@ async function renderLogin(enabled: boolean, initialQXChatLogin = false) {
     </QueryClientProvider>
   )
   await screen.findByLabelText('Username or Email')
-  return userEvent.setup()
+  return { user: userEvent.setup(), router }
 }
 
 it('uses the QXChat login endpoint only after selecting the available old-account option and preserves MFA', async () => {
@@ -109,7 +116,7 @@ it('uses the QXChat login endpoint only after selecting the available old-accoun
       },
     },
   })
-  const user = await renderLogin(true)
+  const { user } = await renderLogin(true)
   const checkbox = await screen.findByRole('checkbox', {
     name: 'Sign in with a QXChat account',
   })
@@ -139,7 +146,7 @@ it('hides the option when disabled and retains the normal login request', async 
   const post = vi
     .spyOn(api, 'post')
     .mockResolvedValue({ data: { success: false, message: 'Login failed' } })
-  const user = await renderLogin(false)
+  const { user } = await renderLogin(false)
   await waitFor(() =>
     expect(client.getQueryData(['qxchat', 'config'])).toEqual({
       enabled: false,
@@ -172,7 +179,7 @@ it('opens the original QXChat account flow directly from the dedicated entry', a
   const post = vi.spyOn(api, 'post').mockResolvedValue({
     data: { success: false, message: 'Login failed' },
   })
-  const user = await renderLogin(true, true)
+  const { user } = await renderLogin(true, true)
   expect(
     await screen.findByRole('checkbox', {
       name: 'Sign in with a QXChat account',
@@ -207,7 +214,7 @@ it('opens the original QXChat account flow directly from the dedicated entry', a
 
 it('does not fall back to a different New API account if the original-account entry is unavailable', async () => {
   const post = vi.spyOn(api, 'post')
-  const user = await renderLogin(false, true)
+  const { user } = await renderLogin(false, true)
   await waitFor(() =>
     expect(client.getQueryData(['qxchat', 'config'])).toEqual({
       enabled: false,
@@ -231,7 +238,7 @@ it('bypasses the unavailable Turnstile widget only for QXChat account login', as
   const post = vi
     .spyOn(api, 'post')
     .mockResolvedValue({ data: { success: false, message: 'Login failed' } })
-  const user = await renderLogin(true, true)
+  const { user } = await renderLogin(true, true)
   expect(
     await screen.findByRole('checkbox', {
       name: 'Sign in with a QXChat account',
@@ -262,7 +269,7 @@ it('still requires a fresh verification after a script failure for New API login
   const post = vi
     .spyOn(api, 'post')
     .mockResolvedValue({ data: { success: false, message: 'Login failed' } })
-  const user = await renderLogin(true)
+  const { user } = await renderLogin(true)
   await user.type(screen.getByLabelText('Username or Email'), 'existing-user')
   await user.type(
     screen.getByLabelText('Password', { exact: true }),
@@ -300,3 +307,79 @@ it('still requires a fresh verification after a script failure for New API login
     )
   )
 })
+
+it.each([true, false])(
+  'switches from QXChat mode (dedicated entry: %s) to verified New API login without losing SSO',
+  async (dedicatedEntry) => {
+    client.setQueryData(STATUS_QUERY_KEY, {
+      password_login_enabled: true,
+      turnstile_check: true,
+      turnstile_site_key: 'test-site',
+    })
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: false, message: 'Login failed' } })
+    const destination =
+      '/community-authorize?state=preserved-state&code_challenge=preserved-pkce&redirect_uri=https%3A%2F%2Fpai.zaiduyu.top%2Fapi%2Fnewapi%2Fcallback'
+    const { user, router } = await renderLogin(
+      true,
+      dedicatedEntry,
+      destination
+    )
+    const checkbox = await screen.findByRole('checkbox', {
+      name: 'Sign in with a QXChat account',
+    })
+    if (!dedicatedEntry) await user.click(checkbox)
+    await user.type(screen.getByLabelText('Username or Email'), 'old-qx-name')
+    await user.type(
+      screen.getByLabelText('Password', { exact: true }),
+      'old-qx-password'
+    )
+    let options: Record<string, unknown> = {}
+    window.turnstile = {
+      render: (_element, value) => {
+        options = value
+        return 'native-login-widget'
+      },
+      remove: vi.fn(),
+    }
+    const recovery = screen.getByRole('button', {
+      name: 'Sign in with a connected New API account',
+    })
+    recovery.focus()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(checkbox).not.toBeChecked())
+    expect(screen.getByLabelText('Password', { exact: true })).toHaveValue('')
+    expect(screen.getByLabelText('Username or Email')).toHaveValue('')
+    expect(router.state.location.search).toMatchObject({
+      redirect: destination,
+    })
+    expect(router.state.location.search.qxchat).toBeUndefined()
+    expect(router.state.location.href).not.toContain('old-qx')
+    await user.type(
+      screen.getByLabelText('Username or Email'),
+      'connected-newapi-user'
+    )
+    await user.type(
+      screen.getByLabelText('Password', { exact: true }),
+      'current-newapi-password'
+    )
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(post).not.toHaveBeenCalled()
+    await waitFor(() => expect(options.callback).toBeTypeOf('function'))
+    act(() =>
+      (options.callback as (token: string) => void)('fresh-native-token')
+    )
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        '/api/user/login?turnstile=fresh-native-token',
+        {
+          username: 'connected-newapi-user',
+          password: 'current-newapi-password',
+        },
+        { skipAuthRefresh: true }
+      )
+    )
+  }
+)

@@ -40,18 +40,14 @@ export function Otp() {
             {t('Session expired?')}{' '}
             <Link
               to='/sign-in'
-              search={
-                search.qxchat === '1'
-                  ? {
-                      qxchat: '1',
-                      redirect:
-                        sanitizeAuthRedirect(
-                          search.redirect,
-                          window.location.origin
-                        ) ?? undefined,
-                    }
-                  : {}
-              }
+              search={{
+                qxchat: search.qxchat === '1' ? '1' : undefined,
+                redirect:
+                  sanitizeAuthRedirect(
+                    search.redirect,
+                    window.location.origin
+                  ) ?? undefined,
+              }}
               className='hover:text-primary font-medium underline underline-offset-4'
             >
               {t('Re-login')}
