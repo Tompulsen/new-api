@@ -332,23 +332,30 @@ func TestListModelsIncludesPluginOnlyPricesAndPreservesTokenScope(t *testing.T) 
 	registry := jsplugin.NewRegistry()
 	jsplugin.DefaultRegistry = registry
 	t.Cleanup(func() { jsplugin.DefaultRegistry = previous })
-	for _, key := range []string{"async-compatible", "sora"} {
+	for _, key := range []string{"async-compatible", "sora", "sd-compatible"} {
 		source, err := plugins.Source(key)
 		require.NoError(t, err)
 		_, err = registry.RegisterFactory(source, jsplugin.Options{Key: key})
 		require.NoError(t, err)
 	}
 	const name = "seedance-2.0-fast-official"
+	require.NoError(t, db.Create(&model.Channel{Id: 1, Type: constant.ChannelTypeNewAPI, Status: common.ChannelStatusEnabled, Models: name, Group: "video",
+		Setting: common.GetPointer(`{"task_extend_plugin_keys":["sd-compatible"]}`)}).Error)
 	require.NoError(t, db.Create(&[]model.Ability{
 		{Group: "video", Model: name, ChannelId: 1, Enabled: true},
 		{Group: "video", Model: "zz-unpriced-model", ChannelId: 1, Enabled: true},
 	}).Error)
+	model.InitChannelCache()
 	for _, tc := range []struct {
 		name, plugin, expression, group string
 		restricted, disabled, want      bool
 	}{
 		{name: "async price", plugin: "async-compatible", expression: `tier("base", u("seconds") * 0.4)`, group: "video", want: true},
 		{name: "generic video price", plugin: "sora", expression: `tier("base", u("seconds") * 0.4)`, group: "video", want: true},
+		{name: "SD channel model price", plugin: "sd-compatible", expression: `tier("720p", u("seconds") * 0.1)`, group: "video", want: true},
+		{name: "SD explicit zero", plugin: "sd-compatible", expression: `tier("free", 0)`, group: "video", want: true},
+		{name: "SD token excludes model", plugin: "sd-compatible", expression: `tier("720p", u("seconds") * 0.1)`, group: "video", restricted: true},
+		{name: "SD other group", plugin: "sd-compatible", expression: `tier("720p", u("seconds") * 0.1)`, group: "default"},
 		{name: "explicit zero", plugin: "async-compatible", expression: `tier("base", 0)`, group: "video", want: true},
 		{name: "empty price", plugin: "async-compatible", expression: " ", group: "video"},
 		{name: "invalid syntax", plugin: "async-compatible", expression: "invalid(", group: "video"},

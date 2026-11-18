@@ -311,7 +311,7 @@ func GetModelPricingSnapshot(names []string) (*ModelPricingSnapshot, error) {
 				configuredValue, overridden := configuredVariants[key]
 				configuredExpr, _ := configuredValue.(string)
 				plugin, exists := generation.Get(key)
-				if !exists || (!slices.Contains(plugin.Meta.Models, name) && !(key == "sora" && HasVideoBillingModel(name))) {
+				if !exists || (!TaskPluginServesModel(generation, plugin, name) && !(key == "sora" && HasVideoBillingModel(name))) {
 					variant := ModelPricingPluginVariant{
 						PluginKey: key, PluginName: key, Configured: configuredExpr,
 						UsageSchema: map[string]jsplugin.UsageFieldSchema{}, Stale: true,
@@ -393,14 +393,17 @@ type ModelPricingIssue struct {
 func GetModelPricingIssues(pluginKey string) ([]ModelPricingIssue, error) {
 	generation := jsplugin.DefaultRegistry.Generation()
 	served := make(map[string]bool)
+	names := make(map[string]bool)
 	for _, name := range GetEnabledModels() {
+		if sd, ok := generation.Get("sd-compatible"); ok && (pluginKey == "" || pluginKey == sd.Meta.Key) && TaskPluginServesModel(generation, sd, name) {
+			served[name], names[name] = true, true
+		}
 		if declared, ok := generation.CanonicalModel(name); ok {
 			served[declared] = true
 		} else if target, ok := ResolveTaskModelAlias(generation, name); ok && target.Declared != "" {
 			served[target.Declared] = true
 		}
 	}
-	names := make(map[string]bool)
 	for _, plugin := range generation.Plugins() {
 		if pluginKey == "" || plugin.Meta.Key == pluginKey {
 			for _, name := range plugin.Meta.Models {
@@ -511,14 +514,15 @@ func ValidateModelPricing(name string, values PricingValues) error {
 // Writes pass the locked database snapshot here, so allowing an unchanged stale
 // override cannot bypass validation through an out-of-date process-local cache.
 func validateModelPricing(name string, values, previous PricingValues) error {
-	return validateModelPricingWithBindings(name, values, previous, videoBillingModels())
+	generation := jsplugin.DefaultRegistry.Generation()
+	return validateModelPricingWithBindings(name, values, previous, videoBillingModels(), generation, loadFreshTaskAliasView(generation))
 }
 
-func validateModelPricingWithBindings(name string, values, previous PricingValues, videoModels map[string]bool) error {
+func validateModelPricingWithBindings(name string, values, previous PricingValues, videoModels map[string]bool, generation *jsplugin.RoutingGeneration, aliases *taskAliasView) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("model name is required")
 	}
-	generation := jsplugin.DefaultRegistry.Generation()
+	sdModels := aliases.sdModels
 	// The proposed provider price enables its schema in the same atomic save.
 	videoModels = maps.Clone(videoModels)
 	if videoModels == nil {
@@ -544,12 +548,12 @@ func validateModelPricingWithBindings(name string, values, previous PricingValue
 				return fmt.Errorf("model %s: plugin %s: billing expression is required", name, key)
 			}
 			plugin, exists := generation.Get(key)
-			declared := exists && (slices.Contains(plugin.Meta.Models, name) || (key == "sora" && videoModels[name]))
+			declared := exists && (taskPluginServesModel(plugin, name, sdModels) || (key == "sora" && videoModels[name]))
 			// An unchanged override stays saveable after its plugin disappears or
 			// stops declaring the model. A sole provider also keeps it after
 			// narrowing its usage profile; relay checks shared models against
 			// each profile, so their prices must follow it.
-			if previousVariants[key] == expression && (!declared || !generation.SharedModel(name)) {
+			if previousVariants[key] == expression && (!declared || len(taskPricingPlugins(generation, name, videoModels, sdModels)) < 2) {
 				continue
 			}
 			if !declared {
@@ -592,7 +596,7 @@ func validateModelPricingWithBindings(name string, values, previous PricingValue
 				return fmt.Errorf("model %s: an expression cannot read both u() usage facts and chat request quantities such as token counts or image_count", name)
 			}
 			var err error
-			if plugins := taskPricingPlugins(generation, name, videoModels); len(plugins) > 0 {
+			if plugins := taskPricingPlugins(generation, name, videoModels, sdModels); len(plugins) > 0 {
 				// A chat price is tested as one; the plugins it cannot price
 				// show as unconfigured and reject tasks until they get a price.
 				chatPrice := false
@@ -614,7 +618,7 @@ func validateModelPricingWithBindings(name string, values, previous PricingValue
 				if chatPrice && !unchanged {
 					err = billing_setting.SmokeTestExpr(expression)
 				}
-			} else if target, resolved := ResolveTaskModelAlias(generation, name); resolved {
+			} else if target, resolved := aliases.byFold[jsplugin.ASCIIFold(name)]; resolved {
 				plugin, ok := generation.Get(target.PluginKey)
 				switch {
 				case !ok:
@@ -669,6 +673,8 @@ func UpdateModelPricing(changes []ModelPricingChange) error {
 	}
 	// Resolve metadata before taking a transaction's connection, including with a cold cache.
 	videoModels := videoBillingModels()
+	generation := jsplugin.DefaultRegistry.Generation()
+	aliases := loadFreshTaskAliasView(generation)
 	return mutateModelPricingOptions(func(_ *gorm.DB, values map[string]map[string]any) error {
 		defaults := defaultPricingMaps()
 		for _, change := range changes {
@@ -680,7 +686,7 @@ func UpdateModelPricing(changes []ModelPricingChange) error {
 			if change.Reset {
 				pricing = modelPricingValues(defaults, change.ModelName)
 			}
-			if err := validateModelPricingWithBindings(change.ModelName, pricing, previous, videoModels); err != nil {
+			if err := validateModelPricingWithBindings(change.ModelName, pricing, previous, videoModels, generation, aliases); err != nil {
 				return err
 			}
 			replaceModelPricing(values, change.ModelName, pricing)
@@ -693,6 +699,8 @@ func UpdateModelPricing(changes []ModelPricingChange) error {
 // locking, validation and transaction path as the model-level API.
 func UpdateModelPricingOptions(updates map[string]string) error {
 	videoModels := videoBillingModels()
+	generation := jsplugin.DefaultRegistry.Generation()
+	aliases := loadFreshTaskAliasView(generation)
 	return mutateModelPricingOptions(func(_ *gorm.DB, values map[string]map[string]any) error {
 		previous := maps.Clone(values)
 		names := make(map[string]bool)
@@ -722,7 +730,7 @@ func UpdateModelPricingOptions(updates map[string]string) error {
 			values[key] = entries
 		}
 		for name := range names {
-			if err := validateModelPricingWithBindings(name, modelPricingValues(values, name), modelPricingValues(previous, name), videoModels); err != nil {
+			if err := validateModelPricingWithBindings(name, modelPricingValues(values, name), modelPricingValues(previous, name), videoModels, generation, aliases); err != nil {
 				return err
 			}
 		}

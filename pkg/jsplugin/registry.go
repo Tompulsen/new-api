@@ -1688,7 +1688,8 @@ func normalizeV1Meta(meta *Meta) error {
 		if meta.FetchMode != "per_task" && meta.FetchMode != "batch" {
 			return fmt.Errorf("plugin meta fetchMode must be per_task or batch")
 		}
-		if len(meta.Models) == 0 {
+		// SD compatibility takes its models from bound channels.
+		if len(meta.Models) == 0 && meta.Key != "sd-compatible" {
 			return fmt.Errorf("plugin meta models must contain at least one model")
 		}
 	}

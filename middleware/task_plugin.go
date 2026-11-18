@@ -573,13 +573,23 @@ func lookupTaskPluginEndpoint(generation *pluginruntime.RoutingGeneration, metho
 	lookupModel, pinModel, mappedModel := modelName, modelName, ""
 	if declared, ok := generation.CanonicalModel(modelName); ok {
 		lookupModel, pinModel = declared, declared
-	} else if target, ok := model.ResolveTaskModelAlias(generation, modelName); ok {
-		if target.Declared == "" {
-			return pluginruntime.PinnedEndpoint{}, false
-		}
+	} else if target, ok := model.ResolveTaskModelAlias(generation, modelName); ok && target.Declared != "" {
 		lookupModel, pinModel, mappedModel = target.Declared, target.Alias, target.Declared
 	}
 	candidates := generation.LookupEndpointCandidates(method, path, lookupModel)
+	if protocol, operation, ok := pluginruntime.LookupHostProtocolOperation(method, path); ok && protocol == "openai_video" && operation.Name == "create" {
+		if plugin, exists := generation.Get("sd-compatible"); exists && model.TaskPluginServesModel(generation, plugin, pinModel) && !slices.ContainsFunc(candidates, func(candidate pluginruntime.ProtocolBinding) bool { return candidate.Plugin == plugin }) {
+			for _, claim := range plugin.Meta.Protocols {
+				if claim.Name == protocol {
+					candidates = append(candidates, pluginruntime.ProtocolBinding{Plugin: plugin, Protocol: protocol, Operation: operation, Model: pinModel})
+					slices.SortFunc(candidates, func(a, b pluginruntime.ProtocolBinding) int {
+						return strings.Compare(a.Plugin.Meta.Key, b.Plugin.Meta.Key)
+					})
+					break
+				}
+			}
+		}
+	}
 	if len(candidates) == 0 {
 		return pluginruntime.PinnedEndpoint{}, false
 	}
@@ -885,12 +895,12 @@ func PrepareTaskPluginEndpoint() gin.HandlerFunc {
 			} else if kind, _ := result["kind"].(string); kind != string(pluginruntime.RouteTypeSubmit) {
 				reason = "unsupported_kind"
 				detail = taskPluginInvalidRouteResult
-			} else if model, _ := result["model"].(string); strings.TrimSpace(model) == "" {
+			} else if decodedModel, _ := result["model"].(string); strings.TrimSpace(decodedModel) == "" {
 				reason = "invalid_model"
 				detail = "decoded request is missing a model"
-			} else if model != pinned.Model || (pinned.MappedModel == "" && !slices.Contains(candidate.Plugin.Meta.Models, model)) {
+			} else if decodedModel != pinned.Model || (pinned.MappedModel == "" && !model.TaskPluginServesModel(pinned.Generation, candidate.Plugin, decodedModel)) {
 				reason = "resolved_model_not_owned"
-				detail = fmt.Sprintf("model %q is not served by this plugin", model)
+				detail = fmt.Sprintf("model %q is not served by this plugin", decodedModel)
 			}
 			if detail != "" {
 				logger.LogWarn(c, common.LogText("task_plugin subsystem=endpoint event=prepare_rejected generation=%d plugin=%q stage=parse_request reason=%s err=%q elapsed_ms=%d",

@@ -31,10 +31,10 @@ func TestSDCompatibleVideoContract(t *testing.T) {
 	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "sd-compatible"})
 	require.NoError(t, err)
 	assert.Equal(t, "SD兼容", plugin.Meta.Name)
-	for _, name := range plugin.Meta.Models {
-		binding, found := registry.Generation().LookupEndpoint("POST", "/v1/videos", name)
-		require.True(t, found)
-		assert.Same(t, plugin, binding.Plugin)
+	assert.Empty(t, plugin.Meta.Models)
+	for _, name := range []string{"sd2.0-fast-480p", "sd2.0-fast-720p", "sd2.0-mini-480p", "sd2.0-mini-720p", "channel-video-model"} {
+		_, found := registry.Generation().LookupEndpoint("POST", "/v1/videos", name)
+		assert.False(t, found, "model %q must require a channel binding", name)
 	}
 	ctx := map[string]any{
 		"baseUrl": "https://upstream.example/v1/", "apiKey": "selected-key",

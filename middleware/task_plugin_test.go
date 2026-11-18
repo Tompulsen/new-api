@@ -2164,6 +2164,7 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 						decoderRejects, syncOnly bool
 						originPin, retry         bool
 						legacy, mapped, shared   bool
+						sd, dualBound            bool
 						wantStatus               int
 					}{
 						{name: "ordinary images bypass plugin decoder", decoderRejects: true},
@@ -2190,6 +2191,20 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 						{name: "plugin Responses remain usable", path: "/v1/responses", pluginOnly: true, wantPlugin: true},
 						{name: "ordinary videos bypass plugin decoder", path: "/v1/videos", multipart: true, decoderRejects: true},
 						{name: "plugin videos remain usable", path: "/v1/videos", multipart: true, pluginOnly: true, wantPlugin: true},
+						{name: "SD channel accepts arbitrary video model", sd: true, path: "/v1/videos", pluginOnly: true, wantPlugin: true},
+						{name: "SD New API channel accepts arbitrary video model", sd: true, path: "/v1/videos", pluginType: constant.ChannelTypeNewAPI, pluginOnly: true, wantPlugin: true},
+						{name: "SD multipart arbitrary video model", sd: true, path: "/v1/videos", multipart: true, pluginOnly: true, wantPlugin: true},
+						{name: "SD arbitrary model wins by channel priority", sd: true, path: "/v1/videos", pluginPriority: 20, wantPlugin: true},
+						{name: "ordinary arbitrary video model wins by priority", sd: true, path: "/v1/videos", ordinaryPriority: 20, decoderRejects: true},
+						{name: "disabled SD cannot claim arbitrary model", sd: true, path: "/v1/videos", disabled: true, pluginPriority: 20},
+						{name: "SD in another group cannot claim request", sd: true, path: "/v1/videos", wrongGroup: true, pluginPriority: 20},
+						{name: "SD without requested model cannot claim request", sd: true, path: "/v1/videos", wrongModel: true, pluginPriority: 20},
+						{name: "unrelated binding cannot claim arbitrary model", sd: true, path: "/v1/videos", unrelated: true, pluginPriority: 20},
+						{name: "SD arbitrary model respects channel pin", sd: true, path: "/v1/videos", pinPlugin: true, wantPlugin: true},
+						{name: "SD shares model with declared plugin", sd: true, path: "/v1/videos", model: "channel-route-model", shared: true, pluginOnly: true, decoderRejects: true, wantPlugin: true},
+						{name: "SD mapped arbitrary model", sd: true, path: "/v1/videos", model: "friendly-image", mapped: true, pluginOnly: true, wantPlugin: true},
+						{name: "SD and Sora bound together retain key order", sd: true, dualBound: true, path: "/v1/videos", pluginType: constant.ChannelTypeNewAPI, pluginOnly: true, wantPlugin: true},
+						{name: "SD channel models do not claim image endpoints", sd: true, ordinaryPriority: 20, decoderRejects: true},
 						{name: "selected plugin retains validation errors", pluginOnly: true, decoderRejects: true, wantStatus: http.StatusBadRequest},
 						{name: "selected plugin retains mode errors", path: "/v1/responses", pluginOnly: true, stream: true, syncOnly: true, wantStatus: http.StatusBadRequest},
 						{name: "origin task still pins its channel", pluginOnly: true, originPin: true, wantPlugin: true},
@@ -2204,6 +2219,10 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 							key := "channel-route-test"
 							path := common.GetStringIfEmpty(tc.path, "/v1/images/generations")
 							modelName := common.GetStringIfEmpty(tc.model, "channel-route-model")
+							if tc.sd {
+								key = "sd-compatible"
+								modelName = common.GetStringIfEmpty(tc.model, "S-2.0-九图10s-线路一")
+							}
 							if tc.legacy {
 								key, modelName = "alibaba", "qwen-image-3.0"
 							}
@@ -2214,6 +2233,9 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 								decode = `return {model: ctx.model, originTaskIds: ["task-route-origin"], requestBody: {normalized: true}};`
 							}
 							source := taskProtocolPluginSource(key, "1.0.0", `["channel-route-model"]`, path, decode)
+							if tc.sd {
+								source = taskProtocolPluginSource(key, "1.0.0", `[]`, path, decode)
+							}
 							if tc.syncOnly {
 								source = taskResponsesPluginSource(key, 0, `["channel-route-model"]`, `["sync"]`, `renderFinal: function() { return {}; },`, decode)
 							}
@@ -2231,6 +2253,12 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 								plugin.Type = tc.pluginType
 							}
 							plugin.SetSetting(kitdto.ChannelSettings{TaskPluginKey: key})
+							if tc.dualBound {
+								_, err := jsplugin.DefaultRegistry.Register(taskProtocolPluginSource("sora", "1.0.0", fmt.Sprintf("[%q]", modelName), path, decode), jsplugin.Options{})
+								require.NoError(t, err)
+								t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister("sora")) })
+								plugin.SetSetting(kitdto.ChannelSettings{TaskExtendPluginKeys: []string{"sora", key}})
+							}
 							if tc.legacy {
 								plugin.Type = constant.ChannelTypeAli
 							}
@@ -2307,7 +2335,9 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 								_, pinned := c.Get(jsplugin.ContextKeyPinnedEndpoint)
 								assert.Equal(t, tc.wantPlugin, pinned)
 								_, relayEndpoint := c.Get(jsplugin.ContextKeyRelayEndpoint)
-								assert.Equal(t, !tc.wantPlugin, relayEndpoint)
+								if !tc.sd || relayEndpoint || tc.wantPlugin {
+									assert.Equal(t, !tc.wantPlugin, relayEndpoint)
+								}
 								expected := ordinary
 								if tc.wantPlugin {
 									expected = plugin
@@ -2321,7 +2351,7 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 									} else {
 										assert.Equal(t, map[string]any{"normalized": true}, c.MustGet("task_request"))
 									}
-									if tc.mapped {
+									if tc.mapped && !tc.sd {
 										assert.Equal(t, "channel-route-model", c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint).MappedModel)
 									}
 									if tc.originPin || tc.shared {

@@ -68,6 +68,13 @@ func TestValidateV1MetaEnforcesTaskPluginKeyLength(t *testing.T) {
 	require.ErrorContains(t, ValidateV1Meta(meta), "must not exceed 30 characters")
 }
 
+func TestValidateV1MetaAllowsChannelScopedSDModels(t *testing.T) {
+	meta := Meta{APIVersion: 1, Key: "sd-compatible", Name: "Test", Version: "1.0.0", Author: AuthorMeta{Name: "Test"}, FetchMode: "per_task"}
+	require.NoError(t, ValidateV1Meta(meta))
+	meta.Key = "other-task"
+	require.ErrorContains(t, ValidateV1Meta(meta), "models must contain at least one model")
+}
+
 func TestRegistryDecodesAndValidatesIcon(t *testing.T) {
 	absent, err := CompilePlugin(routingTestPluginSource("icon-absent", 0, `["model"]`, "", ""), Options{})
 	require.NoError(t, err)

@@ -297,7 +297,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (submitted *Ta
 		if !exists || !supported {
 			return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s has no usage expression or meter", modelName), "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
-		sharedModel := pinnedPlugin.Generation.SharedModel(modelName) || pinnedPlugin.Generation.SharedModel(info.UpstreamModelName)
+		sharedModel := len(model.TaskPricingPlugins(pinnedPlugin.Generation, modelName)) > 1 || len(model.TaskPricingPlugins(pinnedPlugin.Generation, info.UpstreamModelName)) > 1
 		if sharedModel && pinnedPlugin.Plugin != nil {
 			schema, _ := model.TaskPricingUsage(pinnedPlugin.Plugin, info.UpstreamModelName, modelName)
 			if !billing_setting.TaskExprCompatible(exprStr, schema) {

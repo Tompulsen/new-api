@@ -1091,6 +1091,14 @@ func TestRelayTaskSubmitSDCompatibleBillingAndRetryBoundary(t *testing.T) {
 	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "sd-compatible"})
 	require.NoError(t, err)
 	_, err = registry.Register(`
+export const meta = {apiVersion:1,key:"native-sd-overlap",name:"Native shared provider",version:"1.0.0",author:{name:"Test"},models:["shared-sd-model"],fetchMode:"per_task",usageSchema:{credits:{type:"number",unit:"credit"}}};
+export function buildSubmitRequest(){return {};}
+export function parseSubmitResponse(){return {};}
+export function buildQueryRequest(){return {};}
+export function parseTaskResult(){return {};}
+`, pluginruntime.Options{})
+	require.NoError(t, err)
+	_, err = registry.Register(`
 export const meta = {apiVersion:1,key:"sd-egress-reject",name:"Reject prepared SD references",version:"1.0.0",author:{name:"Test"}};
 export function egress(ctx, req) {
   if (!String(req.body.images[0]).startsWith("https://gateway.example/v1/video-references/")) throw new Error("expected a prepared local reference");
@@ -1101,22 +1109,31 @@ export function egress(ctx, req) {
 	previousRegistry := pluginruntime.DefaultRegistry
 	pluginruntime.DefaultRegistry = registry
 	t.Cleanup(func() { pluginruntime.DefaultRegistry = previousRegistry })
+	require.NoError(t, model.DB.Create(&model.Channel{Type: constant.ChannelTypeTaskPlugin, Status: common.ChannelStatusEnabled, Models: "shared-sd-model",
+		Setting: common.GetPointer(`{"task_plugin_key":"sd-compatible"}`)}).Error)
+	model.InitChannelCache()
 	const expression = `u("resolution") == "1080p" ? tier("high", u("seconds") * 0.4) : tier("other", u("seconds") * 0.1)`
 	overrides, err := common.Marshal(map[string]string{
 		"sd-compatible::sd2.0-mini-720p": expression,
+		"sd-compatible::S-2.0-九图10s-线路一": expression,
 		"sora::sd2.0-mini-720p":          `tier("wrong-provider", u("seconds") * 99)`,
 	})
 	require.NoError(t, err)
 	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
 		billing_setting.PluginBillingExprOption: string(overrides),
 		"group_ratio_setting.group_ratio":       `{"default":1}`,
+		"billing_setting.billing_mode":          `{"shared-sd-model":"tiered_expr"}`,
+		"billing_setting.billing_expr":          `{"shared-sd-model":"tier(\"native\", u(\"credits\") * 0.2)"}`,
 	}))
 	for _, tc := range []struct {
-		name, reply, wantCode             string
-		wallet, status                    int
-		noRetry, localImage, egressReject bool
+		name, reply, wantCode, model, mapping string
+		wallet, status                        int
+		noRetry, localImage, egressReject     bool
 	}{
 		{name: "reserve before generation using SD price", wallet: 1 << 30, status: 202, reply: `{"id":"sd-task","status":"queued"}`},
+		{name: "shared model rejects incompatible provider price", model: "shared-sd-model", wallet: 1 << 30, wantCode: "model_price_error"},
+		{name: "arbitrary model reaches upstream", model: "S-2.0-九图10s-线路一", wallet: 1 << 30, status: 202, reply: `{"id":"sd-task","status":"queued"}`},
+		{name: "arbitrary mapped model reaches upstream", model: "S-2.0-九图10s-线路一", mapping: `{"S-2.0-九图10s-线路一":"vendor-sd-id"}`, wallet: 1 << 30, status: 202, reply: `{"id":"sd-task","status":"queued"}`},
 		{name: "local image is stored after reservation", wallet: 1 << 30, status: 202, reply: `{"id":"sd-task","status":"queued"}`, localImage: true},
 		{name: "no funds prevents storage and generation", wallet: 0, wantCode: "insufficient_user_quota", localImage: true},
 		{name: "egress rejection removes prepared local references without generation", wallet: 1 << 30, wantCode: "request_rejected", localImage: true, egressReject: true},
@@ -1136,6 +1153,11 @@ export function egress(ctx, req) {
 				var actual map[string]any
 				require.NoError(t, common.DecodeJson(r.Body, &actual))
 				assert.Equal(t, "5", actual["seconds"])
+				wantModel := common.GetStringIfEmpty(tc.model, "sd2.0-mini-720p")
+				if tc.mapping != "" {
+					wantModel = "vendor-sd-id"
+				}
+				assert.Equal(t, wantModel, actual["model"])
 				assert.Equal(t, "9:16", actual["ratio"])
 				if tc.localImage {
 					images := actual["images"].([]any)
@@ -1153,7 +1175,8 @@ export function egress(ctx, req) {
 				_, _ = w.Write([]byte(tc.reply))
 			}))
 			defer server.Close()
-			c, info := newTaskSubmitContext(t, "sd2.0-mini-720p", "")
+			modelName := common.GetStringIfEmpty(tc.model, "sd2.0-mini-720p")
+			c, info := newTaskSubmitContext(t, modelName, tc.mapping)
 			reference := "https://images.example/ref.png"
 			if tc.localImage {
 				reference = localReference
@@ -1170,7 +1193,7 @@ export function egress(ctx, req) {
 			c.Set("task_plugin_key", "sd-compatible")
 			c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})
 			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
-			info.OriginModelName, info.UserGroup, info.UsingGroup = "sd2.0-mini-720p", "default", "default"
+			info.OriginModelName, info.UserGroup, info.UsingGroup = modelName, "default", "default"
 			info.Billing = billing
 			if tc.egressReject {
 				require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
@@ -1183,7 +1206,7 @@ export function egress(ctx, req) {
 				require.Nil(t, apiErr)
 			}
 			result, taskErr := RelayTaskSubmit(c, info)
-			if tc.wallet == 0 || tc.egressReject {
+			if tc.wallet == 0 || tc.egressReject || tc.wantCode == "model_price_error" {
 				assert.Zero(t, generations)
 				entries, err := os.ReadDir(dir)
 				require.NoError(t, err)

@@ -122,11 +122,14 @@ func videoBillingModels() map[string]bool {
 
 // This metadata index never participates in route or channel selection.
 func TaskPricingPlugins(generation *jsplugin.RoutingGeneration, name string) []*jsplugin.LoadedPlugin {
-	return taskPricingPlugins(generation, name, videoBillingModels())
+	return taskPricingPlugins(generation, name, videoBillingModels(), sdChannelModels(generation))
 }
 
-func taskPricingPlugins(generation *jsplugin.RoutingGeneration, name string, videoModels map[string]bool) []*jsplugin.LoadedPlugin {
+func taskPricingPlugins(generation *jsplugin.RoutingGeneration, name string, videoModels, sdModels map[string]bool) []*jsplugin.LoadedPlugin {
 	plugins := slices.Clone(generation.PluginsByModel(name))
+	if sd, ok := generation.Get("sd-compatible"); ok && taskPluginServesModel(sd, name, sdModels) && !slices.Contains(plugins, sd) {
+		plugins = append(plugins, sd)
+	}
 	if videoModels[name] {
 		if sora, ok := generation.Get("sora"); ok && !slices.Contains(plugins, sora) {
 			plugins = append(plugins, sora)
@@ -159,7 +162,7 @@ func VideoBillingRequiresProviderPrice(generation *jsplugin.RoutingGeneration, n
 		generation = jsplugin.DefaultRegistry.Generation()
 	}
 	for _, name := range names {
-		for _, plugin := range generation.PluginsByModel(name) {
+		for _, plugin := range TaskPricingPlugins(generation, name) {
 			if plugin.Meta.Key != "sora" {
 				return true
 			}
