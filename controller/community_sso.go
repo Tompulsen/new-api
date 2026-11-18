@@ -56,7 +56,7 @@ func communitySSOError(c *gin.Context, status int, reason string) {
 func CommunitySSOConfig(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	origin := communitySSOOrigin()
-	c.JSON(http.StatusOK, gin.H{"enabled": len(ssoOrigins("COMMUNITY_SSO")) > 0, "community_origin": origin, "studio_origin": ssoOrigin("STUDIO_SSO_ORIGIN"), "community_origins": ssoOrigins("COMMUNITY_SSO"), "studio_origins": ssoOrigins("STUDIO_SSO")})
+	c.JSON(http.StatusOK, gin.H{"enabled": len(ssoOrigins("COMMUNITY_SSO")) > 0, "community_origin": origin, "studio_origin": ssoOrigin("STUDIO_SSO_ORIGIN"), "community_origins": ssoOrigins("COMMUNITY_SSO"), "studio_origins": ssoOrigins("STUDIO_SSO"), "qxchat_origins": ssoOrigins("QXCHAT_SSO")})
 }
 
 func CommunitySSOAuthorize(c *gin.Context) {

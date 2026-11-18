@@ -26,11 +26,13 @@ import (
 type pluginDispatchStateKey struct{}
 
 type pluginDispatchState struct {
-	generation *jsplugin.RoutingGeneration
-	hit        atomic.Bool
-	writer     *gatedResponseWriter
-	requestID  string
-	language   string
+	generation               *jsplugin.RoutingGeneration
+	hit                      atomic.Bool
+	writer                   *gatedResponseWriter
+	requestID                string
+	language                 string
+	communityWalletUser      int
+	communityWalletOperation string
 }
 
 func (s *pluginDispatchState) markHit() {
@@ -149,6 +151,7 @@ func productionPluginRouteHandlers(generation *jsplugin.RoutingGeneration, group
 		pinRoute,
 		middleware.NativeRouteCredential(keys...),
 		middleware.TokenAuth(),
+		middleware.CommunityWalletOwner(),
 		middleware.SystemPerformanceCheck(),
 		middleware.ModelRequestRateLimit(),
 		middleware.PrepareTaskPluginRoute(),
@@ -386,6 +389,10 @@ func importPluginDispatchState() gin.HandlerFunc {
 			if state.language != "" {
 				c.Set(string(constant.ContextKeyLanguage), state.language)
 			}
+			if state.communityWalletUser > 0 {
+				c.Set(common.CommunityWalletUserKey, state.communityWalletUser)
+				c.Set(common.CommunityWalletOperationKey, state.communityWalletOperation)
+			}
 		}
 		c.Set(middleware.RouteTagKey, "relay")
 		c.Next()
@@ -442,9 +449,11 @@ func (d *pluginRouteDispatcher) dispatch(c *gin.Context) {
 	c.Set(middleware.RouteTagKey, "relay")
 	originalContext := c.Request.Context()
 	state := &pluginDispatchState{
-		generation: generation,
-		requestID:  c.GetString(common.RequestIdKey),
-		language:   c.GetString(string(constant.ContextKeyLanguage)),
+		generation:               generation,
+		requestID:                c.GetString(common.RequestIdKey),
+		language:                 c.GetString(string(constant.ContextKeyLanguage)),
+		communityWalletUser:      c.GetInt(common.CommunityWalletUserKey),
+		communityWalletOperation: c.GetString(common.CommunityWalletOperationKey),
 	}
 	gatedWriter := newGatedResponseWriter(c.Writer)
 	state.writer = gatedWriter

@@ -85,7 +85,14 @@ func createRootAccountIfNeed() error {
 			AccessToken: nil,
 			Quota:       100000000,
 		}
-		DB.Create(&rootUser)
+		if err := DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&rootUser).Error; err != nil {
+				return err
+			}
+			return ClaimLoginIdentifiersWithTx(tx, rootUser.Id, rootUser.Username)
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -343,6 +350,7 @@ func migrateDB() error {
 		&Channel{},
 		&Token{},
 		&User{},
+		&LoginIdentifierReservation{},
 		&UserSession{},
 		&AuthFlow{},
 		&ExternalIdentityClaim{},
@@ -378,6 +386,15 @@ func migrateDB() error {
 		&UserAccessToken{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := MigrateQXChatIdentity(DB); err != nil {
+		return err
+	}
+	if err := InitializeLoginIdentifiers(); err != nil {
+		return err
+	}
+	if err := MigrateUnifiedWallet(DB); err != nil {
 		return err
 	}
 	if err := InitializeUserAuthVersions(); err != nil {

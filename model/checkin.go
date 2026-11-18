@@ -2,6 +2,7 @@ package model
 
 import (
 	"math/rand"
+	"strconv"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -81,7 +82,7 @@ func UserCheckin(userId int) (*Checkin, error) {
 	}
 
 	// 根据数据库类型选择不同的策略
-	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
+	if !UnifiedWalletEnabled() && common.UsingMainDatabase(common.DatabaseTypeSQLite) {
 		// SQLite 不支持嵌套事务，使用顺序操作 + 手动回滚
 		return userCheckinWithoutTransaction(checkin, userId, quotaAwarded)
 	}
@@ -100,8 +101,13 @@ func userCheckinWithTransaction(checkin *Checkin, userId int, quotaAwarded int) 
 		}
 
 		// 步骤2: 在事务中增加用户额度
-		if err := tx.Model(&User{}).Where("id = ?", userId).
-			Update("quota", gorm.Expr("quota + ?", quotaAwarded)).Error; err != nil {
+		var creditErr error
+		if UnifiedWalletEnabled() {
+			creditErr = UnifiedWalletDeltaTx(tx, userId, int64(quotaAwarded), false, WalletReference("checkin", strconv.Itoa(userId), checkin.CheckinDate))
+		} else {
+			creditErr = tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", quotaAwarded)).Error
+		}
+		if creditErr != nil {
 			return common.NewMessage("Check-in failed: quota update error")
 		}
 

@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -1852,6 +1853,114 @@ func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
 
 			assert.Equal(t, testCase.wantSettled, settled)
 			assert.Equal(t, testCase.wantQuota, task.Quota)
+		})
+	}
+}
+
+func TestUnifiedWalletBillingSessionLifecycle(t *testing.T) {
+	for _, scenario := range []string{"sync-zero-delta", "async-reprice", "playground-refund", "free-intent"} {
+		t.Run(scenario, func(t *testing.T) {
+			truncate(t)
+			t.Setenv("UNIFIED_WALLET_ENABLED", "true")
+			t.Setenv("UNIFIED_WALLET_QUOTA_PER_CNY", "5000")
+			require.NoError(t, model.MigrateUnifiedWallet(model.DB))
+			t.Cleanup(func() {
+				for _, table := range []any{&model.UnifiedWalletAccount{}, &model.UnifiedWalletLot{}, &model.UnifiedWalletOperation{}, &model.UnifiedWalletEntry{}} {
+					require.NoError(t, model.DB.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(table).Error)
+				}
+			})
+			seedUser(t, 1, 0)
+			seedToken(t, 1, 1, "wallet-service-token", 100)
+			seedChannel(t, 1)
+			require.NoError(t, model.DB.Model(&model.Token{}).Where("id = ?", 1).Update("expired_time", -1).Error)
+			lot := model.UnifiedWalletLot{UserID: 1, Kind: model.WalletCharity, Reference: model.WalletReference("service-lot", scenario), Source: "qxchat", InitialQuota: 100, RemainingQuota: 100, InitialPoints: 100, CreatedAt: time.Now().Unix()}
+			require.NoError(t, model.DB.Create(&lot).Error)
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			id := model.WalletReference("service-operation", scenario)
+			ctx.Set(common.CommunityWalletUserKey, 1)
+			ctx.Set(common.CommunityWalletOperationKey, id)
+			info := &relaycommon.RelayInfo{UserId: 1, TokenId: 1, TokenKey: "wallet-service-token", TokenUnlimited: false, RequestId: "wallet-service-request", ForcePreConsume: scenario == "async-reprice", IsPlayground: scenario == "playground-refund"}
+			info.UserSetting.BillingPreference = "subscription_only"
+			initial := 50
+			if scenario == "free-intent" {
+				initial = 0
+			}
+			session, apiErr := NewBillingSession(ctx, info, initial)
+			require.Nil(t, apiErr)
+			require.NotNil(t, session)
+			info.Billing = session
+			require.Equal(t, id, info.WalletOperationID)
+			switch scenario {
+			case "free-intent":
+				again, duplicateErr := NewBillingSession(ctx, info, 0)
+				assert.Nil(t, again)
+				assert.NotNil(t, duplicateErr)
+				require.NoError(t, session.Settle(0))
+				again, duplicateErr = NewBillingSession(ctx, info, 0)
+				assert.Nil(t, again)
+				assert.NotNil(t, duplicateErr)
+				var operation model.UnifiedWalletOperation
+				require.NoError(t, model.DB.First(&operation, "id = ?", id).Error)
+				assert.Equal(t, "settled", operation.State)
+			case "sync-zero-delta":
+				require.NoError(t, session.Settle(50))
+				require.NoError(t, session.Settle(50))
+				session.Refund(ctx)
+				var operation model.UnifiedWalletOperation
+				require.NoError(t, model.DB.First(&operation, "id = ?", id).Error)
+				assert.Equal(t, "settled", operation.State)
+				assert.Equal(t, int64(50), operation.Quota)
+				again, duplicateErr := NewBillingSession(ctx, info, 50)
+				assert.Nil(t, again)
+				assert.NotNil(t, duplicateErr)
+			case "async-reprice":
+				task := &model.Task{UserId: 1, ChannelId: 1, Quota: 50, PrivateData: model.TaskPrivateData{WalletOperationID: id, TokenId: 1}}
+				require.NoError(t, task.Insert())
+				require.NoError(t, session.Settle(50))
+				var operation model.UnifiedWalletOperation
+				require.NoError(t, model.DB.First(&operation, "id = ?", id).Error)
+				assert.Equal(t, "reserved", operation.State)
+				stale := *task
+				RecalculateTaskQuota(ctx, task, 60, common.NewMessage("Task completed"))
+				RecalculateTaskQuota(ctx, &stale, 60, common.NewMessage("Task completed"))
+				require.NoError(t, model.DB.First(&operation, "id = ?", id).Error)
+				assert.Equal(t, "settled", operation.State)
+				assert.Equal(t, int64(60), operation.Quota)
+				var token model.Token
+				require.NoError(t, model.DB.First(&token, 1).Error)
+				assert.Equal(t, 40, token.RemainQuota)
+			case "playground-refund":
+				assert.True(t, session.NeedsRefund())
+				session.Refund(ctx)
+				session.Refund(ctx)
+				require.NoError(t, model.DB.First(&lot, lot.ID).Error)
+				assert.Equal(t, int64(100), lot.RemainingQuota)
+				assert.False(t, session.NeedsRefund())
+			}
+			var beforeLot model.UnifiedWalletLot
+			var beforeToken model.Token
+			require.NoError(t, model.DB.First(&beforeLot, lot.ID).Error)
+			require.NoError(t, model.DB.First(&beforeToken, 1).Error)
+			duplicateInfo := *info
+			duplicateInfo.Billing = nil
+			duplicateErr := PreConsumeBilling(ctx, initial, &duplicateInfo)
+			require.NotNil(t, duplicateErr)
+			assert.Equal(t, http.StatusConflict, duplicateErr.StatusCode)
+			assert.Equal(t, relaytypes.ErrorCodeInvalidRequest, duplicateErr.GetErrorCode())
+			assert.True(t, relaytypes.IsSkipRetryError(duplicateErr))
+			assert.False(t, relaytypes.IsRecordErrorLog(duplicateErr))
+			assert.Nil(t, duplicateInfo.Billing)
+			var afterLot model.UnifiedWalletLot
+			var afterToken model.Token
+			require.NoError(t, model.DB.First(&afterLot, lot.ID).Error)
+			require.NoError(t, model.DB.First(&afterToken, 1).Error)
+			assert.Equal(t, beforeLot.RemainingQuota, afterLot.RemainingQuota)
+			assert.Equal(t, beforeToken.RemainQuota, afterToken.RemainQuota)
+			assert.Equal(t, beforeToken.UsedQuota, afterToken.UsedQuota)
+			view, err := model.GetUnifiedWallet(1)
+			require.NoError(t, err)
+			assert.Zero(t, view.TotalAPIQuota)
 		})
 	}
 }

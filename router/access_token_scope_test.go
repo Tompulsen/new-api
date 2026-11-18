@@ -34,6 +34,7 @@ var accessTokenExemptRoutes = []string{
 	"GET /api/ratio_config",
 	"GET /api/user/groups",
 	"GET /api/community-sso/config",
+	"GET /api/user/qxchat/config",
 
 	// SSO exchanges validate their own grants or dedicated server credentials.
 	"GET /api/community-sso/lottery",
@@ -41,6 +42,11 @@ var accessTokenExemptRoutes = []string{
 	"POST /api/community-sso/token",
 	"GET /api/community-sso/userinfo",
 	"POST /api/studio-sso/token",
+	"POST /api/qxchat/session/exchange",
+	"POST /api/qxchat/session/validate",
+	"POST /api/qxchat/wallet/import",
+	"POST /api/qxchat/wallet/reservations/status",
+	"GET /api/qxchat/wallet/receipts/:transfer_id",
 
 	// Anonymous account entry points.
 	"GET /api/verification",
@@ -49,6 +55,8 @@ var accessTokenExemptRoutes = []string{
 	"POST /api/user/register",
 	"GET /api/user/login/encryption-key",
 	"POST /api/user/login",
+	"POST /api/user/login/select",
+	"POST /api/user/login/qxchat",
 	"POST /api/user/login/2fa",
 	"POST /api/user/login/verify",
 	"POST /api/user/login/passkey/begin",

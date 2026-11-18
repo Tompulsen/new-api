@@ -805,9 +805,14 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 			return common.NewMessage("Insufficient balance")
 		}
 		if requiredQuota > 0 {
-			if err := tx.Model(&User{}).Where("id = ?", userId).
-				Update("quota", gorm.Expr("quota - ?", requiredQuota)).Error; err != nil {
-				return err
+			var chargeErr error
+			if UnifiedWalletEnabled() {
+				chargeErr = UnifiedWalletDeltaTx(tx, userId, -int64(requiredQuota), true, WalletReference("subscription-purchase", common.NewRequestId()))
+			} else {
+				chargeErr = tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota - ?", requiredQuota)).Error
+			}
+			if chargeErr != nil {
+				return chargeErr
 			}
 		}
 

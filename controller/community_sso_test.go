@@ -24,6 +24,23 @@ import (
 const communityTestOrigin = "https://community.example"
 const communityTestVerifier = "valid_verifier_for_community_01234567890123456789"
 
+func TestCommunitySSOConfigIdentifiesOnlyConfiguredQXChatOrigins(t *testing.T) {
+	t.Setenv("COMMUNITY_SSO_ORIGIN", communityTestOrigin)
+	t.Setenv("QXCHAT_SSO_ORIGIN", "https://qxchat.example")
+	t.Setenv("QXCHAT_SSO_ALLOWED_ORIGINS", "https://qxchat.example,https://qxchat-alt.example,http://insecure.example,https://invalid.example/#fragment")
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest("GET", "/api/community-sso/config", nil)
+	CommunitySSOConfig(c)
+	var config struct {
+		QXChatOrigins   []string `json:"qxchat_origins"`
+		CommunityOrigin string   `json:"community_origin"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &config))
+	require.Equal(t, []string{"https://qxchat.example", "https://qxchat-alt.example"}, config.QXChatOrigins)
+	require.Equal(t, communityTestOrigin, config.CommunityOrigin)
+}
+
 func setupCommunitySSOTest(t *testing.T) (*model.User, service.AuthIdentity) {
 	t.Helper()
 	user, identity := setupSecurityEnrollmentTest(t)

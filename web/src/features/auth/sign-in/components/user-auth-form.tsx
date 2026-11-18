@@ -39,7 +39,11 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { login, wechatLoginByCode } from '@/features/auth/api'
+import {
+  login,
+  selectLoginIdentity,
+  wechatLoginByCode,
+} from '@/features/auth/api'
 import { LegalConsent } from '@/features/auth/components/legal-consent'
 import { OAuthProviders } from '@/features/auth/components/oauth-providers'
 import { loginFormSchema } from '@/features/auth/constants'
@@ -52,7 +56,11 @@ import {
   type PasskeyDomains,
 } from '@/features/auth/passkey/assertion'
 import { PasskeyDomainSelector } from '@/features/auth/passkey/components/passkey-domain-selector'
-import type { AuthFormProps } from '@/features/auth/types'
+import type {
+  AuthFormProps,
+  LoginIdentitySelection,
+  LoginResponse,
+} from '@/features/auth/types'
 import { useStatus } from '@/hooks/use-status'
 import { handleServerError } from '@/lib/handle-server-error'
 import { isPasskeySupported as detectPasskeySupport } from '@/lib/passkey'
@@ -67,6 +75,8 @@ export function UserAuthForm({
 }: AuthFormProps) {
   const { t } = useTranslation()
   const [isLoading, setIsLoading] = useState(false)
+  const [identitySelection, setIdentitySelection] =
+    useState<LoginIdentitySelection | null>(null)
   const [wechatCode, setWeChatCode] = useState('')
   const [agreedToLegal, setAgreedToLegal] = useState(false)
   const [passkeySupported, setPasskeySupported] = useState(false)
@@ -102,6 +112,7 @@ export function UserAuthForm({
     setTurnstileToken,
     validateTurnstile,
   } = useTurnstile()
+  const requiresTurnstile = isTurnstileEnabled
   const { handleLoginResult } = useAuthRedirect()
 
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
@@ -165,10 +176,10 @@ export function UserAuthForm({
       return
     }
 
-    if (!validateTurnstile()) return
+    if (requiresTurnstile && !validateTurnstile()) return
 
-    const submittedTurnstileToken = turnstileToken
-    if (isTurnstileEnabled) {
+    const submittedTurnstileToken = requiresTurnstile ? turnstileToken : ''
+    if (requiresTurnstile) {
       setTurnstileToken('')
       setTurnstileWidgetKey((current) => current + 1)
     }
@@ -182,15 +193,70 @@ export function UserAuthForm({
         passwordEncryptionEnabled: passwordLoginEncryptionEnabled,
       })
 
-      if (res.success) {
-        form.setValue('password', '')
-        if (await handleLoginResult(res.data, redirectTo)) {
-          toast.success(t('Welcome back!'))
-        }
-      } else {
-        handleServerError(createServerError(res, loginFailedMessage))
-      }
+      await acceptLoginResponse(res)
     } catch (error: unknown) {
+      handleServerError(AuthOperationError.from(error, loginFailedMessage))
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  function restartLogin() {
+    setIdentitySelection(null)
+    form.setValue('password', '')
+    setTurnstileToken('')
+    setTurnstileWidgetKey((current) => current + 1)
+  }
+
+  async function acceptLoginResponse(res: LoginResponse) {
+    if (!res.success) throw createServerError(res, loginFailedMessage)
+    form.setValue('password', '')
+    const result = res.data
+    if (result && 'requires_identity_selection' in result) {
+      if (
+        result.requires_identity_selection !== true ||
+        typeof result.flow_token !== 'string' ||
+        !result.flow_token ||
+        !Number.isFinite(result.expires_at) ||
+        result.expires_at <= Date.now() / 1000 ||
+        !Array.isArray(result.candidates) ||
+        !result.candidates.length ||
+        result.candidates.length > 4 ||
+        result.candidates.some(
+          (candidate) =>
+            !candidate ||
+            typeof candidate.selection_id !== 'string' ||
+            !candidate.selection_id ||
+            typeof candidate.username !== 'string' ||
+            !candidate.username ||
+            typeof candidate.account_label !== 'string'
+        )
+      ) {
+        throw new Error(loginFailedMessage)
+      }
+      setIdentitySelection(result)
+      return
+    }
+    setIdentitySelection(null)
+    if (await handleLoginResult(result, redirectTo)) {
+      toast.success(t('Welcome back!'))
+    }
+  }
+
+  async function chooseIdentity(selectionId: string) {
+    if (isLoading || !identitySelection) return
+    if (identitySelection.expires_at <= Date.now() / 1000) {
+      restartLogin()
+      toast.error(t('Account selection expired. Please sign in again.'))
+      return
+    }
+    setIsLoading(true)
+    try {
+      await acceptLoginResponse(
+        await selectLoginIdentity(identitySelection.flow_token, selectionId)
+      )
+    } catch (error: unknown) {
+      restartLogin()
       handleServerError(AuthOperationError.from(error, loginFailedMessage))
     } finally {
       setIsLoading(false)
@@ -342,6 +408,50 @@ export function UserAuthForm({
     </>
   )
 
+  if (identitySelection) {
+    return (
+      <div
+        className={cn('grid gap-4', className)}
+        aria-labelledby='identity-selection-title'
+      >
+        <h3 id='identity-selection-title' className='font-medium'>
+          {t('Choose your account')}
+        </h3>
+        <p className='text-muted-foreground text-sm'>
+          {t(
+            'This login name matches more than one account. Confirm the account you want to use.'
+          )}
+        </p>
+        {identitySelection.candidates.map((candidate) => (
+          <Button
+            key={candidate.selection_id}
+            type='button'
+            variant='outline'
+            className='h-auto min-h-11 flex-col items-start px-4 py-3 break-all whitespace-normal'
+            disabled={isLoading}
+            aria-label={`${t('Sign in as {{username}}', { username: candidate.username })} ${candidate.account_label}`}
+            onClick={() => void chooseIdentity(candidate.selection_id)}
+          >
+            <span>
+              {t('Sign in as {{username}}', { username: candidate.username })}
+            </span>
+            <span className='text-muted-foreground text-xs'>
+              {candidate.account_label}
+            </span>
+          </Button>
+        ))}
+        <Button
+          type='button'
+          variant='ghost'
+          disabled={isLoading}
+          onClick={restartLogin}
+        >
+          {t('Back to sign in')}
+        </Button>
+      </div>
+    )
+  }
+
   return (
     <Form {...form}>
       <form
@@ -363,6 +473,8 @@ export function UserAuthForm({
                   <FormControl>
                     <Input
                       placeholder={t('Enter your username or email')}
+                      autoComplete='username'
+                      disabled={isLoading}
                       {...field}
                     />
                   </FormControl>
@@ -381,6 +493,8 @@ export function UserAuthForm({
                   <FormControl>
                     <PasswordInput
                       placeholder={t('Enter password')}
+                      autoComplete='current-password'
+                      disabled={isLoading}
                       {...field}
                     />
                   </FormControl>
@@ -395,18 +509,8 @@ export function UserAuthForm({
               )}
             />
 
-            {/* Submit Button */}
-            <Button
-              type='submit'
-              className='mt-2 w-full justify-center gap-2'
-              disabled={isLoading}
-            >
-              {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
-              {t('Sign in')}
-            </Button>
-
             {/* Turnstile */}
-            {isTurnstileEnabled && (
+            {requiresTurnstile && (
               <div className='mt-2'>
                 <Turnstile
                   key={turnstileWidgetKey}
@@ -416,6 +520,16 @@ export function UserAuthForm({
                 />
               </div>
             )}
+
+            {/* Submit Button */}
+            <Button
+              type='submit'
+              className='mt-2 w-full justify-center gap-2'
+              disabled={isLoading || (requiresTurnstile && !turnstileToken)}
+            >
+              {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
+              {t('Sign in')}
+            </Button>
           </>
         )}
 

@@ -52,6 +52,12 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	}
 
 	task.Quota = quota
+	if model.UnifiedWalletEnabled() {
+		task.WalletOperationID = model.WalletReference("midjourney", relayInfo.RequestId)
+		if !relayInfo.IsPlayground {
+			task.TokenId = relayInfo.TokenId
+		}
+	}
 	task.BillingChannelId = task.ChannelId
 	if relayInfo.ChannelMeta != nil && relayInfo.ChannelId > 0 {
 		task.BillingChannelId = relayInfo.ChannelId
@@ -71,6 +77,9 @@ func SettleMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.M
 		return false, errors.New("Midjourney task must be persisted before billing")
 	}
 
+	if task.WalletOperationID != "" {
+		return true, nil
+	}
 	result, billingErr := postConsumeQuotaWithResult(relayInfo, task.Quota, 0, true)
 	if !result.FundingApplied {
 		task.Quota = 0
@@ -95,24 +104,38 @@ func SettleMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.M
 // RefundMidjourneyQuota reverses every accounting element recorded for a billed legacy task.
 func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason string) bool {
 	quota := task.Quota
+	unified := task.WalletOperationID != ""
+	if unified {
+		delta, applied, err := model.ChangeWalletMidjourneyQuota(task, 0, "refunded")
+		if err != nil {
+			logger.LogError(ctx, "unified Midjourney refund failed: "+err.Error())
+			return false
+		}
+		if !applied {
+			return true
+		}
+		quota = -delta
+	}
 	if quota == 0 {
 		return true
 	}
 
-	if err := model.IncreaseUserQuota(task.UserId, quota, false); err != nil {
-		logger.LogWarn(ctx, common.LogText("failed to refund Midjourney user quota, task %s: %s", task.MjId, err.Error()))
-		return false
-	}
+	if !unified {
+		if err := model.IncreaseUserQuota(task.UserId, quota, false); err != nil {
+			logger.LogWarn(ctx, common.LogText("failed to refund Midjourney user quota, task %s: %s", task.MjId, err.Error()))
+			return false
+		}
 
-	if task.TokenId > 0 {
-		tokenKey := resolveTokenKey(ctx, task.TokenId, task.MjId)
-		if tokenKey != "" {
-			if err := model.IncreaseTokenQuota(task.TokenId, tokenKey, quota); err != nil {
-				logger.LogWarn(ctx, common.LogText("failed to refund Midjourney token quota, task %s: %s", task.MjId, err.Error()))
+		if task.TokenId > 0 {
+			tokenKey := resolveTokenKey(ctx, task.TokenId, task.MjId)
+			if tokenKey != "" {
+				if err := model.IncreaseTokenQuota(task.TokenId, tokenKey, quota); err != nil {
+					logger.LogWarn(ctx, common.LogText("failed to refund Midjourney token quota, task %s: %s", task.MjId, err.Error()))
+				}
 			}
 		}
-	}
 
+	}
 	billingChannelId := task.GetBillingChannelId()
 	model.UpdateUserUsedQuota(task.UserId, -quota)
 	model.UpdateChannelUsedQuota(billingChannelId, -quota)
@@ -130,8 +153,10 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 	})
 
 	task.Quota = 0
-	if err := task.UpdateBillingState(); err != nil {
-		logger.LogError(ctx, common.LogText("Midjourney refund succeeded but clearing the quota failed, task %s: %s", task.MjId, err.Error()))
+	if !unified {
+		if err := task.UpdateBillingState(); err != nil {
+			logger.LogError(ctx, common.LogText("Midjourney refund succeeded but clearing the quota failed, task %s: %s", task.MjId, err.Error()))
+		}
 	}
 	return true
 }

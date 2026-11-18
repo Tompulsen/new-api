@@ -26,6 +26,10 @@ import { useAuthStore } from '@/stores/auth-store'
 
 const searchSchema = z.object({
   redirect: z.string().optional(),
+  qxchat: z.preprocess(
+    (value) => (value === 1 ? '1' : value),
+    z.literal('1').optional().catch(undefined)
+  ),
 })
 
 export const Route = createFileRoute('/(auth)/sign-in')({
@@ -39,7 +43,9 @@ export const Route = createFileRoute('/(auth)/sign-in')({
     const { auth } = useAuthStore.getState()
 
     // 如果已经有用户信息，说明已登录
-    if (auth.user) {
+    // The original-account entry must authenticate its own identity, even when
+    // another account with the same username is already signed in.
+    if (auth.user && search.qxchat !== '1') {
       const target =
         sanitizeAuthRedirect(search?.redirect, window.location.origin) ??
         '/dashboard'

@@ -27,7 +27,7 @@ import { UserAuthForm } from './components/user-auth-form'
 
 export function SignIn() {
   const { t } = useTranslation()
-  const { redirect } = useSearch({ from: '/(auth)/sign-in' })
+  const { redirect, qxchat } = useSearch({ from: '/(auth)/sign-in' })
   const { status } = useStatus()
 
   return (
@@ -52,7 +52,7 @@ export function SignIn() {
             )}
         </div>
 
-        <UserAuthForm redirectTo={redirect} />
+        <UserAuthForm key={qxchat ?? 'newapi'} redirectTo={redirect} />
 
         <TermsFooter
           variant='sign-in'

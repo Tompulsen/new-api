@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -31,6 +32,7 @@ import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialo
 import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
+import { UnifiedWalletCard } from './components/unified-wallet-card'
 import { WalletStatsCard } from './components/wallet-stats-card'
 import { DEFAULT_DISCOUNT_RATE, PAYMENT_TYPES } from './constants'
 import {
@@ -61,6 +63,7 @@ interface WalletProps {
 
 export function Wallet(props: WalletProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const [user, setUser] = useState<UserWalletData | null>(null)
   const [userLoading, setUserLoading] = useState(true)
   const [topupAmount, setTopupAmount] = useState(0)
@@ -116,6 +119,7 @@ export function Wallet(props: WalletProps) {
       const response = await getSelf()
       if (response.success && response.data) {
         setUser(response.data as UserWalletData)
+        void queryClient.invalidateQueries({ queryKey: ['unified-wallet'] })
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -123,7 +127,7 @@ export function Wallet(props: WalletProps) {
     } finally {
       setUserLoading(false)
     }
-  }, [])
+  }, [queryClient])
 
   useEffect(() => {
     fetchUser()
@@ -289,6 +293,7 @@ export function Wallet(props: WalletProps) {
         <SectionPageLayout.Content>
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
             <WalletStatsCard user={user} loading={userLoading} />
+            <UnifiedWalletCard />
 
             <div
               className={

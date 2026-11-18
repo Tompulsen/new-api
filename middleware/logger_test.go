@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -61,10 +62,22 @@ func TestSetUpLoggerMasksQueryCredentials(t *testing.T) {
 }
 
 func TestAccessAndPanicLogsFollowLogRotation(t *testing.T) {
+	// The logger deliberately owns its file until process exit. A child keeps
+	// that lifecycle real while allowing Windows to remove the test directory.
+	logDir := os.Getenv("NEWAPI_TEST_LOG_ROTATION_DIR")
+	if logDir == "" {
+		executable, err := os.Executable()
+		require.NoError(t, err)
+		command := exec.Command(executable, "-test.run=^TestAccessAndPanicLogsFollowLogRotation$")
+		command.Env = append(os.Environ(), "NEWAPI_TEST_LOG_ROTATION_DIR="+t.TempDir())
+		output, err := command.CombinedOutput()
+		require.NoError(t, err, "%s", output)
+		return
+	}
 	previousMode, previousWriter, previousErrorWriter := gin.Mode(), gin.DefaultWriter, gin.DefaultErrorWriter
 	previousLogDir := *common.LogDir
 	gin.SetMode(gin.TestMode)
-	*common.LogDir = t.TempDir()
+	*common.LogDir = logDir
 	t.Cleanup(func() {
 		gin.SetMode(previousMode)
 		gin.DefaultWriter, gin.DefaultErrorWriter = previousWriter, previousErrorWriter

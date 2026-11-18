@@ -67,7 +67,7 @@ export async function login(payload: LoginPayload): Promise<LoginResponse> {
       passwordFields = { password: payload.password }
     }
     const res = await api.post<LoginResponse>(
-      `/api/user/login?turnstile=${turnstile}`,
+      `/api/user/login?turnstile=${encodeURIComponent(turnstile)}`,
       {
         username: payload.username,
         ...passwordFields,
@@ -84,6 +84,21 @@ export async function login(payload: LoginPayload): Promise<LoginResponse> {
     }
     throw error
   }
+}
+
+export async function selectLoginIdentity(
+  flowToken: string,
+  selectionId: string
+): Promise<LoginResponse> {
+  const res = await api.post<LoginResponse>(
+    '/api/user/login/select',
+    {
+      flow_token: flowToken,
+      selection_id: selectionId,
+    },
+    { skipAuthRefresh: true, singleUseAuthorization: true }
+  )
+  return res.data
 }
 
 // Two-factor authentication login

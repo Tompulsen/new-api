@@ -273,18 +273,31 @@ func taskModelName(task *model.Task) string {
 // 返回资金来源是否已成功退还；失败时保留 quota，供显式重试或人工对账。
 func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool {
 	quota := task.Quota
+	unified := task.PrivateData.WalletOperationID != ""
+	if unified {
+		delta, applied, err := model.ChangeWalletTaskQuota(task, 0, "refunded")
+		if err != nil {
+			logger.LogWarn(ctx, "unified wallet task refund failed: "+err.Error())
+			return false
+		}
+		if !applied {
+			return true
+		}
+		quota = -delta
+	}
 	if quota == 0 {
 		return true
 	}
-
 	// 1. 退还资金来源（钱包或订阅）
-	if err := taskAdjustFunding(task, -quota); err != nil {
-		logger.LogWarn(ctx, common.LogText("failed to refund the funding source, task %s: %s", task.TaskID, err.Error()))
-		return false
-	}
+	if !unified {
+		if err := taskAdjustFunding(task, -quota); err != nil {
+			logger.LogWarn(ctx, common.LogText("failed to refund the funding source, task %s: %s", task.TaskID, err.Error()))
+			return false
+		}
 
-	// 2. 退还令牌额度
-	taskAdjustTokenQuota(ctx, task, -quota)
+		// 2. 退还令牌额度
+		taskAdjustTokenQuota(ctx, task, -quota)
+	}
 
 	// 3. 回减预扣时累计的用户和渠道用量，请求次数保持不变
 	model.UpdateUserUsedQuota(task.UserId, -quota)
@@ -308,8 +321,10 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	// 5. 资金退款完成后再清除持久化标记。
 	// 回写失败必须显式告警，避免漏掉潜在的重复退款风险。
 	task.Quota = 0
-	if err := task.UpdateQuota(); err != nil {
-		logger.LogError(ctx, common.LogText("refund succeeded but clearing the task quota failed, task %s: %s", task.TaskID, err.Error()))
+	if !unified {
+		if err := task.UpdateQuota(); err != nil {
+			logger.LogError(ctx, common.LogText("refund succeeded but clearing the task quota failed, task %s: %s", task.TaskID, err.Error()))
+		}
 	}
 	return true
 }
@@ -324,6 +339,19 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	}
 	preConsumedQuota := task.Quota
 	quotaDelta := actualQuota - preConsumedQuota
+	unified := task.PrivateData.WalletOperationID != ""
+	if unified {
+		delta, applied, err := model.ChangeWalletTaskQuota(task, actualQuota, "settled")
+		if err != nil {
+			logger.LogError(ctx, "unified wallet task settlement failed: "+err.Error())
+			return
+		}
+		if !applied {
+			return
+		}
+		quotaDelta = delta
+		preConsumedQuota = actualQuota - delta
+	}
 
 	if quotaDelta == 0 {
 		logger.LogInfo(ctx, common.LogText("task %s pre-consumed quota matches the actual quota (%s, %s)",
@@ -340,19 +368,21 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	))
 
 	// 调整资金来源
-	if err := taskAdjustFunding(task, quotaDelta); err != nil {
-		logger.LogError(ctx, common.LogText("failed to adjust funding for the difference, task %s: %s", task.TaskID, err.Error()))
-		return
+	if !unified {
+		if err := taskAdjustFunding(task, quotaDelta); err != nil {
+			logger.LogError(ctx, common.LogText("failed to adjust funding for the difference, task %s: %s", task.TaskID, err.Error()))
+			return
+		}
+
+		// 调整令牌额度
+		taskAdjustTokenQuota(ctx, task, quotaDelta)
+
+		task.Quota = actualQuota
+		if err := task.UpdateQuota(); err != nil {
+			logger.LogError(ctx, common.LogText("failed to write back the settled task quota, task %s: %s", task.TaskID, err.Error()))
+		}
+
 	}
-
-	// 调整令牌额度
-	taskAdjustTokenQuota(ctx, task, quotaDelta)
-
-	task.Quota = actualQuota
-	if err := task.UpdateQuota(); err != nil {
-		logger.LogError(ctx, common.LogText("failed to write back the settled task quota, task %s: %s", task.TaskID, err.Error()))
-	}
-
 	// 提交阶段已经累计过一次请求；结算阶段只调整最终用量。
 	model.UpdateUserUsedQuota(task.UserId, quotaDelta)
 	model.UpdateChannelUsedQuota(task.ChannelId, quotaDelta)

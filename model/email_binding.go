@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -138,8 +139,21 @@ func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, o
 		if err := ensureEmailAvailableWithTx(tx, state.Email, identity.UserID); err != nil {
 			return err
 		}
+		if state.Email != state.CurrentEmail {
+			if err := ClaimLoginIdentifiersWithTx(tx, identity.UserID, state.Email); err != nil {
+				if errors.Is(err, ErrLoginIdentifierTaken) {
+					return ErrEmailAlreadyTaken
+				}
+				return err
+			}
+		}
 		if err := tx.Model(&User{}).Where("id = ?", identity.UserID).Update("email", state.Email).Error; err != nil {
 			return err
+		}
+		if os.Getenv("QXCHAT_IDENTITY_ENABLED") == "1" {
+			if err := RecordQXChatVerifiedEmailWithTx(tx, identity.UserID, state.Email); err != nil {
+				return err
+			}
 		}
 		return tx.Model(flow).Update("consumed_at", time.Now()).Error
 	})
@@ -198,7 +212,7 @@ func validateEmailBindingAccountWithTx(tx *gorm.DB, identity AuthSessionIdentity
 	if err := tx.Select("email").First(&user, identity.UserID).Error; err != nil {
 		return err
 	}
-	if NormalizeEmail(user.Email) != state.CurrentEmail || state.CurrentEmail == state.Email {
+	if NormalizeEmail(user.Email) != state.CurrentEmail || (state.CurrentEmail == state.Email && os.Getenv("QXCHAT_IDENTITY_ENABLED") != "1") {
 		return ErrAccountBindingChanged
 	}
 	return nil

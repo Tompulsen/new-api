@@ -65,10 +65,21 @@ export interface BindEmailPayload {
 // API Responses
 // ============================================================================
 
+export interface LoginIdentitySelection {
+  requires_identity_selection: true
+  flow_token: string
+  expires_at: number
+  candidates: {
+    selection_id: string
+    username: string
+    account_label: string
+  }[]
+}
+
 export interface LoginResponse {
   success: boolean
   message: string
-  data?: LoginResult
+  data?: LoginResult | LoginIdentitySelection
 }
 
 export interface Login2FAResponse {

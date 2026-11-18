@@ -16,7 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useRef } from 'react'
+import { useSearch } from '@tanstack/react-router'
+import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -32,6 +33,7 @@ import {
 
 export function OtpForm() {
   const { t } = useTranslation()
+  const search = useSearch({ strict: false })
   // Transfer the pending challenge from the navigation handoff into this page's
   // lifetime. Reloading or leaving the page cannot resume it from browser storage.
   const pending = useRef(
@@ -45,11 +47,17 @@ export function OtpForm() {
   const { requestLoginVerification, cancel } = verification
   const { handleLoginSuccess, redirectToLogin } = useAuthRedirect()
   const completed = useRef(false)
+  const retryRedirect = pending?.redirectTo ?? search.redirect
+  const retryQXChat = pending?.qxchatEntry ?? search.qxchat === '1'
+  const retryLogin = useCallback(
+    () => redirectToLogin(retryRedirect, retryQXChat),
+    [redirectToLogin, retryRedirect, retryQXChat]
+  )
 
   useEffect(() => {
     if (completed.current) return
     if (!pending) {
-      redirectToLogin()
+      retryLogin()
       return
     }
     if (sessionID !== initialSessionID) {
@@ -70,7 +78,7 @@ export function OtpForm() {
           return
         }
         if (!bundle) {
-          redirectToLogin()
+          retryLogin()
           return
         }
         completed.current = true
@@ -79,7 +87,7 @@ export function OtpForm() {
       } catch (error) {
         if (!active) return
         handleServerError(AuthOperationError.from(error))
-        redirectToLogin()
+        retryLogin()
       }
     })()
     return () => {
@@ -93,7 +101,7 @@ export function OtpForm() {
     requestLoginVerification,
     cancel,
     handleLoginSuccess,
-    redirectToLogin,
+    retryLogin,
     t,
   ])
 

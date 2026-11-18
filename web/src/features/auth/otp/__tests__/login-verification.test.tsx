@@ -29,6 +29,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
+import { otpSearchSchema } from '@/routes/(auth)/otp'
 import { useAuthStore, type AuthBundle } from '@/stores/auth-store'
 
 import { useAuthRedirect } from '../../hooks/use-auth-redirect'
@@ -52,12 +53,22 @@ const bundle: AuthBundle = {
   },
 }
 
-function PrimaryLoginHarness(props: { result: LoginResult }) {
+function PrimaryLoginHarness(props: {
+  result: LoginResult
+  redirectTo?: string
+  qxchatEntry?: boolean
+}) {
   const { handleLoginResult } = useAuthRedirect()
   return (
     <button
       type='button'
-      onClick={() => void handleLoginResult(props.result, '/pricing?view=grid')}
+      onClick={() =>
+        void handleLoginResult(
+          props.result,
+          props.redirectTo ?? '/pricing?view=grid',
+          props.qxchatEntry
+        )
+      }
     >
       Primary authentication succeeded
     </button>
@@ -66,9 +77,22 @@ function PrimaryLoginHarness(props: { result: LoginResult }) {
 
 function renderLoginVerification(
   hasChallenge = true,
-  primaryResult?: LoginResult
+  primaryResult?: LoginResult,
+  options: {
+    qxchatEntry?: boolean
+    redirectTo?: string
+    existingAccount?: boolean
+    entry?: string
+  } = {}
 ) {
   useAuthStore.getState().auth.reset('complete')
+  if (options.existingAccount) {
+    useAuthStore.getState().auth.setBundle({
+      ...bundle,
+      user: { ...bundle.user, id: 1520 },
+      session: { ...bundle.session, sid: 'previous-account-session' },
+    })
+  }
   if (hasChallenge) {
     useAuthStore.getState().auth.setPendingLoginVerification({
       challenge: {
@@ -77,7 +101,8 @@ function renderLoginVerification(
         expires_at: Math.floor(Date.now() / 1000) + 300,
         methods: [{ method: '2fa', available: true }],
       },
-      redirectTo: '/pricing?view=grid',
+      redirectTo: options.redirectTo ?? '/pricing?view=grid',
+      qxchatEntry: options.qxchatEntry,
     })
   }
   const root = createRootRoute({ component: Outlet })
@@ -86,6 +111,7 @@ function renderLoginVerification(
       getParentRoute: () => root,
       path: '/otp',
       component: OtpForm,
+      validateSearch: otpSearchSchema,
     }),
     createRoute({
       getParentRoute: () => root,
@@ -99,15 +125,24 @@ function renderLoginVerification(
     }),
     createRoute({
       getParentRoute: () => root,
+      path: '/community-authorize',
+      component: () => <div>Community authorization destination</div>,
+    }),
+    createRoute({
+      getParentRoute: () => root,
       path: '/primary-login',
       component: () =>
-        primaryResult ? <PrimaryLoginHarness result={primaryResult} /> : null,
+        primaryResult ? (
+          <PrimaryLoginHarness result={primaryResult} {...options} />
+        ) : null,
     }),
   ]
   const router = createRouter({
     routeTree: root.addChildren(routes),
     history: createMemoryHistory({
-      initialEntries: [primaryResult ? '/primary-login' : '/otp'],
+      initialEntries: [
+        options.entry ?? (primaryResult ? '/primary-login' : '/otp'),
+      ],
     }),
   })
   const view = render(<RouterProvider router={router} />)
@@ -274,3 +309,121 @@ it('rejects submission after the five-minute challenge deadline without sending 
   expect(post).not.toHaveBeenCalled()
   expect(useAuthStore.getState().auth.user).toBeNull()
 })
+
+const originalQXChatRedirect =
+  '/community-authorize?state=original-state&code_challenge=original-pkce&redirect_uri=https%3A%2F%2Fpai.zaiduyu.top%2Fapi%2Fnewapi%2Fcallback'
+
+it.each(
+  [true, false].flatMap((qxchatEntry) =>
+    ['cancel', 'expired', 'server failure'].map((outcome) => ({
+      qxchatEntry,
+      outcome,
+    }))
+  )
+)(
+  'returns MFA $outcome to the same login mode ($qxchatEntry) and SSO destination while retaining the other session',
+  async ({ outcome, qxchatEntry }) => {
+    const post = vi
+      .spyOn(api, 'post')
+      .mockRejectedValue(new Error('Verification unavailable'))
+    const { router } = renderLoginVerification(
+      false,
+      {
+        require_verification: true,
+        flow_token: 'original-account-challenge',
+        expires_at: Math.floor(Date.now() / 1000) + 300,
+        methods: [{ method: '2fa', available: true }],
+      },
+      {
+        qxchatEntry,
+        redirectTo: originalQXChatRedirect,
+        existingAccount: true,
+      }
+    )
+    const user = userEvent.setup()
+    await user.click(
+      await screen.findByRole('button', {
+        name: 'Primary authentication succeeded',
+      })
+    )
+    const input = await screen.findByLabelText(
+      'Authenticator code or backup code'
+    )
+    expect(router.state.location.search.qxchat).toBe(
+      qxchatEntry ? '1' : undefined
+    )
+    expect(router.state.location.search.redirect).toBe(originalQXChatRedirect)
+    expect(router.state.location.href).not.toContain('flow_token')
+    expect(router.state.location.href).not.toContain(
+      'original-account-challenge'
+    )
+    if (outcome !== 'cancel') {
+      await user.type(input, '123456')
+      if (outcome === 'expired') {
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 301000)
+      }
+      await user.click(screen.getByRole('button', { name: 'Verify' }))
+      expect(await screen.findByRole('alert')).toBeVisible()
+    }
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(router.state.location.pathname).toBe('/sign-in'))
+    expect(router.state.location.search.qxchat).toBe(
+      qxchatEntry ? '1' : undefined
+    )
+    expect(router.state.location.search.redirect).toBe(originalQXChatRedirect)
+    expect(useAuthStore.getState().auth.user?.id).toBe(1520)
+    expect(useAuthStore.getState().auth.pendingLoginVerification).toBeNull()
+    if (outcome !== 'server failure') expect(post).not.toHaveBeenCalled()
+  }
+)
+
+it('completes QXChat MFA with the authenticated account and the unchanged authorization destination', async () => {
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: true, data: bundle },
+  })
+  const { router } = renderLoginVerification(true, undefined, {
+    qxchatEntry: true,
+    redirectTo: originalQXChatRedirect,
+    existingAccount: true,
+  })
+  const user = userEvent.setup()
+  await user.type(
+    await screen.findByLabelText('Authenticator code or backup code'),
+    '123456'
+  )
+  await user.click(screen.getByRole('button', { name: 'Verify' }))
+  await waitFor(() =>
+    expect(router.state.location.href).toBe(originalQXChatRedirect)
+  )
+  expect(useAuthStore.getState().auth.user?.id).toBe(42)
+})
+
+it.each(
+  [true, false].flatMap((qxchatEntry) =>
+    [
+      originalQXChatRedirect,
+      'https://untrusted.example/',
+      '//untrusted.example/',
+    ].map((destination) => ({ qxchatEntry, destination }))
+  )
+)(
+  'retains login mode $qxchatEntry after an OTP reload and sanitizes $destination',
+  async ({ destination, qxchatEntry }) => {
+    const post = vi.spyOn(api, 'post')
+    const { router } = renderLoginVerification(false, undefined, {
+      existingAccount: true,
+      entry: `/otp?${qxchatEntry ? 'qxchat=1&' : ''}redirect=${encodeURIComponent(destination)}`,
+    })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/sign-in'))
+    expect(router.state.location.search.qxchat).toBe(
+      qxchatEntry ? '1' : undefined
+    )
+    expect(router.state.location.search.redirect).toBe(
+      destination === originalQXChatRedirect
+        ? originalQXChatRedirect
+        : undefined
+    )
+    expect(useAuthStore.getState().auth.user?.id).toBe(1520)
+    expect(post).not.toHaveBeenCalled()
+  }
+)
