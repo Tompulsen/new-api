@@ -23,8 +23,9 @@ import { I18nextProvider } from 'react-i18next'
 import { expect, test, vi } from 'vitest'
 
 import zh from '@/i18n/locales/zh.json'
+import { api } from '@/lib/api'
 
-import type { TaskPluginOption } from '../../api'
+import { getTaskPluginOptions, type TaskPluginOption } from '../../api'
 import { ChannelProviderPicker } from '../drawers/channel-provider-picker'
 
 const plugins = [
@@ -69,6 +70,53 @@ const extensionPlugin: TaskPluginOption = {
   channelTypes: [1, 55],
   models: ['sora-2'],
 }
+
+test.each([null, undefined])(
+  'a plugin returned with models=%s remains selectable with zero preset models',
+  async (models) => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      data: {
+        success: true,
+        data: [
+          { key: 'sd-compatible', name: 'SD Compatible', models },
+          plugins[1],
+        ],
+      },
+    })
+    const options = await getTaskPluginOptions()
+    const select = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ChannelProviderPicker
+        isCreating
+        plugins={options}
+        canBindPlugin
+        loading={false}
+        failed={false}
+        disabled={false}
+        onRetry={vi.fn()}
+        onSelect={select}
+      />
+    )
+    await user.click(screen.getByRole('tab', { name: 'Plugins' }))
+    const sd = screen.getByRole('option', {
+      name: 'SD Compatible Plugin sd-compatible',
+    })
+    expect(within(sd).getByText('0 models')).toBeVisible()
+    expect(
+      within(
+        screen.getByRole('option', {
+          name: 'Video Provider Plugin another-video',
+        })
+      ).getByText('2 models')
+    ).toBeVisible()
+    await user.click(sd)
+    expect(select).toHaveBeenCalledWith({
+      kind: 'plugin',
+      key: 'sd-compatible',
+    })
+  }
+)
 
 test('creation hides legacy Zhipu from categories and numeric search while GLM remains selectable', async () => {
   const user = userEvent.setup()
