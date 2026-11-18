@@ -7800,6 +7800,17 @@
     "This sign-in request is invalid. Return to the originating site and try again.": "Yêu cầu đăng nhập không hợp lệ. Hãy quay lại trang ban đầu và thử lại.",
     "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.": "Đây không phải tài khoản 章鱼 liên kết với hồ sơ cộng đồng của bạn. Hãy đổi tài khoản trong trung tâm tài khoản trước khi tiếp tục.",
     "Could not continue. Please try again.": "Không thể tiếp tục. Vui lòng thử lại.",
-    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "Tài khoản này đã liên kết với hồ sơ QXChat. Hãy liên hệ hỗ trợ trước khi xóa để giữ quyền truy cập điểm và lịch sử."
+    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "Tài khoản này đã liên kết với hồ sơ QXChat. Hãy liên hệ hỗ trợ trước khi xóa để giữ quyền truy cập điểm và lịch sử.",
+    "Choose your account": "Chọn tài khoản",
+    "This login name matches more than one account. Confirm the account you want to use.": "Tên đăng nhập này khớp với nhiều tài khoản. Xác nhận tài khoản bạn muốn sử dụng.",
+    "Sign in as {{username}}": "Đăng nhập với {{username}}",
+    "Back to sign in": "Quay lại đăng nhập",
+    "Account selection expired. Please sign in again.": "Lựa chọn tài khoản đã hết hạn. Vui lòng đăng nhập lại.",
+    "Login names": "Tên đăng nhập",
+    "Unified account": "Tài khoản thống nhất",
+    "Available login names": "Tên đăng nhập khả dụng",
+    "Unable to load login names. Please try again.": "Không thể tải tên đăng nhập. Vui lòng thử lại.",
+    "No unique login name is available. Please update your account.": "Chưa có tên đăng nhập duy nhất. Vui lòng cập nhật tài khoản.",
+    "Please use your current unique account username to sign in.": "Vui lòng dùng tên người dùng duy nhất hiện tại của tài khoản để đăng nhập."
   }
 }

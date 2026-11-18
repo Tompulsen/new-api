@@ -7800,6 +7800,17 @@
     "This sign-in request is invalid. Return to the originating site and try again.": "登录请求无效，请返回发起登录的网站后重试。",
     "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.": "当前章鱼账号与社区资料绑定的账号不一致，请先在账号中心切换账号。",
     "Could not continue. Please try again.": "暂时无法继续，请重试。",
-    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "此账号已关联 QXChat，不能直接删除。为保留积分和记录的访问权限，请先联系客服处理。"
+    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "此账号已关联 QXChat，不能直接删除。为保留积分和记录的访问权限，请先联系客服处理。",
+    "Choose your account": "确认登录账号",
+    "This login name matches more than one account. Confirm the account you want to use.": "该登录名关联多个账号，请确认本次要使用的账号。",
+    "Sign in as {{username}}": "登录 {{username}}",
+    "Back to sign in": "返回账号登录",
+    "Account selection expired. Please sign in again.": "账号选择已过期，请重新登录。",
+    "Login names": "登录账号",
+    "Unified account": "统一账号",
+    "Available login names": "可用登录名",
+    "Unable to load login names. Please try again.": "登录名加载失败，请重试。",
+    "No unique login name is available. Please update your account.": "暂无唯一登录名，请更新账号信息。",
+    "Please use your current unique account username to sign in.": "请使用当前唯一的账号用户名登录。"
   }
 }

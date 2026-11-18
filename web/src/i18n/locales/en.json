@@ -7800,6 +7800,17 @@
     "This sign-in request is invalid. Return to the originating site and try again.": "This sign-in request is invalid. Return to the originating site and try again.",
     "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.": "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.",
     "Could not continue. Please try again.": "Could not continue. Please try again.",
-    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records."
+    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.",
+    "Choose your account": "Choose your account",
+    "This login name matches more than one account. Confirm the account you want to use.": "This login name matches more than one account. Confirm the account you want to use.",
+    "Sign in as {{username}}": "Sign in as {{username}}",
+    "Back to sign in": "Back to sign in",
+    "Account selection expired. Please sign in again.": "Account selection expired. Please sign in again.",
+    "Login names": "Login names",
+    "Unified account": "Unified account",
+    "Available login names": "Available login names",
+    "Unable to load login names. Please try again.": "Unable to load login names. Please try again.",
+    "No unique login name is available. Please update your account.": "No unique login name is available. Please update your account.",
+    "Please use your current unique account username to sign in.": "Please use your current unique account username to sign in."
   }
 }

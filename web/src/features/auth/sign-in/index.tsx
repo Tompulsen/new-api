@@ -35,10 +35,9 @@ export function SignIn() {
       <div className='w-full space-y-8'>
         <div className='space-y-2'>
           <h2 className='text-center text-2xl font-semibold tracking-tight sm:text-left'>
-            {t(qxchat === '1' ? 'Sign in with a QXChat account' : 'Sign in')}
+            {t('Sign in')}
           </h2>
-          {qxchat !== '1' &&
-            !status?.self_use_mode_enabled &&
+          {!status?.self_use_mode_enabled &&
             status?.register_enabled !== false && (
               <p className='text-muted-foreground text-left text-sm sm:text-base'>
                 {t("Don't have an account?")}{' '}
@@ -53,11 +52,7 @@ export function SignIn() {
             )}
         </div>
 
-        <UserAuthForm
-          key={qxchat ?? 'newapi'}
-          redirectTo={redirect}
-          initialQXChatLogin={qxchat === '1'}
-        />
+        <UserAuthForm key={qxchat ?? 'newapi'} redirectTo={redirect} />
 
         <TermsFooter
           variant='sign-in'

@@ -139,6 +139,14 @@ func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, o
 		if err := ensureEmailAvailableWithTx(tx, state.Email, identity.UserID); err != nil {
 			return err
 		}
+		if state.Email != state.CurrentEmail {
+			if err := ClaimLoginIdentifiersWithTx(tx, identity.UserID, state.Email); err != nil {
+				if errors.Is(err, ErrLoginIdentifierTaken) {
+					return ErrEmailAlreadyTaken
+				}
+				return err
+			}
+		}
 		if err := tx.Model(&User{}).Where("id = ?", identity.UserID).Update("email", state.Email).Error; err != nil {
 			return err
 		}

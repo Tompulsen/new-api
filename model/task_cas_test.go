@@ -39,6 +39,7 @@ func TestMain(m *testing.M) {
 	if err := db.AutoMigrate(
 		&Task{},
 		&User{},
+		&LoginIdentifierReservation{},
 		&QXChatIdentity{},
 		&UserSession{},
 		&AuthFlow{},
@@ -74,6 +75,7 @@ func truncateTables(t *testing.T) {
 		DB.Exec("DELETE FROM tasks")
 		DB.Exec("DELETE FROM auth_flows")
 		DB.Exec("DELETE FROM external_identity_claims")
+		DB.Exec("DELETE FROM login_identifier_reservations")
 		DB.Exec("DELETE FROM user_sessions")
 		DB.Exec("DELETE FROM passkey_credentials")
 		DB.Exec("DELETE FROM two_fa_backup_codes")

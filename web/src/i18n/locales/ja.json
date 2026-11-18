@@ -7800,6 +7800,17 @@
     "This sign-in request is invalid. Return to the originating site and try again.": "ログイン要求が無効です。元のサイトに戻って再試行してください。",
     "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.": "この 章鱼 アカウントはコミュニティのプロフィールに紐付いていません。アカウントセンターで切り替えてから続行してください。",
     "Could not continue. Please try again.": "続行できませんでした。再試行してください。",
-    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "このアカウントには QXChat プロフィールが紐付いています。ポイントと履歴へのアクセスを保つため、削除前にサポートへご連絡ください。"
+    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "このアカウントには QXChat プロフィールが紐付いています。ポイントと履歴へのアクセスを保つため、削除前にサポートへご連絡ください。",
+    "Choose your account": "アカウントを選択",
+    "This login name matches more than one account. Confirm the account you want to use.": "このログイン名は複数のアカウントに関連付けられています。使用するアカウントを確認してください。",
+    "Sign in as {{username}}": "{{username}} としてログイン",
+    "Back to sign in": "ログインに戻る",
+    "Account selection expired. Please sign in again.": "アカウント選択の有効期限が切れました。再度ログインしてください。",
+    "Login names": "ログイン名",
+    "Unified account": "共通アカウント",
+    "Available login names": "利用可能なログイン名",
+    "Unable to load login names. Please try again.": "ログイン名を読み込めませんでした。再試行してください。",
+    "No unique login name is available. Please update your account.": "一意のログイン名がありません。アカウント情報を更新してください。",
+    "Please use your current unique account username to sign in.": "現在の一意のユーザー名でログインしてください。"
   }
 }

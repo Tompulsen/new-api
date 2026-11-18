@@ -78,11 +78,11 @@ func Login(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	user := model.User{
-		Username: username,
-		Password: password,
-	}
-	err = user.ValidateAndFill()
+	completePasswordLogin(c, username, password)
+}
+
+func completePasswordLogin(c *gin.Context, username, password string) {
+	user, selection, err := model.AuthenticatePasswordIdentifier(username, password, c.GetHeader("Origin"))
 	if err != nil {
 		switch {
 		case errors.Is(err, model.ErrDatabase):
@@ -90,13 +90,52 @@ func Login(c *gin.Context) {
 			common.ApiErrorT(c, "Database error, please contact the administrator")
 		case errors.Is(err, model.ErrUserEmptyCredentials):
 			common.ApiErrorT(c, "Invalid parameters")
+		case errors.Is(err, model.ErrLoginIdentifierTooMany):
+			common.ApiError(c, err)
 		default:
 			common.ApiErrorT(c, "Username or password is incorrect, or user has been banned")
 		}
 		return
 	}
+	setAuthNoStore(c)
+	if selection != nil {
+		common.ApiSuccess(c, selection)
+		return
+	}
+	setupLogin(user, nil, c)
+}
 
-	setupLogin(&user, nil, c)
+func SelectLoginIdentity(c *gin.Context) {
+	if !common.PasswordLoginEnabled {
+		common.ApiErrorT(c, "Password login has been disabled by administrator")
+		return
+	}
+	var request struct {
+		FlowToken   string `json:"flow_token"`
+		SelectionID string `json:"selection_id"`
+	}
+	if common.DecodeJson(c.Request.Body, &request) != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	user, err := model.ConfirmPasswordLoginIdentity(request.FlowToken, request.SelectionID, c.GetHeader("Origin"))
+	if err != nil {
+		common.ApiErrorT(c, "Username or password is incorrect, or user has been banned")
+		return
+	}
+	c.Set("login_method", "password")
+	setAuthNoStore(c)
+	setupLogin(user, nil, c)
+}
+
+func GetSelfLoginIdentifiers(c *gin.Context) {
+	result, err := model.GetUserLoginIdentifiers(c.GetInt("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	setAuthNoStore(c)
+	common.ApiSuccess(c, result)
 }
 
 // loginMethodFromContext 根据请求路径推导登录方式，用于登录审计日志。

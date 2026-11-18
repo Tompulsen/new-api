@@ -285,11 +285,14 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 
 // CheckUserExistOrDeleted check if user exist or deleted, if not exist, return false, nil, if deleted or exist, return true, nil
 func CheckUserExistOrDeleted(username string, email string) (bool, error) {
+	available, err := loginIdentifiersAvailable(DB, 0, username, email)
+	if err != nil || !available {
+		return !available, err
+	}
 	var user User
 
 	// err := DB.Unscoped().First(&user, "username = ? or email = ?", username, email).Error
 	// check email if empty
-	var err error
 	email = NormalizeEmail(email)
 	if email == "" {
 		err = DB.Unscoped().First(&user, "username = ?", username).Error
@@ -333,6 +336,10 @@ func IsEmailAvailable(email string, excludeUserID int) (bool, error) {
 	email = NormalizeEmail(email)
 	if email == "" {
 		return true, nil
+	}
+	available, err := loginIdentifiersAvailable(DB, excludeUserID, email)
+	if err != nil || !available {
+		return available, err
 	}
 	query := emailQuery(DB, email)
 	if excludeUserID > 0 {
@@ -631,6 +638,7 @@ func (user *User) TransferAffQuotaToQuota(quota int) error {
 }
 
 func (user *User) prepareForInsert(tx *gorm.DB) error {
+	user.Username = strings.TrimSpace(user.Username)
 	user.Email = NormalizeEmail(user.Email)
 	if err := ensureEmailAvailableWithTx(tx, user.Email, 0); err != nil {
 		return err
@@ -697,7 +705,10 @@ func (user *User) Insert(inviterId int) error {
 				user.SetSetting(defaultSetting)
 			}
 
-			return tx.Create(user).Error
+			if err := tx.Create(user).Error; err != nil {
+				return err
+			}
+			return ClaimLoginIdentifiersWithTx(tx, user.Id, user.Username, user.Email)
 		})
 	}); err != nil {
 		return err
@@ -760,7 +771,10 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 			user.SetSetting(defaultSetting)
 		}
 
-		return tx.Create(user).Error
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+		return ClaimLoginIdentifiersWithTx(tx, user.Id, user.Username, user.Email)
 	})
 }
 
@@ -824,8 +838,20 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 		}
 	}
 	newUser := *user
+	newUser.Username = strings.TrimSpace(newUser.Username)
+	newUser.Email = NormalizeEmail(newUser.Email)
 	current := User{}
-	if err = tx.First(&current, user.Id).Error; err != nil {
+	if err = lockForUpdate(tx).First(&current, user.Id).Error; err != nil {
+		return err
+	}
+	var changedIdentifiers []string
+	if newUser.Username != "" && NormalizeLoginIdentifier(newUser.Username) != NormalizeLoginIdentifier(current.Username) {
+		changedIdentifiers = append(changedIdentifiers, newUser.Username)
+	}
+	if newUser.Email != "" && newUser.Email != NormalizeEmail(current.Email) {
+		changedIdentifiers = append(changedIdentifiers, newUser.Email)
+	}
+	if err = ClaimLoginIdentifiersWithTx(tx, user.Id, changedIdentifiers...); err != nil {
 		return err
 	}
 	// Updates(struct) ignores zero values. Match that behavior when deciding
@@ -886,6 +912,7 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	}
 
 	newUser := *user
+	newUser.Username = strings.TrimSpace(newUser.Username)
 	updates := map[string]any{
 		"username":     newUser.Username,
 		"display_name": newUser.DisplayName,
@@ -897,8 +924,13 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	}
 
 	current := User{}
-	if err = tx.First(&current, user.Id).Error; err != nil {
+	if err = lockForUpdate(tx).First(&current, user.Id).Error; err != nil {
 		return err
+	}
+	if NormalizeLoginIdentifier(newUser.Username) != NormalizeLoginIdentifier(current.Username) {
+		if err = ClaimLoginIdentifiersWithTx(tx, user.Id, newUser.Username); err != nil {
+			return err
+		}
 	}
 	authChanged := (updatePassword && current.Password != newUser.Password) || current.Group != newUser.Group
 	if authChanged {
@@ -1079,21 +1111,17 @@ func (user *User) ValidateAndFill() (err error) {
 	if username == "" || password == "" {
 		return ErrUserEmptyCredentials
 	}
-	// find by username or email
-	err = DB.Where("username = ? OR email = ?", username, username).First(user).Error
+	candidates, err := passwordLoginCandidates(DB, username)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrInvalidCredentials
-		}
-		return fmt.Errorf("%w: %v", ErrDatabase, err)
+		return err
 	}
-	if user.Password == "" {
+	if len(candidates) != 1 {
+		return ErrLoginIdentifierAmbiguous
+	}
+	if !passwordLoginAllowed(candidates[0], password) {
 		return ErrInvalidCredentials
 	}
-	okay := common.ValidatePasswordAndHash(password, user.Password)
-	if !okay || user.Status != common.UserStatusEnabled {
-		return ErrInvalidCredentials
-	}
+	*user = candidates[0]
 	return nil
 }
 

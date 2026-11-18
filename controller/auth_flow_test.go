@@ -315,9 +315,13 @@ func TestSecurityLoginFactorStateDoesNotAddPasswordLoginQueries(t *testing.T) {
 	assert.False(t, state.HasTwoFA)
 	assert.Equal(t, 1, queries, "factor availability must be one database round trip")
 	queries = 0
+	_, _, err = model.AuthenticatePasswordIdentifier("enrollment-user", "enrollment-password", "")
+	require.NoError(t, err)
+	credentialQueries := queries
+	queries = 0
 	response := securityEnrollmentRequest("POST", "/api/user/login", `{"username":"enrollment-user","password":"enrollment-password"}`, "", service.AuthIdentity{}, Login)
 	assert.Contains(t, response.Body.String(), `"require_verification":true`)
-	assert.Equal(t, 2, queries, "only the existing credential lookup and the replacement factor-state lookup run before the challenge")
+	assert.Equal(t, credentialQueries+1, queries, "MFA adds only one factor-state lookup to unified credential resolution")
 }
 
 type boundLoginOAuthProvider struct {
@@ -1125,7 +1129,7 @@ func TestOAuthBindIgnoresLegacyGitHubUsernames(t *testing.T) {
 }
 
 func TestOAuthRegistrationPersistsInviter(t *testing.T) {
-	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.Log{})
+	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.LoginIdentifierReservation{}, &model.Log{})
 	oldDB, oldLogDB := model.DB, model.LOG_DB
 	oldMain, oldLog := common.MainDatabaseType(), common.LogDatabaseType()
 	oldRedis, oldRegister := common.RedisEnabled, common.RegisterEnabled

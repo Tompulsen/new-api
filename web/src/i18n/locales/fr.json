@@ -7800,6 +7800,17 @@
     "This sign-in request is invalid. Return to the originating site and try again.": "Cette demande de connexion est invalide. Revenez au site d’origine et réessayez.",
     "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.": "Ce compte 章鱼 n’est pas lié à votre profil communautaire. Changez de compte dans le centre de compte avant de continuer.",
     "Could not continue. Please try again.": "Impossible de continuer. Réessayez.",
-    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "Ce compte est lié à un profil QXChat. Contactez l’assistance avant de le supprimer pour conserver l’accès à ses points et à son historique."
+    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "Ce compte est lié à un profil QXChat. Contactez l’assistance avant de le supprimer pour conserver l’accès à ses points et à son historique.",
+    "Choose your account": "Choisissez votre compte",
+    "This login name matches more than one account. Confirm the account you want to use.": "Cet identifiant correspond à plusieurs comptes. Confirmez le compte à utiliser.",
+    "Sign in as {{username}}": "Se connecter en tant que {{username}}",
+    "Back to sign in": "Retour à la connexion",
+    "Account selection expired. Please sign in again.": "La sélection du compte a expiré. Veuillez vous reconnecter.",
+    "Login names": "Identifiants de connexion",
+    "Unified account": "Compte unifié",
+    "Available login names": "Identifiants disponibles",
+    "Unable to load login names. Please try again.": "Impossible de charger les identifiants. Veuillez réessayer.",
+    "No unique login name is available. Please update your account.": "Aucun identifiant unique disponible. Veuillez mettre à jour votre compte.",
+    "Please use your current unique account username to sign in.": "Utilisez le nom d’utilisateur unique actuel de votre compte pour vous connecter."
   }
 }

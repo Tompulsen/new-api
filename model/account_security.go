@@ -42,6 +42,11 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 		}
 		changes := map[string]any{"password": hash}
 		if update.Username != "" {
+			if NormalizeLoginIdentifier(update.Username) != NormalizeLoginIdentifier(current.Username) {
+				if err := ClaimLoginIdentifiersWithTx(tx, current.Id, update.Username); err != nil {
+					return err
+				}
+			}
 			changes["username"] = update.Username
 		}
 		if update.DisplayName != "" {

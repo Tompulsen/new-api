@@ -93,13 +93,17 @@ func QXChatIdentityLogin(c *gin.Context) {
 		writeQXChatIdentityError(c, err)
 		return
 	}
-	user, err := service.LoginQXChatIdentity(c.Request.Context(), request.Username, password)
-	if err != nil {
-		writeQXChatIdentityError(c, err)
-		return
+	mapping, lookupErr := model.FindQXChatIdentity(request.Username)
+	if lookupErr != nil || mapping.State != model.QXChatIdentityActive {
+		// The explicit legacy endpoint may finish an existing source migration.
+		// Once active, it uses exactly the same account confirmation as /login.
+		if _, err := service.LoginQXChatIdentity(c.Request.Context(), request.Username, password); err != nil {
+			writeQXChatIdentityError(c, err)
+			return
+		}
 	}
 	c.Set("login_method", "qxchat")
-	setupLogin(user, nil, c)
+	completePasswordLogin(c, request.Username, password)
 }
 
 func QXChatIdentityBind(c *gin.Context) {
@@ -212,9 +216,10 @@ func QXChatSessionValidate(c *gin.Context) {
 		return
 	}
 	var request struct {
-		SessionProof string `json:"session_proof"`
-		SourceID     string `json:"source_id"`
-		UserID       int    `json:"newapi_user_id"`
+		SessionProof   string `json:"session_proof"`
+		SourceID       string `json:"source_id"`
+		UserID         int    `json:"newapi_user_id"`
+		IncludeAccount bool   `json:"include_account"`
 	}
 	if common.Unmarshal(body, &request) != nil {
 		writeQXChatSessionResponse(c, http.StatusBadRequest, gin.H{"active": false})
@@ -223,6 +228,15 @@ func QXChatSessionValidate(c *gin.Context) {
 	for _, origin := range ssoOrigins("QXCHAT_SSO") {
 		identity, err := model.ValidateQXChatSession(request.SessionProof, origin, request.SourceID, request.UserID)
 		if err == nil {
+			if request.IncludeAccount {
+				account, err := model.GetUserLoginIdentifiers(identity.UserID)
+				if err != nil {
+					writeQXChatSessionResponse(c, http.StatusServiceUnavailable, gin.H{"active": false})
+					return
+				}
+				identity.AccountUsername, identity.AccountEmail = &account.Username, &account.Email
+				identity.LoginIdentifiers = &account.LoginIdentifiers
+			}
 			writeQXChatSessionResponse(c, http.StatusOK, identity)
 			return
 		}

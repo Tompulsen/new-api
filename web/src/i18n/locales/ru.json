@@ -7800,6 +7800,17 @@
     "This sign-in request is invalid. Return to the originating site and try again.": "Запрос на вход недействителен. Вернитесь на исходный сайт и повторите попытку.",
     "This is not the 章鱼 account linked to your community profile. Switch accounts in the account center before continuing.": "Этот аккаунт 章鱼 не привязан к вашему профилю сообщества. Смените аккаунт в центре управления перед продолжением.",
     "Could not continue. Please try again.": "Не удалось продолжить. Повторите попытку.",
-    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "Этот аккаунт связан с профилем QXChat. Перед удалением обратитесь в поддержку, чтобы сохранить доступ к баллам и истории."
+    "This account has a linked QXChat profile. Contact support before deleting it to preserve access to its points and records.": "Этот аккаунт связан с профилем QXChat. Перед удалением обратитесь в поддержку, чтобы сохранить доступ к баллам и истории.",
+    "Choose your account": "Выберите аккаунт",
+    "This login name matches more than one account. Confirm the account you want to use.": "Это имя соответствует нескольким аккаунтам. Подтвердите нужный аккаунт.",
+    "Sign in as {{username}}": "Войти как {{username}}",
+    "Back to sign in": "Назад ко входу",
+    "Account selection expired. Please sign in again.": "Время выбора аккаунта истекло. Войдите снова.",
+    "Login names": "Имена для входа",
+    "Unified account": "Единый аккаунт",
+    "Available login names": "Доступные имена для входа",
+    "Unable to load login names. Please try again.": "Не удалось загрузить имена для входа. Повторите попытку.",
+    "No unique login name is available. Please update your account.": "Уникальное имя для входа отсутствует. Обновите данные аккаунта.",
+    "Please use your current unique account username to sign in.": "Используйте текущее уникальное имя пользователя для входа."
   }
 }

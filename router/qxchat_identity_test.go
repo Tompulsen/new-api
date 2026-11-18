@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestQXChatIdentityLoginDoesNotRequireTurnstile(t *testing.T) {
+func TestQXChatIdentityLoginRequiresTurnstileWhenEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("QXCHAT_IDENTITY_ENABLED", "")
 	t.Setenv("QXCHAT_IDENTITY_SECRET", "")
@@ -36,9 +36,11 @@ func TestQXChatIdentityLoginDoesNotRequireTurnstile(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, request)
 
-	// The identity provider is disabled in this test, so the handler returns 404.
-	// A 400 would mean the Turnstile middleware blocked the request first.
-	require.Equal(t, http.StatusNotFound, recorder.Code)
+	// The compatibility path uses the same credential verifier as /login.
+	// It must not bypass the challenge before reaching the disabled provider.
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":false`)
+	require.Contains(t, recorder.Body.String(), "Turnstile token is empty")
 }
 
 func TestQXChatIdentityLoginRetainsRequestBodyLimit(t *testing.T) {
@@ -93,7 +95,7 @@ func TestQXChatIdentityLoginRetainsCriticalRateLimit(t *testing.T) {
 
 	engine := gin.New()
 	RegisterQXChatIdentityRoutes(engine.Group("/api"))
-	for attempt, want := range []int{http.StatusNotFound, http.StatusTooManyRequests} {
+	for attempt, want := range []int{http.StatusOK, http.StatusTooManyRequests} {
 		request := httptest.NewRequest(http.MethodPost, "/api/user/login/qxchat", nil)
 		request.RemoteAddr = "198.51.100.47:12345"
 		recorder := httptest.NewRecorder()

@@ -352,6 +352,13 @@ func prepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 				if err := tx.Unscoped().Model(&User{}).Where("LOWER(username) IN ? OR LOWER(email) IN ?", identifiers, identifiers).Count(&collisions).Error; err != nil {
 					return err
 				}
+				availableNames, err := loginIdentifiersAvailable(tx, 0, identifiers...)
+				if err != nil {
+					return err
+				}
+				if !availableNames {
+					collisions++
+				}
 				if collisions > 0 && !offline {
 					return ErrQXChatIdentityConflict
 				}
@@ -364,6 +371,13 @@ func prepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 						if err := tx.Unscoped().Model(&User{}).Where("LOWER(username) = ? OR LOWER(email) = ?", username, username).Count(&collisions).Error; err != nil {
 							return err
 						}
+						free, err := loginIdentifiersAvailable(tx, 0, username)
+						if err != nil {
+							return err
+						}
+						if !free {
+							collisions++
+						}
 						if collisions == 0 {
 							available = true
 							break
@@ -375,6 +389,13 @@ func prepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 					}
 					if err := tx.Unscoped().Model(&User{}).Where("LOWER(username) = ? OR LOWER(email) = ?", email, email).Count(&collisions).Error; err != nil {
 						return err
+					}
+					freeEmail, err := loginIdentifiersAvailable(tx, 0, email)
+					if err != nil {
+						return err
+					}
+					if !freeEmail {
+						collisions++
 					}
 					if collisions > 0 {
 						email = ""
@@ -390,7 +411,10 @@ func prepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 					return nil
 				}
 				// Deliberately bypass Insert/FinishInsert: migration is not registration.
-				return tx.Create(&user).Error
+				if err := tx.Create(&user).Error; err != nil {
+					return err
+				}
+				return ClaimLoginIdentifiersWithTx(tx, user.Id, user.Username, user.Email)
 			}); err != nil {
 				return err
 			}
@@ -399,6 +423,9 @@ func prepareQXChatIdentity(profile QXChatSourceProfile, target *AuthSessionIdent
 			RequestID: profile.RequestID, CredentialVersion: profile.CredentialVersion, AuthorityVersion: 1, State: QXChatIdentityPending, Imported: target == nil}
 		if !apply {
 			return nil
+		}
+		if err := claimLoginIdentifiersWithTx(tx, user.Id, offline || target != nil, identity.SourceUsername, identity.SourceEmail); err != nil {
+			return err
 		}
 		return tx.Create(&identity).Error
 	})
@@ -487,13 +514,16 @@ func activateQXChatIdentity(expected QXChatIdentity, target *AuthSessionIdentity
 }
 
 type QXChatSessionIdentity struct {
-	Active           bool   `json:"active"`
-	UserID           int    `json:"newapi_user_id"`
-	SourceID         string `json:"source_id"`
-	AuthorityVersion int64  `json:"authority_version"`
-	Username         string `json:"username"`
-	SessionProof     string `json:"session_proof,omitempty"`
-	ExpiresAt        int64  `json:"expires_at"`
+	Active           bool      `json:"active"`
+	UserID           int       `json:"newapi_user_id"`
+	SourceID         string    `json:"source_id"`
+	AuthorityVersion int64     `json:"authority_version"`
+	Username         string    `json:"username"`
+	SessionProof     string    `json:"session_proof,omitempty"`
+	ExpiresAt        int64     `json:"expires_at"`
+	AccountUsername  *string   `json:"account_username,omitempty"`
+	AccountEmail     *string   `json:"account_email,omitempty"`
+	LoginIdentifiers *[]string `json:"login_identifiers,omitempty"`
 }
 
 // The one-use PKCE identity grant creates a QX-only server-side session reference.
