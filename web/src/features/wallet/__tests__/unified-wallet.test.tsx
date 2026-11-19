@@ -74,16 +74,24 @@ it('displays separate charity and permanent balances and changes formatting with
   )
   expect(await screen.findByText('100.000001')).toBeVisible()
   expect(screen.getByText('2,500')).toBeVisible()
+  expect(screen.getByText('Welfare points')).toBeVisible()
+  expect(screen.getByText('Permanent points')).toBeVisible()
+  expect(screen.queryByText('Community points')).not.toBeInTheDocument()
   expect(
-    screen.getByText(
+    screen.queryByText(
+      '¥1 = 5,000 points. Welfare points are used first in the community.'
+    )
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByText(
       'Your valid QX points are shared automatically. Spending and expiry update this balance.'
     )
-  ).toBeVisible()
+  ).not.toBeInTheDocument()
   expect(
-    screen.getByText(
+    screen.queryByText(
       'All available New API balance, shown as permanent community points.'
     )
-  ).toBeVisible()
+  ).not.toBeInTheDocument()
   await act(() => i18n.changeLanguage('fr'))
   expect(screen.getByText('100,000001')).toBeVisible()
 })
