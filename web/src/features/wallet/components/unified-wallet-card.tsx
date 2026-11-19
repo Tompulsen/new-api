@@ -23,7 +23,13 @@ import { useTranslation } from 'react-i18next'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
-import { Card, CardAction, CardContent, CardHeader } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getUnifiedWallet } from '../api'
@@ -71,6 +77,7 @@ export function UnifiedWalletCard() {
   return (
     <Card>
       <CardHeader>
+        <CardTitle>{t('Available community points')}</CardTitle>
         <CardAction>
           <Button
             variant='outline'
@@ -90,11 +97,17 @@ export function UnifiedWalletCard() {
             <dd className='mt-1 font-mono text-xl break-all tabular-nums'>
               {formatCommunityPoints(query.data.charity_points, language)}
             </dd>
+            <dd className='text-muted-foreground mt-1 text-sm'>
+              {t('For use in the community')}
+            </dd>
           </div>
           <div>
             <dt className='font-medium'>{t('Permanent points')}</dt>
             <dd className='mt-1 font-mono text-xl break-all tabular-nums'>
               {formatCommunityPoints(query.data.permanent_points, language)}
+            </dd>
+            <dd className='text-muted-foreground mt-1 text-sm'>
+              {t('Account balance converted at ✦1 = 5,000 points')}
             </dd>
           </div>
         </dl>

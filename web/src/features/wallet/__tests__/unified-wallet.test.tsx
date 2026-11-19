@@ -23,6 +23,7 @@ import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import zh from '@/i18n/locales/zh.json'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -62,7 +63,7 @@ it('displays separate charity and permanent balances and changes formatting with
   const i18n = createInstance()
   await i18n.init({
     lng: 'en',
-    resources: { en: { translation: {} }, fr: { translation: {} } },
+    resources: { en: { translation: {} }, zh, fr: { translation: {} } },
     fallbackLng: 'en',
   })
   render(
@@ -76,6 +77,11 @@ it('displays separate charity and permanent balances and changes formatting with
   expect(screen.getByText('2,500')).toBeVisible()
   expect(screen.getByText('Welfare points')).toBeVisible()
   expect(screen.getByText('Permanent points')).toBeVisible()
+  expect(screen.getByText('Available community points')).toBeVisible()
+  expect(screen.getByText('For use in the community')).toBeVisible()
+  expect(
+    screen.getByText('Account balance converted at ✦1 = 5,000 points')
+  ).toBeVisible()
   expect(screen.queryByText('Community points')).not.toBeInTheDocument()
   expect(
     screen.queryByText(
@@ -92,6 +98,10 @@ it('displays separate charity and permanent balances and changes formatting with
       'All available New API balance, shown as permanent community points.'
     )
   ).not.toBeInTheDocument()
+  await act(() => i18n.changeLanguage('zh'))
+  expect(screen.getByText('社区可用积分')).toBeVisible()
+  expect(screen.getByText('用于社区内消费')).toBeVisible()
+  expect(screen.getByText('账户余额按 ✦1 = 5,000 积分折算')).toBeVisible()
   await act(() => i18n.changeLanguage('fr'))
   expect(screen.getByText('100,000001')).toBeVisible()
 })
