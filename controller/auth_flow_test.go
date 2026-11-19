@@ -1129,7 +1129,9 @@ func TestOAuthBindIgnoresLegacyGitHubUsernames(t *testing.T) {
 }
 
 func TestOAuthRegistrationPersistsInviter(t *testing.T) {
-	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.LoginIdentifierReservation{}, &model.Log{})
+	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.Token{}, &model.LoginIdentifierReservation{}, &model.Log{}, &model.CommunityReferralConfig{}, &model.CommunityReferralCode{}, &model.CommunityReferral{})
+	t.Setenv("UNIFIED_WALLET_ENABLED", "true")
+	t.Setenv("UNIFIED_WALLET_QUOTA_PER_CNY", "500000")
 	oldDB, oldLogDB := model.DB, model.LOG_DB
 	oldMain, oldLog := common.MainDatabaseType(), common.LogDatabaseType()
 	oldRedis, oldRegister := common.RedisEnabled, common.RegisterEnabled
@@ -1146,11 +1148,40 @@ func TestOAuthRegistrationPersistsInviter(t *testing.T) {
 	})
 	inviter := model.User{Username: "inviter", AffCode: "valid-aff", Status: common.UserStatusEnabled}
 	require.NoError(t, db.Create(&inviter).Error)
+	invitation, err := model.GetCommunityReferralOverview(communityTestOrigin, inviter.Id, 0)
+	require.NoError(t, err)
+	t.Run("password registration binds once without immediate rewards", func(t *testing.T) {
+		oldPassword, oldEmail := common.PasswordRegisterEnabled, common.EmailVerificationEnabled
+		common.PasswordRegisterEnabled, common.EmailVerificationEnabled = true, false
+		t.Cleanup(func() { common.PasswordRegisterEnabled, common.EmailVerificationEnabled = oldPassword, oldEmail })
+		router := gin.New()
+		router.POST("/api/user/register", Register)
+		body, err := common.Marshal(map[string]string{"username": "welfare-password", "password": "Test-only-password-2026", "aff_code": invitation.Code})
+		require.NoError(t, err)
+		for attempt := range 2 {
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest("POST", "/api/user/register", strings.NewReader(string(body))))
+			var result struct {
+				Success bool `json:"success"`
+			}
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+			assert.Equal(t, attempt == 0, result.Success, response.Body.String())
+		}
+		var user model.User
+		require.NoError(t, db.Where("username = ?", "welfare-password").First(&user).Error)
+		var referral model.CommunityReferral
+		require.NoError(t, db.First(&referral, "invitee_id = ?", user.Id).Error)
+		assert.Equal(t, inviter.Id, referral.InviterID)
+		assert.Equal(t, "waiting_topup", referral.State)
+		assert.Zero(t, user.Quota)
+		assert.Zero(t, user.InviterId)
+	})
 	for _, tc := range []struct {
 		name, code string
 		want       int
 	}{
 		{"valid", "valid-aff", inviter.Id}, {"missing", "", 0}, {"invalid", "unknown-aff", 0},
+		{"community", invitation.Code, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -1162,11 +1193,21 @@ func TestOAuthRegistrationPersistsInviter(t *testing.T) {
 			require.NoError(t, db.First(&stored, created.Id).Error)
 			assert.Equal(t, tc.want, stored.InviterId)
 			assert.Equal(t, identity.ProviderUserID, stored.GitHubId)
-			existing, _, err := findOrCreateOAuthUser(ctx, provider, identity, &oauth.OAuthToken{}, "valid-aff")
+			existing, _, err := findOrCreateOAuthUser(ctx, provider, identity, &oauth.OAuthToken{}, invitation.Code)
 			require.NoError(t, err)
 			assert.Equal(t, created.Id, existing.Id)
 			require.NoError(t, db.First(&stored, created.Id).Error)
 			assert.Equal(t, tc.want, stored.InviterId, "login must not reassign the inviter")
+			var referrals []model.CommunityReferral
+			require.NoError(t, db.Where("invitee_id = ?", created.Id).Find(&referrals).Error)
+			if tc.name == "community" {
+				require.Len(t, referrals, 1)
+				assert.Equal(t, inviter.Id, referrals[0].InviterID)
+				assert.Equal(t, int64(5000), referrals[0].InviteePoints)
+				assert.Zero(t, stored.Quota, "OAuth registration does not trigger the old immediate affiliate bonus")
+			} else {
+				assert.Empty(t, referrals, "existing OAuth users cannot retroactively bind a welfare invitation")
+			}
 		})
 	}
 }

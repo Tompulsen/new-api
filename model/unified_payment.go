@@ -15,18 +15,23 @@ type VerifiedTopUpPayment struct {
 	Currency     string
 	PrincipalFen int64
 	Reference    string
+	Amount       string
 }
 
 func VerifiedPaymentMajor(currency, amount, reference string) (VerifiedTopUpPayment, error) {
 	fact := VerifiedTopUpPayment{Currency: strings.ToUpper(currency), Reference: reference}
-	if fact.Currency != "CNY" {
-		return fact, nil
-	}
 	if strings.TrimSpace(reference) == "" || len(reference) > 191 {
 		return fact, ErrInvalidTopUpQuota
 	}
 	value, err := decimal.NewFromString(amount)
-	if err != nil || !value.IsPositive() {
+	if err != nil || value.IsNegative() || len(amount) > 64 || value.Exponent() < -12 || value.Exponent() > 12 || value.GreaterThan(decimal.NewFromInt(int64(common.MaxWalletQuota))) {
+		return fact, ErrInvalidTopUpQuota
+	}
+	fact.Amount = value.String()
+	if fact.Currency != "CNY" {
+		return fact, nil
+	}
+	if !value.IsPositive() {
 		return fact, ErrInvalidTopUpQuota
 	}
 	fen := value.Mul(decimal.NewFromInt(100))
@@ -60,7 +65,26 @@ func creditCompletedTopUp(tx *gorm.DB, topup *TopUp, quota int, updates map[stri
 		}
 		topup.PaymentReference = fact.Reference
 		topup.PaymentVerified = fact.Currency != ""
-		if err := tx.Model(topup).Updates(map[string]any{"payment_currency": topup.PaymentCurrency, "payment_principal_fen": topup.PaymentPrincipalFen, "payment_reference": topup.PaymentReference, "payment_verified": topup.PaymentVerified}).Error; err != nil {
+		topup.PaymentAmount, topup.PaymentPositive = "", false
+		if fact.Amount != "" {
+			amount, err := decimal.NewFromString(fact.Amount)
+			if err != nil || len(fact.Amount) > 64 || amount.IsNegative() || amount.Exponent() < -12 || amount.Exponent() > 12 {
+				return ErrInvalidTopUpQuota
+			}
+			topup.PaymentAmount = "major:" + amount.String()
+			topup.PaymentPositive = amount.IsPositive()
+		} else if fact.Currency == "CNY" || topup.PaymentProvider == PaymentProviderStripe || topup.PaymentProvider == PaymentProviderCreem {
+			// Stripe/Creem callbacks supply signature-verified currency minor units.
+			topup.PaymentAmount = "minor:" + strconv.FormatInt(fact.PrincipalFen, 10)
+			topup.PaymentPositive = fact.PrincipalFen > 0
+		}
+		topup.PaymentPositive = topup.PaymentPositive && topup.PaymentVerified && strings.TrimSpace(fact.Reference) != ""
+		if topup.PaymentPositive {
+			if err := recordVerifiedPaymentTx(tx, topup); err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(topup).Updates(map[string]any{"payment_currency": topup.PaymentCurrency, "payment_principal_fen": topup.PaymentPrincipalFen, "payment_reference": topup.PaymentReference, "payment_verified": topup.PaymentVerified, "payment_amount": topup.PaymentAmount, "payment_positive": topup.PaymentPositive}).Error; err != nil {
 			return err
 		}
 	}

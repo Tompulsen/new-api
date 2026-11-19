@@ -26,6 +26,8 @@ type TopUp struct {
 	LotteryCredit       *CommunityLotteryCreditSnapshot `json:"-" gorm:"serializer:json;type:text"`
 	PaymentCurrency     string                          `json:"payment_currency" gorm:"type:varchar(8)"`
 	PaymentPrincipalFen int64                           `json:"payment_principal_fen" gorm:"type:bigint"`
+	PaymentAmount       string                          `json:"-" gorm:"type:varchar(80)"`
+	PaymentPositive     bool                            `json:"-"`
 	PaymentVerified     bool                            `json:"-"`
 	PaymentReference    string                          `json:"-" gorm:"type:varchar(191);index"`
 	PaymentRefundedFen  int64                           `json:"payment_refunded_fen" gorm:"type:bigint"`

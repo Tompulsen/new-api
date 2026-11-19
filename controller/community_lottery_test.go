@@ -15,6 +15,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCommunityReferralServiceAuthorizationAndConfig(t *testing.T) {
+	user, _ := setupCommunitySSOTest(t)
+	t.Setenv("COMMUNITY_SSO_ORIGIN", communityTestOrigin)
+	t.Setenv("UNIFIED_WALLET_ENABLED", "true")
+	t.Setenv("UNIFIED_WALLET_QUOTA_PER_CNY", "500000")
+	secret := strings.Repeat("referral-service-test", 3)
+	t.Setenv("COMMUNITY_LOTTERY_SECRET", secret)
+	require.NoError(t, model.DB.AutoMigrate(&model.CommunityReferralConfig{}, &model.CommunityReferralCode{}, &model.CommunityReferral{}))
+	call := func(credential string, body map[string]any) *httptest.ResponseRecorder {
+		data, err := common.Marshal(body)
+		require.NoError(t, err)
+		response := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(response)
+		ctx.Request = httptest.NewRequest("POST", "/api/community-sso/referrals", strings.NewReader(string(data)))
+		ctx.Request.Header.Set("Authorization", "Bearer "+credential)
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		CommunityReferral(ctx)
+		return response
+	}
+	body := map[string]any{"client_id": communityTestOrigin, "action": "config"}
+	assert.Equal(t, http.StatusUnauthorized, call("wrong", body).Code)
+	body["client_id"] = "https://untrusted.test"
+	assert.Equal(t, http.StatusBadRequest, call(secret, body).Code)
+	body["client_id"] = communityTestOrigin
+	response := call(secret, body)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var config model.CommunityReferralConfig
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &config))
+	assert.Equal(t, int64(5000), config.InviterPoints)
+	body = map[string]any{"client_id": communityTestOrigin, "action": "configure", "version": 1, "enabled": true, "inviterPoints": 6000, "inviteePoints": 7000, "user_id": user.Id}
+	require.Equal(t, http.StatusOK, call(secret, body).Code)
+	assert.Equal(t, http.StatusConflict, call(secret, body).Code)
+	response = call(secret, map[string]any{"client_id": communityTestOrigin, "action": "status", "user_id": 0})
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.NotContains(t, response.Body.String(), secret)
+	var public model.CommunityReferralOverview
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &public))
+	assert.Empty(t, public.Code)
+	assert.Empty(t, public.Items)
+	assert.Nil(t, public.AsInvitee)
+}
+
 func TestCommunityLotteryCredit(t *testing.T) {
 	user, _ := setupCommunitySSOTest(t)
 	previousRate := common.QuotaPerUnit

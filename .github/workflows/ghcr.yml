@@ -19,7 +19,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-referrals:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: referral_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: referral_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U postgres -d referral_test"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Verify referral and wallet invariants on all databases
+        env:
+          TEST_MYSQL_DSN: root@tcp(127.0.0.1:3306)/referral_test?parseTime=true&charset=utf8mb4
+          TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=postgres dbname=referral_test sslmode=disable
+        run: |
+          for dialect in sqlite mysql postgres; do
+            TEST_TASK_DB_DIALECT="$dialect" go test ./model -run '^TestCommunityReferral|^TestUnifiedWallet' -count=1 -v
+          done
+          go test ./controller -run '^TestCommunityReferral|^TestOAuthRegistrationPersistsInviter|^TestUnifiedWallet|^TestCommunityLottery' -count=1
   publish:
+    needs: verify-referrals
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 40
