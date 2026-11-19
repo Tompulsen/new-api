@@ -278,6 +278,17 @@ func Register(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid input {{error}}", map[string]any{"error": err.Error()})
 		return
 	}
+	user.QXChatInviteCode = strings.ToUpper(strings.TrimSpace(user.QXChatInviteCode))
+	if user.QXChatInviteCode != "" {
+		if !common.EmailVerificationEnabled {
+			common.ApiErrorT(c, "QXChat invitations require email verification")
+			return
+		}
+		if err := model.ValidateQXChatInvitation(c.Request.Context(), user.QXChatInviteCode); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
 	if common.EmailVerificationEnabled {
 		if user.Email == "" || user.VerificationCode == "" {
 			common.ApiErrorT(c, "Email verification is enabled, please enter email address and verification code")
@@ -328,7 +339,10 @@ func Register(c *gin.Context) {
 			if err := cleanUser.InsertWithTx(tx, inviterId); err != nil {
 				return err
 			}
-			return model.RecordQXChatVerifiedEmailWithTx(tx, cleanUser.Id, cleanUser.Email)
+			if err := model.RecordQXChatVerifiedEmailWithTx(tx, cleanUser.Id, cleanUser.Email); err != nil {
+				return err
+			}
+			return model.RecordQXChatRegistrationInvitationWithTx(tx, &cleanUser, user.QXChatInviteCode)
 		})
 		if err == nil {
 			cleanUser.FinishInsert(inviterId)

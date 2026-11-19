@@ -7835,5 +7835,10 @@
     "Unable to load login names. Please try again.": "Unable to load login names. Please try again.",
     "No unique login name is available. Please update your account.": "No unique login name is available. Please update your account.",
     "Please use your current unique account username to sign in.": "Please use your current unique account username to sign in."
-  }
+  },
+  "QXChat invitation code (optional)": "QXChat invitation code (optional)",
+  "Automatically filled from your invitation link": "Automatically filled from your invitation link",
+  "New accounts receive QXChat invitation rewards after email verification. Use email registration for this invitation.": "New accounts receive QXChat invitation rewards after email verification. Use email registration for this invitation.",
+  "QXChat invitations require email verification": "QXChat invitations require email verification",
+  "QXChat invitation code is invalid or no longer available": "QXChat invitation code is invalid or no longer available"
 }

@@ -7835,5 +7835,10 @@
     "Unable to load login names. Please try again.": "ログイン名を読み込めませんでした。再試行してください。",
     "No unique login name is available. Please update your account.": "一意のログイン名がありません。アカウント情報を更新してください。",
     "Please use your current unique account username to sign in.": "現在の一意のユーザー名でログインしてください。"
-  }
+  },
+  "QXChat invitation code (optional)": "QXChat 招待コード（任意）",
+  "Automatically filled from your invitation link": "招待リンクから自動入力されます",
+  "New accounts receive QXChat invitation rewards after email verification. Use email registration for this invitation.": "新規アカウントはメール認証後に QXChat 招待報酬を受け取れます。この招待にはメールで登録してください。",
+  "QXChat invitations require email verification": "QXChat の招待にはメール認証が必要です",
+  "QXChat invitation code is invalid or no longer available": "QXChat 招待コードが無効、または利用できません"
 }

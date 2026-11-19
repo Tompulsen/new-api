@@ -21,6 +21,7 @@ import (
 const qxchatPreparePath = "/api/account-unification/prepare"
 const qxchatCommitPath = "/api/account-unification/commit"
 const qxchatProvisionPath = "/api/account-unification/provision"
+const QXChatReferralCheckPath = "/api/account-unification/referral-check"
 const QXChatSharedWalletPath = "/api/account-unification/shared-wallet"
 
 var ErrQXChatUnavailable = errors.New("QXChat account connection is temporarily unavailable. Please try again.")
@@ -38,7 +39,7 @@ func QXChatSourceEnabled() bool {
 
 // The configured source is operator-owned; user input never chooses a URL.
 func CallQXChatSource(ctx context.Context, path string, input, output any) error {
-	if !QXChatSourceEnabled() || (path != qxchatPreparePath && path != qxchatCommitPath && path != qxchatProvisionPath && path != QXChatSharedWalletPath) {
+	if !QXChatSourceEnabled() || (path != qxchatPreparePath && path != qxchatCommitPath && path != qxchatProvisionPath && path != QXChatSharedWalletPath && path != QXChatReferralCheckPath) {
 		return ErrQXChatUnavailable
 	}
 	base, err := url.Parse(os.Getenv("QXCHAT_IDENTITY_SOURCE_URL"))

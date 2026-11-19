@@ -57,7 +57,7 @@ jobs:
           for dialect in sqlite mysql postgres; do
             TEST_TASK_DB_DIALECT="$dialect" go test ./model -run '^TestCommunityReferral|^TestUnifiedWallet' -count=1 -v
           done
-          go test ./controller -run '^TestCommunityReferral|^TestOAuthRegistrationPersistsInviter|^TestUnifiedWallet|^TestCommunityLottery' -count=1
+          go test ./controller -run '^TestQXChat|^TestCommunityReferral|^TestOAuthRegistrationPersistsInviter|^TestUnifiedWallet|^TestCommunityLottery' -count=1
   publish:
     needs: verify-referrals
     if: github.ref == 'refs/heads/main'

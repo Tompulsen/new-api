@@ -33,17 +33,20 @@ var qxchatCredentialVersion = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // A retained row also prevents a deleted target account from being re-imported.
 type QXChatIdentity struct {
-	SourceID          string `json:"source_id" gorm:"type:varchar(36);primaryKey"`
-	UserID            int    `json:"newapi_user_id" gorm:"not null;uniqueIndex"`
-	SourceUsername    string `json:"-" gorm:"type:varchar(32);not null;index"`
-	SourceEmail       string `json:"-" gorm:"type:varchar(191);not null;index"`
-	RequestID         string `json:"-" gorm:"type:varchar(36);not null"`
-	CredentialVersion string `json:"-" gorm:"type:varchar(64);not null"`
-	AuthorityVersion  int64  `json:"authority_version" gorm:"not null"`
-	State             string `json:"state" gorm:"type:varchar(16);not null"`
-	Imported          bool   `json:"-" gorm:"not null"`
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	RegistrationInviteCode string `json:"-" gorm:"type:varchar(32);not null;default:''"`
+	ReferralStatus         string `json:"-" gorm:"type:varchar(16);not null;default:'';index"`
+	ReferralNextAttempt    int64  `json:"-" gorm:"not null;default:0"`
+	SourceID               string `json:"source_id" gorm:"type:varchar(36);primaryKey"`
+	UserID                 int    `json:"newapi_user_id" gorm:"not null;uniqueIndex"`
+	SourceUsername         string `json:"-" gorm:"type:varchar(32);not null;index"`
+	SourceEmail            string `json:"-" gorm:"type:varchar(191);not null;index"`
+	RequestID              string `json:"-" gorm:"type:varchar(36);not null"`
+	CredentialVersion      string `json:"-" gorm:"type:varchar(64);not null"`
+	AuthorityVersion       int64  `json:"authority_version" gorm:"not null"`
+	State                  string `json:"state" gorm:"type:varchar(16);not null"`
+	Imported               bool   `json:"-" gorm:"not null"`
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type QXChatSourceProfile struct {
@@ -61,15 +64,17 @@ type QXChatSourceProfile struct {
 }
 
 type QXChatRegistrationProfile struct {
-	RequestID         string `json:"request_id"`
-	SourceID          string `json:"source_id"`
-	NewAPIUserID      int    `json:"newapi_user_id"`
-	AuthorityVersion  int64  `json:"authority_version"`
-	CredentialVersion string `json:"credential_version"`
-	Username          string `json:"username"`
-	Email             string `json:"email"`
-	DisplayName       string `json:"display_name"`
-	IdentityOnly      bool   `json:"identity_only"`
+	RegistrationInviteCode    string `json:"registration_invite_code,omitempty"`
+	RegistrationEmailVerified bool   `json:"registration_email_verified"`
+	RequestID                 string `json:"request_id"`
+	SourceID                  string `json:"source_id"`
+	NewAPIUserID              int    `json:"newapi_user_id"`
+	AuthorityVersion          int64  `json:"authority_version"`
+	CredentialVersion         string `json:"credential_version"`
+	Username                  string `json:"username"`
+	Email                     string `json:"email"`
+	DisplayName               string `json:"display_name"`
+	IdentityOnly              bool   `json:"identity_only"`
 }
 
 // Only local email-code verification may write this claim; OAuth profile emails are not proof.
@@ -120,6 +125,13 @@ func PrepareQXChatRegistration(token, origin string) (*QXChatIdentity, *QXChatRe
 		}
 		err := tx.Where("user_id = ?", user.Id).First(&mapping).Error
 		if err == nil && mapping.State == QXChatIdentityActive {
+			if mapping.Imported || validateQXChatVerifiedEmailWithTx(tx, user) != nil {
+				return nil
+			}
+			// Refresh verified native identities created before invitation support, without binding an invitation.
+			profile = &QXChatRegistrationProfile{RequestID: mapping.RequestID, SourceID: mapping.SourceID, NewAPIUserID: mapping.UserID,
+				AuthorityVersion: mapping.AuthorityVersion, CredentialVersion: mapping.CredentialVersion, Username: mapping.SourceUsername,
+				Email: mapping.SourceEmail, DisplayName: user.DisplayName, IdentityOnly: mapping.SourceEmail == "", RegistrationEmailVerified: true}
 			return nil
 		}
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -156,7 +168,8 @@ func PrepareQXChatRegistration(token, origin string) (*QXChatIdentity, *QXChatRe
 		}
 		profile = &QXChatRegistrationProfile{RequestID: mapping.RequestID, SourceID: mapping.SourceID, NewAPIUserID: mapping.UserID,
 			AuthorityVersion: mapping.AuthorityVersion, CredentialVersion: mapping.CredentialVersion, Username: mapping.SourceUsername,
-			Email: mapping.SourceEmail, DisplayName: displayName, IdentityOnly: mapping.SourceEmail == ""}
+			Email: mapping.SourceEmail, DisplayName: displayName, IdentityOnly: mapping.SourceEmail == "", RegistrationInviteCode: mapping.RegistrationInviteCode,
+			RegistrationEmailVerified: validateQXChatVerifiedEmailWithTx(tx, user) == nil}
 		return nil
 	})
 	return &mapping, profile, err

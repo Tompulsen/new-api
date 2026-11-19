@@ -7835,5 +7835,10 @@
     "Unable to load login names. Please try again.": "Не удалось загрузить имена для входа. Повторите попытку.",
     "No unique login name is available. Please update your account.": "Уникальное имя для входа отсутствует. Обновите данные аккаунта.",
     "Please use your current unique account username to sign in.": "Используйте текущее уникальное имя пользователя для входа."
-  }
+  },
+  "QXChat invitation code (optional)": "Код приглашения QXChat (необязательно)",
+  "Automatically filled from your invitation link": "Заполняется автоматически из ссылки приглашения",
+  "New accounts receive QXChat invitation rewards after email verification. Use email registration for this invitation.": "Новые аккаунты получают награды QXChat после подтверждения почты. Для этого приглашения зарегистрируйтесь по электронной почте.",
+  "QXChat invitations require email verification": "Для приглашений QXChat необходимо подтверждение почты",
+  "QXChat invitation code is invalid or no longer available": "Код приглашения QXChat недействителен или больше недоступен"
 }

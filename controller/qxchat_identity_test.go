@@ -262,6 +262,14 @@ func startQXChatSourceFixture(t *testing.T) *qxchatSourceFixture {
 		status := http.StatusOK
 		var result any
 		switch r.URL.Path {
+		case "/api/account-unification/referral-check":
+			var input map[string]string
+			require.NoError(t, common.Unmarshal(body, &input))
+			if input["invite_code"] == "INVITE1234567" {
+				result = map[string]bool{"valid": true}
+			} else {
+				status, result = http.StatusBadRequest, map[string]string{"error": "invalid_invitation"}
+			}
 		case "/api/account-unification/provision":
 			fixture.provisionCalls++
 			var input model.QXChatRegistrationProfile
@@ -285,6 +293,11 @@ func startQXChatSourceFixture(t *testing.T) *qxchatSourceFixture {
 					}
 				}
 				result = map[string]any{"request_id": input.RequestID, "source_id": input.SourceID, "newapi_user_id": input.NewAPIUserID, "authority": "newapi", "authority_version": input.AuthorityVersion}
+				if input.RegistrationInviteCode != "" {
+					result.(map[string]any)["referral_processed"] = true
+					result.(map[string]any)["invite_code"] = input.RegistrationInviteCode
+					result.(map[string]any)["referral_status"] = "awarded"
+				}
 				if fixture.loseReceipt {
 					fixture.loseReceipt = false
 					status = http.StatusServiceUnavailable
@@ -571,10 +584,10 @@ func TestQXChatLegacyProvisionPreservesVerifiedEmailReservation(t *testing.T) {
 }
 
 func TestQXChatVerifiedRegistrationIsAtomicAndDirectlyUsable(t *testing.T) {
-	for _, scenario := range []string{"verified", "bad_code", "claim_failure"} {
+	for _, scenario := range []string{"verified", "bad_code", "claim_failure", "invited", "invalid_invite"} {
 		t.Run(scenario, func(t *testing.T) {
 			setupQXChatIdentityTest(t)
-			startQXChatSourceFixture(t)
+			source := startQXChatSourceFixture(t)
 			previousRegistration, previousPassword, previousEmail := common.RegisterEnabled, common.PasswordRegisterEnabled, common.EmailVerificationEnabled
 			previousDefaultToken, previousQuota := constant.GenerateDefaultToken, common.QuotaForNewUser
 			common.RegisterEnabled, common.PasswordRegisterEnabled, common.EmailVerificationEnabled = true, true, true
@@ -597,7 +610,14 @@ func TestQXChatVerifiedRegistrationIsAtomicAndDirectlyUsable(t *testing.T) {
 			if scenario == "bad_code" {
 				code = "654321"
 			}
-			request, err := common.Marshal(map[string]string{"username": "registered-native", "password": "registered-password", "email": "Registered@Example.com", "verification_code": code})
+			invitation := ""
+			if scenario == "invited" {
+				invitation = "INVITE1234567"
+			}
+			if scenario == "invalid_invite" {
+				invitation = "INVALIDCODE1"
+			}
+			request, err := common.Marshal(map[string]string{"username": "registered-native", "password": "registered-password", "email": "Registered@Example.com", "verification_code": code, "qx_invite_code": invitation})
 			require.NoError(t, err)
 			response := securityEnrollmentRequest("POST", "/api/user/register", string(request), "", service.AuthIdentity{}, Register)
 			var result securityEnrollmentResponse
@@ -605,7 +625,7 @@ func TestQXChatVerifiedRegistrationIsAtomicAndDirectlyUsable(t *testing.T) {
 			var users, claims int64
 			require.NoError(t, model.DB.Model(&model.User{}).Where("username = ?", "registered-native").Count(&users).Error)
 			require.NoError(t, model.DB.Model(&model.ExternalIdentityClaim{}).Where("provider = ?", "qxchat_verified_email").Count(&claims).Error)
-			if scenario != "verified" {
+			if scenario != "verified" && scenario != "invited" {
 				assert.False(t, result.Success, response.Body.String())
 				assert.Zero(t, users)
 				assert.Zero(t, claims)
@@ -617,6 +637,21 @@ func TestQXChatVerifiedRegistrationIsAtomicAndDirectlyUsable(t *testing.T) {
 			login := model.User{Username: "registered-native", Password: "registered-password"}
 			require.NoError(t, login.ValidateAndFill())
 			assert.Equal(t, 1234, login.Quota)
+			if scenario == "invited" {
+				var pending model.QXChatIdentity
+				require.NoError(t, model.DB.Where("user_id = ?", login.Id).First(&pending).Error)
+				assert.Equal(t, "INVITE1234567", pending.RegistrationInviteCode)
+				source.loseReceipt = true
+				require.Error(t, model.ProcessQXChatReferralRewards())
+				require.NoError(t, model.DB.Model(&pending).Update("referral_next_attempt", 0).Error)
+				require.NoError(t, model.ProcessQXChatReferralRewards())
+				require.NoError(t, model.ProcessQXChatReferralRewards())
+				require.NoError(t, model.DB.First(&pending, "user_id = ?", login.Id).Error)
+				assert.Equal(t, "awarded", pending.ReferralStatus)
+				assert.Equal(t, 2, source.provisionCalls)
+				assert.True(t, source.provisioned.RegistrationEmailVerified)
+				source.provisioned = nil
+			}
 			bundle, err := service.CreateLoginSession(login.Id, "password", "127.0.0.1", "registration-test")
 			require.NoError(t, err)
 			auth, err := service.ParseAccessToken(bundle.AccessToken)
@@ -1225,4 +1260,19 @@ func TestQXChatSSOSessionOrigins(t *testing.T) {
 			assert.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
 		})
 	}
+}
+
+func TestQXChatExistingVerifiedNativeRefreshesInvitationEligibility(t *testing.T) {
+	user, auth := setupQXChatIdentityTest(t)
+	source := startQXChatSourceFixture(t)
+	qxchatVerifiedNativeEmail(t, user, "native@example.com")
+	_, err := service.ExchangeQXChatIdentitySession(context.Background(), qxchatNativeGrant(t, auth), "https://qxchat.example.com")
+	require.NoError(t, err)
+	require.NotNil(t, source.provisioned)
+	assert.True(t, source.provisioned.RegistrationEmailVerified)
+	source.provisioned = nil
+	_, err = service.ExchangeQXChatIdentitySession(context.Background(), qxchatNativeGrant(t, auth), "https://qxchat.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, 2, source.provisionCalls)
+	assert.Empty(t, source.provisioned.RegistrationInviteCode, "an existing native account must never acquire a registration invitation")
 }

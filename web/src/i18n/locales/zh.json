@@ -7835,5 +7835,10 @@
     "Unable to load login names. Please try again.": "登录名加载失败，请重试。",
     "No unique login name is available. Please update your account.": "暂无唯一登录名，请更新账号信息。",
     "Please use your current unique account username to sign in.": "请使用当前唯一的账号用户名登录。"
-  }
+  },
+  "QXChat invitation code (optional)": "QXChat 邀请码（选填）",
+  "Automatically filled from your invitation link": "邀请链接会自动带入，也可手动填写",
+  "New accounts receive QXChat invitation rewards after email verification. Use email registration for this invitation.": "新账号完成邮箱验证后自动发放 QXChat 邀请奖励。请使用邮箱注册参与本次邀请。",
+  "QXChat invitations require email verification": "QXChat 邀请奖励需要完成邮箱验证",
+  "QXChat invitation code is invalid or no longer available": "QXChat 邀请码无效或已不可用，请检查邀请码"
 }

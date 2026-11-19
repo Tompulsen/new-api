@@ -7835,5 +7835,10 @@
     "Unable to load login names. Please try again.": "Impossible de charger les identifiants. Veuillez réessayer.",
     "No unique login name is available. Please update your account.": "Aucun identifiant unique disponible. Veuillez mettre à jour votre compte.",
     "Please use your current unique account username to sign in.": "Utilisez le nom d’utilisateur unique actuel de votre compte pour vous connecter."
-  }
+  },
+  "QXChat invitation code (optional)": "Code d’invitation QXChat (facultatif)",
+  "Automatically filled from your invitation link": "Renseigné automatiquement depuis votre lien d’invitation",
+  "New accounts receive QXChat invitation rewards after email verification. Use email registration for this invitation.": "Les nouveaux comptes reçoivent les récompenses QXChat après vérification de l’adresse e-mail. Inscrivez-vous par e-mail pour cette invitation.",
+  "QXChat invitations require email verification": "Les invitations QXChat nécessitent une vérification de l’adresse e-mail",
+  "QXChat invitation code is invalid or no longer available": "Le code d’invitation QXChat est invalide ou n’est plus disponible"
 }

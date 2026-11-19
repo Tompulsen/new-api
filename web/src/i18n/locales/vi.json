@@ -7835,5 +7835,10 @@
     "Unable to load login names. Please try again.": "Không thể tải tên đăng nhập. Vui lòng thử lại.",
     "No unique login name is available. Please update your account.": "Chưa có tên đăng nhập duy nhất. Vui lòng cập nhật tài khoản.",
     "Please use your current unique account username to sign in.": "Vui lòng dùng tên người dùng duy nhất hiện tại của tài khoản để đăng nhập."
-  }
+  },
+  "QXChat invitation code (optional)": "Mã mời QXChat (không bắt buộc)",
+  "Automatically filled from your invitation link": "Tự động điền từ liên kết mời",
+  "New accounts receive QXChat invitation rewards after email verification. Use email registration for this invitation.": "Tài khoản mới nhận thưởng QXChat sau khi xác minh email. Vui lòng đăng ký bằng email để dùng lời mời này.",
+  "QXChat invitations require email verification": "Lời mời QXChat yêu cầu xác minh email",
+  "QXChat invitation code is invalid or no longer available": "Mã mời QXChat không hợp lệ hoặc không còn khả dụng"
 }
