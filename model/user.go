@@ -77,7 +77,6 @@ func resolveUserSortOptions(sortOptions []UserSortOptions) UserSortOptions {
 // User if you add sensitive fields, don't forget to clean them in setupLogin function.
 // Otherwise, the sensitive information will be saved on local storage in plain text!
 type User struct {
-	QXChatInviteCode     string                     `json:"qx_invite_code,omitempty" gorm:"-"`
 	Id                   int                        `json:"id"`
 	Username             string                     `json:"username" gorm:"unique;index" validate:"max=20"`
 	Password             string                     `json:"password" gorm:"not null;" validate:"min=8,max=128"`
@@ -549,6 +548,21 @@ func GetSelfUserById(id int) (*User, error) {
 	return &profile.User, err
 }
 
+func (user *User) EnsureAffCode() error {
+	if user.Id == 0 {
+		return common.NewMessage("ID is empty!")
+	}
+	if user.AffCode != "" {
+		return nil
+	}
+	// Concurrent readers may have already filled the code after this user was loaded.
+	if err := DB.Model(&User{}).Where("id = ? AND (aff_code = ? OR aff_code IS NULL)", user.Id, "").
+		Update("aff_code", common.GetRandomString(4)).Error; err != nil {
+		return err
+	}
+	return DB.Select("aff_code").First(user, user.Id).Error
+}
+
 func GetUserIdByAffCode(affCode string) (int, error) {
 	if affCode == "" || communityReferralCodePattern.MatchString(affCode) {
 		return 0, errors.New("affiliate code is empty")
@@ -742,7 +756,7 @@ func (user *User) finishInsert(inviterId int) {
 	if common.QuotaForNewUser > 0 {
 		RecordLog(user.Id, LogTypeSystem, common.NewMessage("New user sign-up bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForNewUser)}))
 	}
-	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() {
+	if inviterId != 0 && !UnifiedWalletEnabled() && operation_setting.IsPaymentComplianceConfirmed() {
 		if common.QuotaForInvitee > 0 {
 			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
 			RecordLog(user.Id, LogTypeSystem, common.NewMessage("Invitation code bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForInvitee)}))
@@ -805,7 +819,7 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 	if common.QuotaForNewUser > 0 {
 		RecordLog(user.Id, LogTypeSystem, common.NewMessage("New user sign-up bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForNewUser)}))
 	}
-	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() {
+	if inviterId != 0 && !UnifiedWalletEnabled() && operation_setting.IsPaymentComplianceConfirmed() {
 		if common.QuotaForInvitee > 0 {
 			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
 			RecordLog(user.Id, LogTypeSystem, common.NewMessage("Invitation code bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForInvitee)}))

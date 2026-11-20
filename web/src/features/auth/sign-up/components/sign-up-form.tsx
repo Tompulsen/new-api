@@ -66,13 +66,6 @@ export function SignUpForm({
   const { t } = useTranslation()
   const [isLoading, setIsLoading] = useState(false)
   const [verificationCode, setVerificationCode] = useState('')
-  const [qxInviteCode, setQxInviteCode] = useState(
-    () =>
-      new URLSearchParams(window.location.search)
-        .get('qx_ref')
-        ?.trim()
-        .toUpperCase() ?? ''
-  )
   const [agreedToLegal, setAgreedToLegal] = useState(false)
   const [wechatCode, setWeChatCode] = useState('')
   const [isWeChatDialogOpen, setIsWeChatDialogOpen] = useState(false)
@@ -187,7 +180,6 @@ export function SignUpForm({
         email: data.email || undefined,
         verification_code: verificationCode || undefined,
         aff_code: getAffiliateCode(),
-        qx_invite_code: qxInviteCode || undefined,
         turnstile: submittedToken,
       })
 
@@ -277,28 +269,6 @@ export function SignUpForm({
         className={cn('grid gap-4', className)}
         {...props}
       >
-        <div className='grid gap-2'>
-          <Label htmlFor='qx-invite-code'>
-            {t('QXChat invitation code (optional)')}
-          </Label>
-          <Input
-            id='qx-invite-code'
-            autoComplete='off'
-            autoCapitalize='characters'
-            maxLength={32}
-            value={qxInviteCode}
-            onChange={(event) =>
-              setQxInviteCode(event.target.value.trim().toUpperCase())
-            }
-            placeholder={t('Automatically filled from your invitation link')}
-            aria-describedby='qx-invite-help'
-          />
-          <p id='qx-invite-help' className='text-muted-foreground text-sm'>
-            {t(
-              'New accounts receive QXChat invitation rewards after email verification. Use email registration for this invitation.'
-            )}
-          </p>
-        </div>
         {/* Username Field */}
         <FormField
           control={form.control}

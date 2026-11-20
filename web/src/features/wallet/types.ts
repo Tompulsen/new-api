@@ -41,6 +41,42 @@ export interface UnifiedWalletView {
   charity_expiring_at: number | null
 }
 
+export interface ReferralRecord {
+  inviteeId: number
+  inviterId: number
+  configVersion: number
+  inviterPoints: number
+  inviteePoints: number
+  minTopupCny: number
+  boundAt: number
+  state: 'waiting_topup' | 'pending' | 'credited'
+  creditedAt: number
+}
+
+export interface ReferralOverview {
+  config: {
+    version: number
+    enabled: boolean
+    inviterPoints: number
+    inviteePoints: number
+    inviterQuota: number
+    inviteeQuota: number
+    minTopupCny: number
+    updatedAt: number
+  }
+  code: string
+  invited: number
+  credited: number
+  waiting: number
+  pending: number
+  earnedPoints: number
+  earnedQuota: number
+  legacyInvited: number
+  asInvitee: ReferralRecord | null
+  items: ReferralRecord[]
+  nextCursor: number
+}
+
 /**
  * Standard API response types
  */

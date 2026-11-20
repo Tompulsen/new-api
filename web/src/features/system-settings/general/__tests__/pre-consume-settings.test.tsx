@@ -44,6 +44,7 @@ function Fixture() {
             QuotaForNewUser: 0,
             QuotaForInviter: 0,
             QuotaForInvitee: 0,
+            ReferralMinTopUpCNY: 10,
             TopUpLink: '',
             quota_setting: {
               enable_free_model_pre_consume: true,
@@ -138,6 +139,39 @@ test.each(['', '-1'])(
     await renderSettings()
     const input = screen.getByRole('spinbutton', {
       name: 'Wallet pre-consume bypass threshold (USD)',
+    })
+    fireEvent.change(input, { target: { value } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() => expect(input).toHaveAttribute('aria-invalid', 'true'))
+    expect(api.put).not.toHaveBeenCalled()
+  }
+)
+
+test.each(['0', '0.01', '10.25', '100000000'])(
+  'referral top-up threshold %s saves in CNY without changing reward amounts',
+  async (value) => {
+    await renderSettings()
+    const input = screen.getByRole('spinbutton', {
+      name: 'Referral top-up threshold (CNY)',
+    })
+    fireEvent.change(input, { target: { value } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() =>
+      expect(api.put).toHaveBeenCalledWith('/api/option/', {
+        key: 'ReferralMinTopUpCNY',
+        value: Number(value),
+      })
+    )
+    expect(api.put).toHaveBeenCalledTimes(1)
+  }
+)
+
+test.each(['', '-0.01', '0.001', '100000000.01'])(
+  'invalid referral top-up threshold "%s" prevents saving',
+  async (value) => {
+    await renderSettings()
+    const input = screen.getByRole('spinbutton', {
+      name: 'Referral top-up threshold (CNY)',
     })
     fireEvent.change(input, { target: { value } })
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))

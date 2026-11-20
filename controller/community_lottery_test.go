@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,15 @@ func TestCommunityReferralServiceAuthorizationAndConfig(t *testing.T) {
 	t.Setenv("UNIFIED_WALLET_QUOTA_PER_CNY", "500000")
 	secret := strings.Repeat("referral-service-test", 3)
 	t.Setenv("COMMUNITY_LOTTERY_SECRET", secret)
+	oldInviter, oldInvitee, oldMinimum := common.QuotaForInviter, common.QuotaForInvitee, common.ReferralMinTopUpCNY
+	payment := operation_setting.GetPaymentSetting()
+	oldPayment := *payment
+	common.QuotaForInviter, common.QuotaForInvitee, common.ReferralMinTopUpCNY = 500000, 250000, "10.29"
+	payment.ComplianceConfirmed, payment.ComplianceTermsVersion = true, operation_setting.CurrentComplianceTermsVersion
+	t.Cleanup(func() {
+		common.QuotaForInviter, common.QuotaForInvitee, common.ReferralMinTopUpCNY = oldInviter, oldInvitee, oldMinimum
+		*payment = oldPayment
+	})
 	require.NoError(t, model.DB.AutoMigrate(&model.CommunityReferralConfig{}, &model.CommunityReferralCode{}, &model.CommunityReferral{}))
 	call := func(credential string, body map[string]any) *httptest.ResponseRecorder {
 		data, err := common.Marshal(body)
@@ -41,12 +51,14 @@ func TestCommunityReferralServiceAuthorizationAndConfig(t *testing.T) {
 	body["client_id"] = communityTestOrigin
 	response := call(secret, body)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-	var config model.CommunityReferralConfig
+	var config model.UnifiedReferralConfig
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &config))
-	assert.Equal(t, int64(5000), config.InviterPoints)
+	assert.Equal(t, float64(5000), config.InviterPoints)
+	assert.Equal(t, float64(2500), config.InviteePoints)
+	assert.Equal(t, 10.29, config.MinTopUpCNY)
 	body = map[string]any{"client_id": communityTestOrigin, "action": "configure", "version": 1, "enabled": true, "inviterPoints": 6000, "inviteePoints": 7000, "user_id": user.Id}
-	require.Equal(t, http.StatusOK, call(secret, body).Code)
-	assert.Equal(t, http.StatusConflict, call(secret, body).Code)
+	assert.Equal(t, http.StatusBadRequest, call(secret, body).Code, "the community cannot edit centralized reward settings")
+	assert.Equal(t, 500000, common.QuotaForInviter)
 	response = call(secret, map[string]any{"client_id": communityTestOrigin, "action": "status", "user_id": 0})
 	require.Equal(t, http.StatusOK, response.Code)
 	assert.NotContains(t, response.Body.String(), secret)
@@ -55,6 +67,32 @@ func TestCommunityReferralServiceAuthorizationAndConfig(t *testing.T) {
 	assert.Empty(t, public.Code)
 	assert.Empty(t, public.Items)
 	assert.Nil(t, public.AsInvitee)
+	self := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(self)
+	ctx.Set("id", user.Id)
+	ctx.Request = httptest.NewRequest("GET", "/api/user/self/referrals?user_id=999", nil)
+	GetSelfReferrals(ctx)
+	require.Equal(t, http.StatusOK, self.Code)
+	var envelope struct {
+		Success bool                            `json:"success"`
+		Data    model.CommunityReferralOverview `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(self.Body.Bytes(), &envelope))
+	assert.True(t, envelope.Success)
+	assert.Equal(t, config, *envelope.Data.Config)
+	assert.Empty(t, envelope.Data.Items, "the overview uses only the authenticated user")
+	for _, value := range []string{"-1", "1.5", "invalid", "9999999999999999999999"} {
+		self = httptest.NewRecorder()
+		ctx, _ = gin.CreateTestContext(self)
+		ctx.Set("id", user.Id)
+		ctx.Request = httptest.NewRequest("GET", "/api/user/self/referrals?cursor="+value, nil)
+		GetSelfReferrals(ctx)
+		var invalid struct {
+			Success bool `json:"success"`
+		}
+		require.NoError(t, common.Unmarshal(self.Body.Bytes(), &invalid))
+		assert.False(t, invalid.Success)
+	}
 }
 
 func TestCommunityLotteryCredit(t *testing.T) {

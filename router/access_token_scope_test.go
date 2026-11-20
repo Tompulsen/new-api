@@ -39,6 +39,7 @@ var accessTokenExemptRoutes = []string{
 	// SSO exchanges validate their own grants or dedicated server credentials.
 	"GET /api/community-sso/lottery",
 	"POST /api/community-sso/lottery",
+	"POST /api/community-sso/referrals",
 	"POST /api/community-sso/token",
 	"GET /api/community-sso/userinfo",
 	"POST /api/studio-sso/token",

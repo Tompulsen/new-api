@@ -16,8 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQuery } from '@tanstack/react-query'
 import i18next from 'i18next'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { toast } from 'sonner'
 
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
@@ -27,8 +28,14 @@ import {
   getServerMessage,
   requireServerSuccess,
 } from '@/lib/server-error-message'
+import { useAuthStore } from '@/stores/auth-store'
 
-import { getAffiliateCode, transferAffiliateQuota } from '../api'
+import {
+  getAffiliateCode,
+  getReferralOverview,
+  getUnifiedWallet,
+  transferAffiliateQuota,
+} from '../api'
 import { generateAffiliateLink } from '../lib'
 
 // ============================================================================
@@ -36,29 +43,41 @@ import { generateAffiliateLink } from '../lib'
 // ============================================================================
 
 export function useAffiliate() {
-  const [affiliateCode, setAffiliateCode] = useState<string>('')
-  const [affiliateLink, setAffiliateLink] = useState<string>('')
-  const [loading, setLoading] = useState(true)
+  const userID = useAuthStore((state) => state.auth.user?.id)
+  const sessionID = useAuthStore((state) => state.auth.session?.sid)
+  const walletQuery = useQuery({
+    queryKey: ['unified-wallet', userID, sessionID],
+    queryFn: ({ signal }) => getUnifiedWallet(signal),
+    enabled: Boolean(userID),
+    retry: false,
+    refetchInterval: 15_000,
+    meta: { errorToast: false },
+  })
+  const legacy = walletQuery.data?.enabled === false
+  const query = useQuery({
+    queryKey: ['referral-overview', userID, sessionID],
+    queryFn: ({ signal }) => getReferralOverview(signal),
+    enabled: Boolean(userID) && walletQuery.data?.enabled === true,
+    retry: false,
+    refetchInterval: 15_000,
+    meta: { errorToast: false },
+  })
+  const legacyQuery = useQuery({
+    queryKey: ['affiliate-code', userID, sessionID],
+    queryFn: async ({ signal }) =>
+      requireServerSuccess(await getAffiliateCode(signal)),
+    enabled: Boolean(userID) && legacy,
+    retry: false,
+    meta: { errorToast: false },
+  })
+  const affiliateCode = legacy
+    ? (legacyQuery.data?.data ?? '')
+    : (query.data?.code ?? '')
+  const affiliateLink = affiliateCode
+    ? generateAffiliateLink(affiliateCode)
+    : ''
   const [transferring, setTransferring] = useState(false)
   const { copyToClipboard } = useCopyToClipboard()
-
-  // Fetch affiliate code
-  const fetchAffiliateCode = useCallback(async () => {
-    try {
-      setLoading(true)
-      const response = requireServerSuccess(await getAffiliateCode())
-
-      if (response.success && response.data) {
-        setAffiliateCode(response.data)
-        const link = generateAffiliateLink(response.data)
-        setAffiliateLink(link)
-      }
-    } catch (error) {
-      handleServerError(error)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
 
   // Copy affiliate link
   const copyAffiliateLink = useCallback(() => {
@@ -69,7 +88,9 @@ export function useAffiliate() {
   const transferQuota = useCallback(async (quota: number): Promise<boolean> => {
     try {
       setTransferring(true)
-      const response = await transferAffiliateQuota({ quota })
+      const response = requireServerSuccess(
+        await transferAffiliateQuota({ quota })
+      )
 
       if (response.success) {
         toast.success(
@@ -89,17 +110,26 @@ export function useAffiliate() {
     }
   }, [])
 
-  useEffect(() => {
-    fetchAffiliateCode()
-  }, [fetchAffiliateCode])
+  const refetch = () => {
+    if (walletQuery.isError) return walletQuery.refetch()
+    if (legacy) return legacyQuery.refetch()
+    return query.refetch()
+  }
 
   return {
     affiliateCode,
     affiliateLink,
-    loading,
+    legacy,
+    overview: query.data,
+    loading:
+      walletQuery.isPending ||
+      (!walletQuery.isError &&
+        (legacy ? legacyQuery.isPending : query.isPending)),
+    error:
+      walletQuery.isError || (legacy ? legacyQuery.isError : query.isError),
     transferring,
     copyAffiliateLink,
     transferQuota,
-    refetch: fetchAffiliateCode,
+    refetch,
   }
 }

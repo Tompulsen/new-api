@@ -20,19 +20,25 @@ import { Share2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
+import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { IconBadge } from '@/components/ui/icon-badge'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { formatQuota } from '@/lib/format'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatNumber, formatQuota } from '@/lib/format'
 
-import type { UserWalletData } from '../types'
+import type { ReferralOverview, UserWalletData } from '../types'
 
 interface AffiliateRewardsCardProps {
   user: UserWalletData | null
   affiliateLink: string
   onTransfer: () => void
+  legacy?: boolean
+  overview?: ReferralOverview
+  error?: boolean
+  onRetry: () => void
   complianceConfirmed?: boolean
   loading?: boolean
 }
@@ -41,10 +47,14 @@ export function AffiliateRewardsCard({
   user,
   affiliateLink,
   onTransfer,
+  legacy = false,
+  overview,
+  error,
+  onRetry,
   complianceConfirmed = true,
   loading,
 }: AffiliateRewardsCardProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   if (loading) {
     return (
       <Card data-card-hover='false' className='bg-muted/20 py-0'>
@@ -59,13 +69,38 @@ export function AffiliateRewardsCard({
       </Card>
     )
   }
+  if (error || (!legacy && !overview)) {
+    return (
+      <ErrorState
+        title={t('Referral rewards are unavailable')}
+        onRetry={onRetry}
+        className='min-h-0 py-4'
+      />
+    )
+  }
 
   const hasRewards = (user?.aff_quota ?? 0) > 0
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  let statistics: string[][] = []
+  if (legacy) {
+    statistics = [
+      [t('Pending'), formatQuota(user?.aff_quota ?? 0)],
+      [t('Total Earned'), formatQuota(user?.aff_history_quota ?? 0)],
+      [t('Invites'), formatNumber(user?.aff_count ?? 0, locale)],
+    ]
+  } else if (overview) {
+    statistics = [
+      [t('Invites'), formatNumber(overview.invited, locale)],
+      [t('Awaiting qualifying top-up'), formatNumber(overview.waiting, locale)],
+      [t('Credited'), formatNumber(overview.credited, locale)],
+      [t('Total Earned'), formatQuota(overview.earnedQuota)],
+    ]
+  }
 
   return (
     <Card data-card-hover='false' className='bg-muted/20 py-0'>
       <CardContent className='grid gap-3 p-3 sm:gap-4 sm:p-4 lg:grid-cols-[minmax(200px,1fr)_minmax(180px,0.65fr)_minmax(280px,1fr)] lg:items-center'>
-        <div className='flex min-w-0 items-center gap-2.5'>
+        <div className='flex min-w-0 items-start gap-2.5'>
           <IconBadge tone='chart-3'>
             <Share2 />
           </IconBadge>
@@ -73,22 +108,47 @@ export function AffiliateRewardsCard({
             <h3 className='truncate text-sm font-semibold'>
               {t('Referral Program')}
             </h3>
-            <p className='text-muted-foreground line-clamp-1 text-xs'>
-              {t(
-                'Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.'
-              )}
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {legacy
+                ? t(
+                    'Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.'
+                  )
+                : t(
+                    'Rewards are credited to both balances after a qualifying top-up.'
+                  )}
             </p>
+            {!legacy && overview && (
+              <>
+                <p className='text-muted-foreground mt-1 text-xs'>
+                  {overview.config.minTopupCny > 0
+                    ? t('Minimum qualifying top-up: {{amount}} CNY', {
+                        amount: formatNumber(
+                          overview.config.minTopupCny,
+                          locale
+                        ),
+                      })
+                    : t('Any positive verified payment qualifies.')}
+                </p>
+                {!overview.config.enabled && (
+                  <p className='text-muted-foreground mt-1 text-xs'>
+                    {t('New referral rewards are paused.')}
+                  </p>
+                )}
+              </>
+            )}
           </div>
         </div>
 
-        <div className='grid grid-cols-3 gap-1.5 text-center'>
-          {[
-            [t('Pending'), formatQuota(user?.aff_quota ?? 0)],
-            [t('Total Earned'), formatQuota(user?.aff_history_quota ?? 0)],
-            [t('Invites'), String(user?.aff_count ?? 0)],
-          ].map(([label, value]) => (
+        <div
+          className={
+            legacy
+              ? 'grid grid-cols-3 gap-2 text-center'
+              : 'grid grid-cols-2 gap-2 text-center sm:grid-cols-4 lg:grid-cols-2'
+          }
+        >
+          {statistics.map(([label, value]) => (
             <div key={label}>
-              <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider uppercase'>
+              <div className='text-muted-foreground text-[10px] font-medium'>
                 {label}
               </div>
               <div className='mt-0.5 truncate text-sm font-semibold tabular-nums'>
@@ -98,10 +158,11 @@ export function AffiliateRewardsCard({
           ))}
         </div>
 
-        <div className='flex items-center gap-2'>
+        <div className='flex min-w-0 flex-wrap items-center gap-2'>
           <Input
             value={affiliateLink}
             readOnly
+            aria-label={t('Referral link')}
             className='border-muted bg-background/70 h-9 min-w-0 flex-1 font-mono text-xs'
           />
           <CopyButton
@@ -116,10 +177,12 @@ export function AffiliateRewardsCard({
             <Button
               onClick={onTransfer}
               disabled={!complianceConfirmed}
-              className='h-9 shrink-0 px-3'
+              className='h-auto min-h-9 basis-full px-3 whitespace-normal'
               size='sm'
             >
-              {t('Transfer to Balance')}
+              {legacy
+                ? t('Transfer to Balance')
+                : t('Transfer previous rewards')}
             </Button>
           )}
         </div>

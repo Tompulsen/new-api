@@ -584,7 +584,7 @@ func TestQXChatLegacyProvisionPreservesVerifiedEmailReservation(t *testing.T) {
 }
 
 func TestQXChatVerifiedRegistrationIsAtomicAndDirectlyUsable(t *testing.T) {
-	for _, scenario := range []string{"verified", "bad_code", "claim_failure", "invited", "invalid_invite"} {
+	for _, scenario := range []string{"verified", "bad_code", "claim_failure", "invited", "invalid_invite", "retained_pending"} {
 		t.Run(scenario, func(t *testing.T) {
 			setupQXChatIdentityTest(t)
 			source := startQXChatSourceFixture(t)
@@ -625,7 +625,7 @@ func TestQXChatVerifiedRegistrationIsAtomicAndDirectlyUsable(t *testing.T) {
 			var users, claims int64
 			require.NoError(t, model.DB.Model(&model.User{}).Where("username = ?", "registered-native").Count(&users).Error)
 			require.NoError(t, model.DB.Model(&model.ExternalIdentityClaim{}).Where("provider = ?", "qxchat_verified_email").Count(&claims).Error)
-			if scenario != "verified" && scenario != "invited" {
+			if scenario == "bad_code" || scenario == "claim_failure" {
 				assert.False(t, result.Success, response.Body.String())
 				assert.Zero(t, users)
 				assert.Zero(t, claims)
@@ -637,7 +637,17 @@ func TestQXChatVerifiedRegistrationIsAtomicAndDirectlyUsable(t *testing.T) {
 			login := model.User{Username: "registered-native", Password: "registered-password"}
 			require.NoError(t, login.ValidateAndFill())
 			assert.Equal(t, 1234, login.Quota)
-			if scenario == "invited" {
+			var mappings int64
+			require.NoError(t, model.DB.Model(&model.QXChatIdentity{}).Where("user_id = ?", login.Id).Count(&mappings).Error)
+			assert.Zero(t, mappings, "new registration must not create a QX invitation reward")
+			source.mu.Lock()
+			assert.Empty(t, source.nonces, "registration must not check or provision a QX invitation")
+			assert.Zero(t, source.provisionCalls)
+			source.mu.Unlock()
+			if scenario == "retained_pending" {
+				require.NoError(t, model.DB.Transaction(func(tx *gorm.DB) error {
+					return model.RecordQXChatRegistrationInvitationWithTx(tx, &login, "INVITE1234567")
+				}))
 				var pending model.QXChatIdentity
 				require.NoError(t, model.DB.Where("user_id = ?", login.Id).First(&pending).Error)
 				assert.Equal(t, "INVITE1234567", pending.RegistrationInviteCode)

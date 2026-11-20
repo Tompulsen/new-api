@@ -196,7 +196,7 @@ it('registration still succeeds when Turnstile is disabled', async () => {
   expect(widgetOptions).toHaveLength(0)
 })
 
-it('submits the QX invitation separately from affiliate codes and keeps it after an error', async () => {
+it('ignores QX invitation links and submits only the native affiliate code', async () => {
   window.history.replaceState({}, '', '/sign-up?qx_ref=INVITE1234567')
   localStorage.setItem('aff', 'other-affiliate')
   const post = vi
@@ -204,21 +204,26 @@ it('submits the QX invitation separately from affiliate codes and keeps it after
     .mockResolvedValue({ data: { success: false, message: 'Retry later' } })
   try {
     const user = await renderRegistration()
-    const invite = screen.getByLabelText('QXChat invitation code (optional)')
-    expect(invite).toHaveValue('INVITE1234567')
+    expect(
+      screen.queryByLabelText('QXChat invitation code (optional)')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(
+        'New accounts receive QXChat invitation rewards after email verification. Use email registration for this invitation.'
+      )
+    ).not.toBeInTheDocument()
     await user.type(screen.getByPlaceholderText('Verification code'), '123456')
     await user.click(screen.getByRole('button', { name: 'Create account' }))
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith(
         '/api/user/register',
         expect.objectContaining({
-          qx_invite_code: 'INVITE1234567',
           aff_code: 'other-affiliate',
         }),
         expect.anything()
       )
     )
-    expect(invite).toHaveValue('INVITE1234567')
+    expect(post.mock.calls.at(-1)?.[1]).not.toHaveProperty('qx_invite_code')
   } finally {
     window.history.replaceState({}, '', '/')
   }

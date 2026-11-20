@@ -55,6 +55,29 @@ const quotaSchema = z.object({
   QuotaForNewUser: z.coerce.number().min(0),
   QuotaForInviter: z.coerce.number().min(0),
   QuotaForInvitee: z.coerce.number().min(0),
+  ReferralMinTopUpCNY: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.coerce
+      .number({ error: () => i18next.t('Please enter a valid number') })
+      .min(0, {
+        error: () =>
+          i18next.t(
+            'Enter an amount from 0 to 100000000 with at most two decimal places'
+          ),
+      })
+      .max(100000000, {
+        error: () =>
+          i18next.t(
+            'Enter an amount from 0 to 100000000 with at most two decimal places'
+          ),
+      })
+      .multipleOf(0.01, {
+        error: () =>
+          i18next.t(
+            'Enter an amount from 0 to 100000000 with at most two decimal places'
+          ),
+      })
+  ),
   TopUpLink: z.string(),
   quota_setting: z.object({
     enable_free_model_pre_consume: z.boolean(),
@@ -217,6 +240,37 @@ export function QuotaSettingsSection({
                   <FormDescription>
                     {t(
                       'Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='ReferralMinTopUpCNY'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Referral top-up threshold (CNY)')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      inputMode='decimal'
+                      min={0}
+                      max={100000000}
+                      step='0.01'
+                      required
+                      value={field.value ?? ''}
+                      onChange={handleNumberChange(field.onChange)}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'A single verified payment must reach this amount. Earlier smaller top-ups do not affect eligibility. Set to 0 to allow any positive payment.'
                     )}
                   </FormDescription>
                   <FormMessage />

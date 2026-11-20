@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
@@ -1129,34 +1130,47 @@ func TestOAuthBindIgnoresLegacyGitHubUsernames(t *testing.T) {
 }
 
 func TestOAuthRegistrationPersistsInviter(t *testing.T) {
-	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.Token{}, &model.LoginIdentifierReservation{}, &model.Log{}, &model.CommunityReferralConfig{}, &model.CommunityReferralCode{}, &model.CommunityReferral{})
+	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.Token{}, &model.LoginIdentifierReservation{}, &model.Log{}, &model.CommunityReferralConfig{}, &model.CommunityReferralCode{}, &model.CommunityReferral{}, &model.ExternalIdentityClaim{}, &model.QXChatIdentity{})
+	if dialect == common.DatabaseTypeMySQL {
+		// The email gap lock uses the production table name rather than the test prefix.
+		require.False(t, db.Migrator().HasTable("users"))
+		require.NoError(t, db.Migrator().CreateView("users", gorm.ViewOption{Query: db.Model(&model.User{})}))
+		t.Cleanup(func() { require.NoError(t, db.Migrator().DropView("users")) })
+	}
 	t.Setenv("UNIFIED_WALLET_ENABLED", "true")
 	t.Setenv("UNIFIED_WALLET_QUOTA_PER_CNY", "500000")
 	oldDB, oldLogDB := model.DB, model.LOG_DB
 	oldMain, oldLog := common.MainDatabaseType(), common.LogDatabaseType()
 	oldRedis, oldRegister := common.RedisEnabled, common.RegisterEnabled
 	oldNew, oldInvitee, oldInviter := common.QuotaForNewUser, common.QuotaForInvitee, common.QuotaForInviter
+	oldMinimum := common.ReferralMinTopUpCNY
+	payment := operation_setting.GetPaymentSetting()
+	oldPayment := *payment
 	model.DB, model.LOG_DB = db, db
 	common.SetDatabaseTypes(dialect, dialect)
 	common.RedisEnabled, common.RegisterEnabled = false, true
-	common.QuotaForNewUser, common.QuotaForInvitee, common.QuotaForInviter = 0, 0, 0
+	common.QuotaForNewUser, common.QuotaForInvitee, common.QuotaForInviter = 0, 500000, 500000
+	common.ReferralMinTopUpCNY = "10"
+	payment.ComplianceConfirmed, payment.ComplianceTermsVersion = true, operation_setting.CurrentComplianceTermsVersion
 	t.Cleanup(func() {
 		model.DB, model.LOG_DB = oldDB, oldLogDB
 		common.SetDatabaseTypes(oldMain, oldLog)
 		common.RedisEnabled, common.RegisterEnabled = oldRedis, oldRegister
 		common.QuotaForNewUser, common.QuotaForInvitee, common.QuotaForInviter = oldNew, oldInvitee, oldInviter
+		common.ReferralMinTopUpCNY = oldMinimum
+		*payment = oldPayment
 	})
 	inviter := model.User{Username: "inviter", AffCode: "valid-aff", Status: common.UserStatusEnabled}
 	require.NoError(t, db.Create(&inviter).Error)
-	invitation, err := model.GetCommunityReferralOverview(communityTestOrigin, inviter.Id, 0)
-	require.NoError(t, err)
+	legacyCode := "wf" + strings.Repeat("a", 24)
+	require.NoError(t, db.Create(&model.CommunityReferralCode{Code: legacyCode, Origin: communityTestOrigin, UserID: inviter.Id}).Error)
 	t.Run("password registration binds once without immediate rewards", func(t *testing.T) {
 		oldPassword, oldEmail := common.PasswordRegisterEnabled, common.EmailVerificationEnabled
 		common.PasswordRegisterEnabled, common.EmailVerificationEnabled = true, false
 		t.Cleanup(func() { common.PasswordRegisterEnabled, common.EmailVerificationEnabled = oldPassword, oldEmail })
 		router := gin.New()
 		router.POST("/api/user/register", Register)
-		body, err := common.Marshal(map[string]string{"username": "welfare-password", "password": "Test-only-password-2026", "aff_code": invitation.Code})
+		body, err := common.Marshal(map[string]string{"username": "welfare-password", "password": "Test-only-password-2026", "aff_code": legacyCode, "qx_invite_code": "INVALIDCODE1"})
 		require.NoError(t, err)
 		for attempt := range 2 {
 			response := httptest.NewRecorder()
@@ -1174,14 +1188,61 @@ func TestOAuthRegistrationPersistsInviter(t *testing.T) {
 		assert.Equal(t, inviter.Id, referral.InviterID)
 		assert.Equal(t, "waiting_topup", referral.State)
 		assert.Zero(t, user.Quota)
-		assert.Zero(t, user.InviterId)
+		assert.Equal(t, inviter.Id, user.InviterId)
+	})
+	t.Run("verified registration ignores retired QX invitation and retains affiliate", func(t *testing.T) {
+		source := startQXChatSourceFixture(t)
+		oldPassword, oldEmail := common.PasswordRegisterEnabled, common.EmailVerificationEnabled
+		common.PasswordRegisterEnabled, common.EmailVerificationEnabled = true, true
+		t.Cleanup(func() { common.PasswordRegisterEnabled, common.EmailVerificationEnabled = oldPassword, oldEmail })
+		email := "verified-registration@example.com"
+		common.RegisterVerificationCodeWithKey(email, "123456", common.EmailVerificationPurpose)
+		t.Cleanup(func() { common.DeleteKey(email, common.EmailVerificationPurpose) })
+		body, err := common.Marshal(map[string]string{
+			"username":          "verified-password",
+			"password":          "Test-only-password-2026",
+			"email":             email,
+			"verification_code": "123456",
+			"aff_code":          legacyCode,
+			"qx_invite_code":    "INVALIDCODE1",
+		})
+		require.NoError(t, err)
+		router := gin.New()
+		router.POST("/api/user/register", Register)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest("POST", "/api/user/register", strings.NewReader(string(body))))
+		var result struct {
+			Success bool `json:"success"`
+		}
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+		require.True(t, result.Success, response.Body.String())
+		var user model.User
+		require.NoError(t, db.Where("username = ?", "verified-password").First(&user).Error)
+		assert.Equal(t, inviter.Id, user.InviterId)
+		assert.Equal(t, email, user.Email)
+		assert.Zero(t, user.Quota)
+		var referrals []model.CommunityReferral
+		require.NoError(t, db.Where("invitee_id = ?", user.Id).Find(&referrals).Error)
+		require.Len(t, referrals, 1)
+		assert.Equal(t, inviter.Id, referrals[0].InviterID)
+		assert.Equal(t, "waiting_topup", referrals[0].State)
+		assert.Equal(t, int64(1000), referrals[0].MinTopUpFen)
+		var mappings, claims int64
+		require.NoError(t, db.Model(&model.QXChatIdentity{}).Where("user_id = ?", user.Id).Count(&mappings).Error)
+		assert.Zero(t, mappings, "new registration must not create a QX invitation reward")
+		require.NoError(t, db.Model(&model.ExternalIdentityClaim{}).Where("user_id = ? AND provider = ?", user.Id, "qxchat_verified_email").Count(&claims).Error)
+		assert.EqualValues(t, 1, claims)
+		source.mu.Lock()
+		assert.Empty(t, source.nonces, "registration must not call QX invitation services")
+		assert.Zero(t, source.provisionCalls)
+		source.mu.Unlock()
 	})
 	for _, tc := range []struct {
 		name, code string
 		want       int
 	}{
 		{"valid", "valid-aff", inviter.Id}, {"missing", "", 0}, {"invalid", "unknown-aff", 0},
-		{"community", invitation.Code, 0},
+		{"community", legacyCode, inviter.Id},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -1193,17 +1254,18 @@ func TestOAuthRegistrationPersistsInviter(t *testing.T) {
 			require.NoError(t, db.First(&stored, created.Id).Error)
 			assert.Equal(t, tc.want, stored.InviterId)
 			assert.Equal(t, identity.ProviderUserID, stored.GitHubId)
-			existing, _, err := findOrCreateOAuthUser(ctx, provider, identity, &oauth.OAuthToken{}, invitation.Code)
+			existing, _, err := findOrCreateOAuthUser(ctx, provider, identity, &oauth.OAuthToken{}, legacyCode)
 			require.NoError(t, err)
 			assert.Equal(t, created.Id, existing.Id)
 			require.NoError(t, db.First(&stored, created.Id).Error)
 			assert.Equal(t, tc.want, stored.InviterId, "login must not reassign the inviter")
 			var referrals []model.CommunityReferral
 			require.NoError(t, db.Where("invitee_id = ?", created.Id).Find(&referrals).Error)
-			if tc.name == "community" {
+			if tc.want != 0 {
 				require.Len(t, referrals, 1)
 				assert.Equal(t, inviter.Id, referrals[0].InviterID)
-				assert.Equal(t, int64(5000), referrals[0].InviteePoints)
+				assert.Equal(t, int64(500000), referrals[0].InviteeQuota)
+				assert.Equal(t, int64(1000), referrals[0].MinTopUpFen)
 				assert.Zero(t, stored.Quota, "OAuth registration does not trigger the old immediate affiliate bonus")
 			} else {
 				assert.Empty(t, referrals, "existing OAuth users cannot retroactively bind a welfare invitation")

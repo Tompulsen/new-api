@@ -41,12 +41,19 @@ import type {
   WaffoPancakePaymentRequest,
   WaffoPancakePaymentResponse,
   UnifiedWalletView,
+  ReferralOverview,
 } from './types'
 
 export function getUnifiedWallet(
   signal?: AbortSignal
 ): Promise<UnifiedWalletView> {
   return authResult(api.get('/api/user/self/wallet', { signal }))
+}
+
+export function getReferralOverview(
+  signal?: AbortSignal
+): Promise<ReferralOverview> {
+  return authResult(api.get('/api/user/self/referrals', { signal }))
 }
 
 // ============================================================================
@@ -192,8 +199,10 @@ export async function requestWaffoPancakePayment(
 /**
  * Get affiliate code
  */
-export async function getAffiliateCode(): Promise<AffiliateCodeResponse> {
-  const res = await api.get('/api/user/aff')
+export async function getAffiliateCode(
+  signal?: AbortSignal
+): Promise<AffiliateCodeResponse> {
+  const res = await api.get('/api/user/aff', { signal })
   return res.data
 }
 

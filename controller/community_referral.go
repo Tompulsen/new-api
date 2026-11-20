@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -28,14 +29,10 @@ func CommunityReferral(c *gin.Context) {
 		return
 	}
 	var request struct {
-		ClientID      string `json:"client_id"`
-		Action        string `json:"action"`
-		UserID        int    `json:"user_id"`
-		Cursor        int    `json:"cursor"`
-		Version       int64  `json:"version"`
-		Enabled       *bool  `json:"enabled"`
-		InviterPoints int64  `json:"inviterPoints"`
-		InviteePoints int64  `json:"inviteePoints"`
+		ClientID string `json:"client_id"`
+		Action   string `json:"action"`
+		UserID   int    `json:"user_id"`
+		Cursor   int    `json:"cursor"`
 	}
 	if !strings.HasPrefix(c.GetHeader("Content-Type"), "application/json") || common.DecodeJson(c.Request.Body, &request) != nil || request.ClientID != origin || request.UserID < 0 || request.Cursor < 0 {
 		communitySSOError(c, http.StatusBadRequest, "invalid_request")
@@ -47,13 +44,7 @@ func CommunityReferral(c *gin.Context) {
 	case "status":
 		result, err = model.GetCommunityReferralOverview(origin, request.UserID, request.Cursor)
 	case "config":
-		result, err = model.GetCommunityReferralConfig(origin)
-	case "configure":
-		if request.Enabled == nil || request.UserID <= 0 {
-			communitySSOError(c, http.StatusBadRequest, "invalid_request")
-			return
-		}
-		result, err = model.UpdateCommunityReferralConfig(origin, request.UserID, request.Version, *request.Enabled, request.InviterPoints, request.InviteePoints)
+		result, err = model.GetUnifiedReferralConfig()
 	default:
 		communitySSOError(c, http.StatusBadRequest, "invalid_request")
 		return
@@ -69,4 +60,22 @@ func CommunityReferral(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+func GetSelfReferrals(c *gin.Context) {
+	cursor := 0
+	if value := c.Query("cursor"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		cursor = parsed
+	}
+	result, err := model.GetCommunityReferralOverview("", c.GetInt("id"), cursor)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
 }

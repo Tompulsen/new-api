@@ -102,6 +102,10 @@ export function Wallet(props: WalletProps) {
   } = usePayment()
   const {
     affiliateLink,
+    legacy: legacyReferrals,
+    overview: referralOverview,
+    error: referralError,
+    refetch: refreshReferrals,
     loading: affiliateLoading,
     transferQuota,
     transferring,
@@ -347,6 +351,10 @@ export function Wallet(props: WalletProps) {
             <AffiliateRewardsCard
               user={user}
               affiliateLink={affiliateLink}
+              legacy={legacyReferrals}
+              overview={referralOverview}
+              error={referralError}
+              onRetry={() => void refreshReferrals()}
               onTransfer={() => setTransferDialogOpen(true)}
               complianceConfirmed={
                 topupInfo?.payment_compliance_confirmed !== false
