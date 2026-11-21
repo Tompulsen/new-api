@@ -2,6 +2,11 @@ package model
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +85,92 @@ func TestUnifiedWalletSourceIsolationAndOriginalRefund(t *testing.T) {
 	legacy := createReserveTestUser(t, 100)
 	require.NoError(t, BeginWalletOperation(legacy.Id, WalletReference("legacy-community"), WalletCommunity, 1, 0))
 	assert.Equal(t, 99, getUserQuotaFromDB(t, legacy.Id))
+}
+
+func TestUnifiedWalletCharityExpiryDetailsAndPagination(t *testing.T) {
+	unifiedWalletDatabase(t)
+	user := createReserveTestUser(t, 500)
+	other := createReserveTestUser(t, 0)
+	expiry := time.Now().Add(time.Hour).Unix()
+	first := unifiedWalletCharity(t, user.Id, 100, expiry)
+	require.NoError(t, DB.Model(&first).Update("remaining_quota", 40).Error)
+	unifiedWalletCharity(t, user.Id, 25, expiry)
+	permanent := unifiedWalletCharity(t, user.Id, 300, 0)
+	unifiedWalletCharity(t, user.Id, 80, expiry+3600)
+	unifiedWalletCharity(t, user.Id, 50, time.Now().Add(-time.Minute).Unix())
+	unifiedWalletCharity(t, other.Id, 90, expiry)
+	view, err := GetUnifiedWallet(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "445", view.CharityPoints)
+	assert.Equal(t, "500", view.PermanentPoints)
+	assert.Equal(t, &expiry, view.CharityExpiringAt)
+	require.NotNil(t, view.CharityExpiringPoints)
+	assert.Equal(t, "65", *view.CharityExpiringPoints)
+	assert.True(t, view.CharityDetailsAvailable)
+
+	details, err := GetUnifiedWalletLots(user.Id, 0)
+	require.NoError(t, err)
+	require.Len(t, details.Items, 4)
+	assert.Nil(t, details.NextCursor)
+	assert.Equal(t, "0", details.SharedPoints)
+	for _, item := range details.Items {
+		if item.ID == strconv.FormatInt(permanent.ID, 10) {
+			assert.Nil(t, item.ExpiresAt)
+			assert.Equal(t, "300", item.Points)
+		}
+	}
+	details, err = GetUnifiedWalletLots(other.Id, 0)
+	require.NoError(t, err)
+	require.Len(t, details.Items, 1)
+	assert.Equal(t, "90", details.Items[0].Points)
+
+	paged := createReserveTestUser(t, 0)
+	lots := make([]UnifiedWalletLot, 51)
+	for i := range lots {
+		lots[i] = UnifiedWalletLot{UserID: paged.Id, Kind: WalletCharity, Source: "community_lottery", Reference: WalletReference("page", strconv.Itoa(i)), InitialQuota: 10, RemainingQuota: 10, InitialPoints: 10, ExpiresAt: expiry, CreatedAt: time.Now().Unix()}
+	}
+	require.NoError(t, DB.Create(&lots).Error)
+	details, err = GetUnifiedWalletLots(paged.Id, 0)
+	require.NoError(t, err)
+	require.Len(t, details.Items, 50)
+	require.NotNil(t, details.NextCursor)
+	before, err := strconv.ParseInt(*details.NextCursor, 10, 64)
+	require.NoError(t, err)
+	last, err := GetUnifiedWalletLots(paged.Id, before)
+	require.NoError(t, err)
+	require.Len(t, last.Items, 1)
+	assert.Nil(t, last.NextCursor)
+	assert.Equal(t, strconv.FormatInt(lots[0].ID, 10), last.Items[0].ID)
+	_, err = GetUnifiedWalletLots(paged.Id, -1)
+	assert.ErrorIs(t, err, ErrWalletConflict)
+
+	t.Setenv("QXCHAT_SHARED_WALLET_ENABLED", "1")
+	t.Setenv("QXCHAT_IDENTITY_ENABLED", "1")
+	secret := strings.Repeat("wallet-expiry-source", 3)
+	t.Setenv("QXCHAT_IDENTITY_SECRET", secret)
+	identity := QXChatIdentity{SourceID: "52b34e97-7a0f-4e80-85a8-d511ed61aef5", UserID: user.Id, State: QXChatIdentityActive, AuthorityVersion: 1}
+	require.NoError(t, DB.Create(&identity).Error)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response, err := common.Marshal(map[string]any{"source_id": identity.SourceID, "newapi_user_id": user.Id, "points": "100", "expires_at": expiry})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		digest := sha256.Sum256(response)
+		proof := strings.Join([]string{"qxchat-identity-response-v1", r.Header.Get("X-QXChat-Nonce"), "200", hex.EncodeToString(digest[:])}, "\n")
+		w.Header().Set("X-QXChat-Signature", common.GenerateHMACWithKey([]byte(secret), proof))
+		_, _ = w.Write(response)
+	}))
+	defer source.Close()
+	t.Setenv("QXCHAT_IDENTITY_SOURCE_URL", source.URL)
+	view, err = GetUnifiedWallet(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "545", view.CharityPoints)
+	assert.Equal(t, &expiry, view.CharityExpiringAt)
+	assert.Nil(t, view.CharityExpiringPoints, "shared funds with the same earliest expiry have no known expiring amount")
+	details, err = GetUnifiedWalletLots(user.Id, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "100", details.SharedPoints)
 }
 
 func TestUnifiedWalletCharityOnlyAndTokenAtomicity(t *testing.T) {

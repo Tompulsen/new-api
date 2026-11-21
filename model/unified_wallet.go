@@ -128,15 +128,31 @@ type UnifiedWalletReceipt struct {
 }
 
 type UnifiedWalletView struct {
-	Enabled           bool   `json:"enabled"`
-	Currency          string `json:"currency"`
-	PointsPerCNY      int    `json:"points_per_cny"`
-	CharityPoints     string `json:"charity_points"`
-	PermanentPoints   string `json:"permanent_points"`
-	LegacyAPIQuota    int64  `json:"legacy_api_quota"`
-	PaidAPIQuota      int64  `json:"paid_api_quota"`
-	TotalAPIQuota     int64  `json:"total_api_quota"`
-	CharityExpiringAt *int64 `json:"charity_expiring_at"`
+	Enabled                 bool    `json:"enabled"`
+	Currency                string  `json:"currency"`
+	PointsPerCNY            int     `json:"points_per_cny"`
+	CharityPoints           string  `json:"charity_points"`
+	PermanentPoints         string  `json:"permanent_points"`
+	LegacyAPIQuota          int64   `json:"legacy_api_quota"`
+	PaidAPIQuota            int64   `json:"paid_api_quota"`
+	TotalAPIQuota           int64   `json:"total_api_quota"`
+	CharityExpiringAt       *int64  `json:"charity_expiring_at"`
+	CharityExpiringPoints   *string `json:"charity_expiring_points"`
+	CharityDetailsAvailable bool    `json:"charity_details_available"`
+}
+
+type UnifiedWalletLotView struct {
+	ID        string `json:"id"`
+	Source    string `json:"source"`
+	Points    string `json:"points"`
+	ExpiresAt *int64 `json:"expires_at"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+type UnifiedWalletLotsView struct {
+	Items        []UnifiedWalletLotView `json:"items"`
+	NextCursor   *string                `json:"next_cursor"`
+	SharedPoints string                 `json:"shared_points"`
 }
 
 func MigrateUnifiedWallet(db *gorm.DB) error {
@@ -629,7 +645,7 @@ func CreditVerifiedPaymentTx(tx *gorm.DB, userID int, quota int, topup *TopUp, u
 }
 
 func GetUnifiedWallet(userID int) (*UnifiedWalletView, error) {
-	view := &UnifiedWalletView{Enabled: UnifiedWalletEnabled(), Currency: "CNY", PointsPerCNY: 5000, CharityPoints: "0", PermanentPoints: "0"}
+	view := &UnifiedWalletView{Enabled: UnifiedWalletEnabled(), Currency: "CNY", PointsPerCNY: 5000, CharityPoints: "0", PermanentPoints: "0", CharityDetailsAvailable: UnifiedWalletEnabled()}
 	if !view.Enabled {
 		return view, nil
 	}
@@ -648,6 +664,7 @@ func GetUnifiedWallet(userID int) (*UnifiedWalletView, error) {
 			return err
 		}
 		charity := decimal.Zero
+		expiring := decimal.Zero
 		for _, lot := range lots {
 			if lot.Kind != WalletCharity {
 				continue
@@ -660,7 +677,14 @@ func GetUnifiedWallet(userID int) (*UnifiedWalletView, error) {
 			if lot.ExpiresAt > 0 && (view.CharityExpiringAt == nil || lot.ExpiresAt < *view.CharityExpiringAt) {
 				expiry := lot.ExpiresAt
 				view.CharityExpiringAt = &expiry
+				expiring = points
+			} else if view.CharityExpiringAt != nil && lot.ExpiresAt == *view.CharityExpiringAt {
+				expiring = expiring.Add(points)
 			}
+		}
+		if view.CharityExpiringAt != nil {
+			amount := expiring.Truncate(6).String()
+			view.CharityExpiringPoints = &amount
 		}
 		view.CharityPoints = charity.Truncate(6).String()
 		view.PermanentPoints = decimal.NewFromInt(max(int64(0), int64(user.Quota))).Div(decimal.NewFromInt(rate)).Truncate(6).String()
@@ -677,11 +701,64 @@ func GetUnifiedWallet(userID int) (*UnifiedWalletView, error) {
 			return nil, parseErr
 		}
 		view.CharityPoints = local.Add(shared.Points).Truncate(6).String()
-		if shared.ExpiresAt != nil && (view.CharityExpiringAt == nil || *shared.ExpiresAt < *view.CharityExpiringAt) {
+		if shared.Points.IsPositive() && shared.ExpiresAt != nil && (view.CharityExpiringAt == nil || *shared.ExpiresAt <= *view.CharityExpiringAt) {
 			view.CharityExpiringAt = shared.ExpiresAt
+			// The shared source gives no per-batch amount for its earliest expiry.
+			view.CharityExpiringPoints = nil
 		}
 	}
 	return view, err
+}
+
+func GetUnifiedWalletLots(userID int, before int64) (*UnifiedWalletLotsView, error) {
+	if !UnifiedWalletEnabled() {
+		return nil, ErrWalletUnavailable
+	}
+	if userID <= 0 || before < 0 || before > int64(common.MaxWalletQuota) {
+		return nil, ErrWalletConflict
+	}
+	view := &UnifiedWalletLotsView{Items: []UnifiedWalletLotView{}, SharedPoints: "0"}
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := lockWalletUser(tx, userID, &user); err != nil {
+			return err
+		}
+		query := tx.Where("user_id = ? AND kind = ? AND remaining_quota > 0 AND (expires_at = 0 OR expires_at > ?)", userID, WalletCharity, time.Now().Unix())
+		if before > 0 {
+			query = query.Where("id < ?", before)
+		}
+		var lots []UnifiedWalletLot
+		if err := query.Order("id DESC").Limit(51).Find(&lots).Error; err != nil {
+			return err
+		}
+		if len(lots) > 50 {
+			lots = lots[:50]
+			cursor := strconv.FormatInt(lots[len(lots)-1].ID, 10)
+			view.NextCursor = &cursor
+		}
+		for _, lot := range lots {
+			if lot.InitialQuota <= 0 || lot.InitialPoints < 0 {
+				return ErrWalletInvariant
+			}
+			points := decimal.NewFromInt(lot.InitialPoints).Mul(decimal.NewFromInt(lot.RemainingQuota)).Div(decimal.NewFromInt(lot.InitialQuota)).Truncate(6).String()
+			item := UnifiedWalletLotView{ID: strconv.FormatInt(lot.ID, 10), Source: lot.Source, Points: points, CreatedAt: lot.CreatedAt}
+			if lot.ExpiresAt > 0 {
+				expiry := lot.ExpiresAt
+				item.ExpiresAt = &expiry
+			}
+			view.Items = append(view.Items, item)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	shared, err := qxchatWalletBalance(DB, userID)
+	if err != nil {
+		return nil, err
+	}
+	view.SharedPoints = shared.Points.Truncate(6).String()
+	return view, nil
 }
 
 func ImportQXChatWallet(request WalletImportRequest, digest string) (*UnifiedWalletReceipt, error) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -18,6 +19,7 @@ import (
 func RegisterUnifiedWalletRoutes(api *gin.RouterGroup) {
 	api.POST("/qxchat/wallet/reservations/status", middleware.QXChatWalletProof(), getQXChatWalletReservationStatus)
 	api.GET("/user/self/wallet", middleware.UserAuth(), middleware.DisableCache(), getUnifiedWallet)
+	api.GET("/user/self/wallet/lots", middleware.UserAuth(), middleware.DisableCache(), getUnifiedWalletLots)
 	api.POST("/qxchat/wallet/import", middleware.CommunitySSOExchangeRateLimit(), middleware.QXChatWalletProof(), importQXChatWallet)
 	api.GET("/qxchat/wallet/receipts/:transfer_id", middleware.CommunitySSOExchangeRateLimit(), middleware.QXChatWalletProof(), getQXChatWalletReceipt)
 }
@@ -35,6 +37,24 @@ func walletAPIError(c *gin.Context, err error) {
 
 func getUnifiedWallet(c *gin.Context) {
 	view, err := model.GetUnifiedWallet(c.GetInt("id"))
+	if err != nil {
+		walletAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": view})
+}
+
+func getUnifiedWalletLots(c *gin.Context) {
+	var before int64
+	if value, present := c.GetQuery("before"); present {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed <= 0 || parsed > int64(common.MaxWalletQuota) || strconv.FormatInt(parsed, 10) != value {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "INVALID_CURSOR"})
+			return
+		}
+		before = parsed
+	}
+	view, err := model.GetUnifiedWalletLots(c.GetInt("id"), before)
 	if err != nil {
 		walletAPIError(c, err)
 		return

@@ -68,6 +68,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/user/self":                           accessTokenScopeRule("profile:read"),
 	"GET /api/user/self/login-identifiers":         accessTokenScopeRule("profile:read"),
 	"GET /api/user/self/wallet":                    accessTokenSessionRule,
+	"GET /api/user/self/wallet/lots":               accessTokenSessionRule,
 	"GET /api/user/qxchat":                         accessTokenSessionRule,
 	"POST /api/user/qxchat/bind":                   accessTokenSessionRule,
 	"GET /api/user/models":                         accessTokenScopeRule("profile:read"),

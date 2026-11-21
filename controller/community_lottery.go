@@ -32,8 +32,17 @@ func CommunityLotteryCredit(c *gin.Context) {
 		return
 	}
 	if c.Request.Method == http.MethodGet {
+		rewardKinds := []string{"balance"}
+		quotaPerPoint, rateErr := model.UnifiedWalletQuotaPerPoint()
+		if model.UnifiedWalletEnabled() && rateErr == nil {
+			rewardKinds = append(rewardKinds, model.WalletCharity)
+		}
+		capabilities := gin.H{"ready": true, "client_id": origin, "reward_kinds": rewardKinds}
+		if rateErr == nil {
+			capabilities["quota_per_point"] = quotaPerPoint
+		}
 		if c.Request.URL.RawQuery == "" {
-			c.JSON(http.StatusOK, gin.H{"ready": true, "client_id": origin})
+			c.JSON(http.StatusOK, capabilities)
 			return
 		}
 		query, err := url.ParseQuery(c.Request.URL.RawQuery)
@@ -55,20 +64,36 @@ func CommunityLotteryCredit(c *gin.Context) {
 			communitySSOError(c, status, "lottery_consumption_failed")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ready": true, "client_id": origin, "user_id": userID, "basis": "consumption", "consumption_cny_fen": consumption.ConsumptionCNYFen, "has_consumption": consumption.HasConsumption})
+		capabilities["user_id"], capabilities["basis"] = userID, "consumption"
+		capabilities["consumption_cny_fen"], capabilities["has_consumption"] = consumption.ConsumptionCNYFen, consumption.HasConsumption
+		c.JSON(http.StatusOK, capabilities)
 		return
 	}
 	var request struct {
-		ClientID  string `json:"client_id"`
-		UserID    int    `json:"user_id"`
-		Reference string `json:"reference"`
-		Cents     int64  `json:"amount_cents"`
+		ClientID      string            `json:"client_id"`
+		UserID        int               `json:"user_id"`
+		Reference     string            `json:"reference"`
+		Cents         int64             `json:"amount_cents"`
+		RewardKind    common.RawMessage `json:"reward_kind"`
+		ValidityHours common.RawMessage `json:"validity_hours"`
 	}
-	if !strings.HasPrefix(c.GetHeader("Content-Type"), "application/json") || common.DecodeJson(c.Request.Body, &request) != nil || request.ClientID != origin {
+	if !strings.HasPrefix(c.GetHeader("Content-Type"), "application/json") || common.DecodeJsonBody(c.Request.Body, &request) != nil || request.ClientID != origin {
 		communitySSOError(c, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	receipt, replayed, err := model.CreditCommunityLottery(request.UserID, request.Reference, request.Cents)
+	var rewards []model.CommunityLotteryReward
+	if strings.HasSuffix(c.Request.URL.Path, "/lottery/charity") || len(request.RewardKind) != 0 || len(request.ValidityHours) != 0 {
+		var reward model.CommunityLotteryReward
+		if len(request.RewardKind) == 0 || len(request.ValidityHours) == 0 ||
+			common.Unmarshal(request.RewardKind, &reward.Kind) != nil ||
+			common.Unmarshal(request.ValidityHours, &reward.ValidityHours) != nil ||
+			reward.Kind != model.WalletCharity || reward.ValidityHours < 1 || reward.ValidityHours > 8760 {
+			communitySSOError(c, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		rewards = append(rewards, reward)
+	}
+	receipt, replayed, err := model.CreditCommunityLottery(request.UserID, request.Reference, request.Cents, rewards...)
 	if err != nil {
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, model.ErrLotteryCreditConflict) {
@@ -82,7 +107,13 @@ func CommunityLotteryCredit(c *gin.Context) {
 	}
 	var snapshot any
 	if receipt.LotteryCredit != nil {
-		snapshot = gin.H{"id": receipt.Id, "quota_added": receipt.LotteryCredit.QuotaAdded, "quota_per_usd": receipt.LotteryCredit.QuotaPerUSD}
+		fields := gin.H{"id": receipt.Id, "quota_added": receipt.LotteryCredit.QuotaAdded, "quota_per_usd": receipt.LotteryCredit.QuotaPerUSD}
+		if receipt.LotteryCredit.RewardKind == model.WalletCharity {
+			fields["reward_kind"], fields["validity_hours"] = receipt.LotteryCredit.RewardKind, receipt.LotteryCredit.ValidityHours
+			fields["expires_at"], fields["credited_at"] = receipt.LotteryCredit.ExpiresAt, receipt.LotteryCredit.CreditedAt
+			fields["points"], fields["lot_id"], fields["quota_per_point"] = receipt.LotteryCredit.Points, receipt.LotteryCredit.LotID, receipt.LotteryCredit.QuotaPerPoint
+		}
+		snapshot = fields
 	}
 	c.JSON(http.StatusOK, gin.H{"credited": true, "reference": receipt.TradeNo, "user_id": receipt.UserId, "amount_cents": receipt.Amount, "replayed": replayed, "receipt": snapshot})
 }
