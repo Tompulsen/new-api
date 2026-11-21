@@ -46,16 +46,16 @@ func CommunityLotteryCredit(c *gin.Context) {
 			communitySSOError(c, http.StatusBadRequest, "invalid_request")
 			return
 		}
-		support, err := model.GetCommunityLotterySupport(int(userID))
+		consumption, err := model.GetCommunityLotteryConsumption(int(userID))
 		if err != nil {
 			status := http.StatusServiceUnavailable
 			if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, model.ErrInvalidTopUpQuota) {
 				status = http.StatusBadRequest
 			}
-			communitySSOError(c, status, "lottery_support_failed")
+			communitySSOError(c, status, "lottery_consumption_failed")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ready": true, "client_id": origin, "user_id": userID, "support_cny_fen": support.SupportCNYFen, "has_support": support.HasSupport})
+		c.JSON(http.StatusOK, gin.H{"ready": true, "client_id": origin, "user_id": userID, "basis": "consumption", "consumption_cny_fen": consumption.ConsumptionCNYFen, "has_consumption": consumption.HasConsumption})
 		return
 	}
 	var request struct {
