@@ -4,6 +4,8 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +17,177 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCommunityLotterySupport(t *testing.T) {
+	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.TopUp{}, &model.UnifiedWalletPaymentReceipt{})
+	oldDB, oldDialect := model.DB, common.MainDatabaseType()
+	model.DB = db
+	common.SetDatabaseTypes(dialect, common.LogDatabaseType())
+	t.Cleanup(func() {
+		model.DB = oldDB
+		common.SetDatabaseTypes(oldDialect, common.LogDatabaseType())
+	})
+	t.Setenv("COMMUNITY_SSO_ORIGIN", communityTestOrigin)
+	secret := strings.Repeat("lottery-support-test", 3)
+	t.Setenv("COMMUNITY_LOTTERY_SECRET", secret)
+	user := model.User{Username: "support-user", AffCode: "support-user", Status: common.UserStatusEnabled}
+	other := model.User{Username: "support-other", AffCode: "support-other", Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&user).Error)
+	require.NoError(t, db.Create(&other).Error)
+	call := func(query, credential string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/community-sso/lottery"+query, nil)
+		ctx.Request.Header.Set("Authorization", "Bearer "+credential)
+		CommunityLotteryCredit(ctx)
+		return recorder
+	}
+	queryFor := func(id int) string {
+		return "?" + url.Values{"client_id": {communityTestOrigin}, "user_id": {strconv.Itoa(id)}}.Encode()
+	}
+	response := call("", secret)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var readiness map[string]any
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &readiness))
+	assert.Equal(t, map[string]any{"ready": true, "client_id": communityTestOrigin}, readiness)
+	assert.Equal(t, http.StatusUnauthorized, call(queryFor(user.Id), "invalid").Code)
+	for _, query := range []string{
+		"?client_id=" + url.QueryEscape(communityTestOrigin),
+		"?user_id=1",
+		queryFor(user.Id) + "&user_id=2",
+		queryFor(user.Id) + "&client_id=" + url.QueryEscape(communityTestOrigin),
+		queryFor(user.Id) + "&extra=1",
+		"?client_id=https%3A%2F%2Funtrusted.test&user_id=1",
+		"?client_id=%&user_id=1",
+	} {
+		assert.Equal(t, http.StatusBadRequest, call(query, secret).Code, query)
+	}
+	for _, id := range []string{"", "0", "-1", "1.5", "+1", "01", "9007199254740992", "9223372036854775808"} {
+		query := "?" + url.Values{"client_id": {communityTestOrigin}, "user_id": {id}}.Encode()
+		assert.Equal(t, http.StatusBadRequest, call(query, secret).Code, id)
+	}
+	assert.Equal(t, http.StatusBadRequest, call(queryFor(other.Id+1), secret).Code)
+	assert.Equal(t, http.StatusBadRequest, call(queryFor(common.MaxWalletQuota), secret).Code, "safe IDs reach the enabled-user check")
+	require.NoError(t, db.Model(&other).Update("status", common.UserStatusDisabled).Error)
+	assert.Equal(t, http.StatusBadRequest, call(queryFor(other.Id), secret).Code)
+	require.NoError(t, db.Model(&other).Update("status", common.UserStatusEnabled).Error)
+
+	var support struct {
+		Ready         bool   `json:"ready"`
+		ClientID      string `json:"client_id"`
+		UserID        int    `json:"user_id"`
+		SupportCNYFen int64  `json:"support_cny_fen"`
+		HasSupport    bool   `json:"has_support"`
+	}
+	response = call(queryFor(user.Id), secret)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &support))
+	assert.True(t, support.Ready)
+	assert.Equal(t, communityTestOrigin, support.ClientID)
+	assert.Equal(t, user.Id, support.UserID)
+	assert.Zero(t, support.SupportCNYFen)
+	assert.False(t, support.HasSupport)
+
+	var refundable model.TopUp
+	for _, test := range []struct {
+		name, provider, currency, status, reference string
+		principal, refunded                         int64
+		unverified, zero, noReceipt, otherUser      bool
+	}{
+		{name: "cny-one", principal: 100},
+		{name: "cny-two", principal: 100},
+		{name: "partial", principal: 250, refunded: 75},
+		{name: "fully-refunded", principal: 100, refunded: 100},
+		{name: "over-refunded", principal: 100, refunded: 101},
+		{name: "usd", currency: "USD"},
+		{name: "creem", provider: model.PaymentProviderCreem, principal: 1},
+		{name: "waffo", provider: model.PaymentProviderWaffo, principal: 1},
+		{name: "pancake", provider: model.PaymentProviderWaffoPancake, principal: 1},
+		{name: "unverified", principal: 1000, unverified: true},
+		{name: "zero", principal: 1000, zero: true},
+		{name: "pending", principal: 1000, status: common.TopUpStatusPending},
+		{name: "gift", principal: 1000, provider: "gift"},
+		{name: "invitation", principal: 1000, provider: "community_referral"},
+		{name: "lottery", principal: 1000, provider: "community_lottery"},
+		{name: "redemption", principal: 1000, provider: "redemption"},
+		{name: "admin", principal: 1000, provider: "admin"},
+		{name: "balance", principal: 1000, provider: model.PaymentProviderBalance},
+		{name: "empty-reference", principal: 1000, reference: "-"},
+		{name: "blank-reference", principal: 1000, reference: " "},
+		{name: "no-receipt", principal: 1000, noReceipt: true},
+		{name: "other-user", principal: 1000, otherUser: true},
+		{name: "duplicate", principal: 100, reference: "support-cny-one", noReceipt: true},
+		{name: "other-user-receipt", principal: 1000, reference: "support-other-user", noReceipt: true},
+	} {
+		payment := model.TopUp{UserId: user.Id, TradeNo: "support-" + test.name, Status: common.TopUpStatusSuccess,
+			PaymentProvider: model.PaymentProviderEpay, PaymentCurrency: "CNY", PaymentReference: "support-" + test.name,
+			PaymentVerified: !test.unverified, PaymentPositive: !test.zero, PaymentPrincipalFen: test.principal, PaymentRefundedFen: test.refunded}
+		if test.provider != "" {
+			payment.PaymentProvider = test.provider
+		}
+		if test.currency != "" {
+			payment.PaymentCurrency = test.currency
+		}
+		if test.status != "" {
+			payment.Status = test.status
+		}
+		if test.reference != "" {
+			payment.PaymentReference = test.reference
+			if test.reference == "-" {
+				payment.PaymentReference = ""
+			}
+		}
+		if test.otherUser {
+			payment.UserId = other.Id
+		}
+		require.NoError(t, db.Create(&payment).Error, test.name)
+		if !test.noReceipt {
+			receipt := model.UnifiedWalletPaymentReceipt{ID: model.WalletReference("payment-receipt", payment.PaymentProvider, payment.PaymentReference), TopUpID: payment.Id}
+			require.NoError(t, db.Create(&receipt).Error, test.name)
+		}
+		if test.name == "cny-one" {
+			refundable = payment
+		}
+	}
+	response = call(queryFor(user.Id), secret)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &support))
+	assert.EqualValues(t, 378, support.SupportCNYFen, "separate equal payments count twice; receipts exclude duplicate and other-user payments")
+	assert.True(t, support.HasSupport)
+	require.NoError(t, db.Model(&refundable).Update("payment_refunded_fen", refundable.PaymentPrincipalFen).Error)
+	response = call(queryFor(user.Id), secret)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &support))
+	assert.EqualValues(t, 278, support.SupportCNYFen, "later queries use the latest net principal")
+
+	require.NoError(t, db.Where("user_id = ?", user.Id).Delete(&model.TopUp{}).Error)
+	usd := model.TopUp{UserId: user.Id, TradeNo: "only-usd", Status: common.TopUpStatusSuccess, PaymentProvider: model.PaymentProviderStripe,
+		PaymentCurrency: "USD", PaymentReference: "only-usd", PaymentVerified: true, PaymentPositive: true}
+	require.NoError(t, db.Create(&usd).Error)
+	require.NoError(t, db.Create(&model.UnifiedWalletPaymentReceipt{ID: model.WalletReference("payment-receipt", usd.PaymentProvider, usd.PaymentReference), TopUpID: usd.Id}).Error)
+	response = call(queryFor(user.Id), secret)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &support))
+	assert.Zero(t, support.SupportCNYFen)
+	assert.True(t, support.HasSupport, "verified foreign-currency support satisfies only the zero threshold")
+	for index, principal := range []int64{common.MaxWalletQuota, 1} {
+		payment := model.TopUp{UserId: user.Id, TradeNo: "large-" + strconv.Itoa(index), Status: common.TopUpStatusSuccess,
+			PaymentProvider: model.PaymentProviderStripe, PaymentCurrency: "CNY", PaymentReference: "large-" + strconv.Itoa(index),
+			PaymentVerified: true, PaymentPositive: true, PaymentPrincipalFen: principal}
+		require.NoError(t, db.Create(&payment).Error)
+		require.NoError(t, db.Create(&model.UnifiedWalletPaymentReceipt{ID: model.WalletReference("payment-receipt", payment.PaymentProvider, payment.PaymentReference), TopUpID: payment.Id}).Error)
+		response = call(queryFor(user.Id), secret)
+		if index == 0 {
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &support))
+			assert.EqualValues(t, common.MaxWalletQuota, support.SupportCNYFen)
+		} else {
+			assert.Equal(t, http.StatusServiceUnavailable, response.Code, "overflow must not return an inexact support amount")
+		}
+	}
+	require.NoError(t, db.Delete(&user).Error)
+	assert.Equal(t, http.StatusBadRequest, call(queryFor(user.Id), secret).Code)
+}
 
 func TestCommunityReferralServiceAuthorizationAndConfig(t *testing.T) {
 	user, _ := setupCommunitySSOTest(t)

@@ -19,6 +19,60 @@ type CommunityLotteryCreditSnapshot struct {
 	QuotaPerUSD string `json:"quota_per_usd"`
 }
 
+type CommunityLotterySupport struct {
+	SupportCNYFen int64 `json:"support_cny_fen"`
+	HasSupport    bool  `json:"has_support"`
+}
+
+func GetCommunityLotterySupport(userID int) (*CommunityLotterySupport, error) {
+	if userID <= 0 || userID > common.MaxWalletQuota {
+		return nil, ErrInvalidTopUpQuota
+	}
+	var user User
+	if err := DB.Select("id").Where("id = ? AND status = ?", userID, common.UserStatusEnabled).First(&user).Error; err != nil {
+		return nil, err
+	}
+	receipts := DB.Model(&UnifiedWalletPaymentReceipt{}).Select("top_up_id")
+	rows, err := DB.Model(&TopUp{}).
+		Select("payment_currency, payment_principal_fen, payment_refunded_fen").
+		Where("user_id = ? AND status = ? AND payment_verified = ? AND payment_positive = ? AND payment_provider IN ? AND TRIM(payment_reference) <> '' AND id IN (?)",
+			userID, common.TopUpStatusSuccess, true, true,
+			[]string{PaymentProviderEpay, PaymentProviderStripe, PaymentProviderCreem, PaymentProviderWaffo, PaymentProviderWaffoPancake}, receipts).
+		Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := &CommunityLotterySupport{}
+	for rows.Next() {
+		var payment TopUp
+		if err := DB.ScanRows(rows, &payment); err != nil {
+			return nil, err
+		}
+		if payment.PaymentCurrency != "CNY" {
+			result.HasSupport = true
+			continue
+		}
+		if payment.PaymentPrincipalFen < 0 || payment.PaymentRefundedFen < 0 ||
+			payment.PaymentPrincipalFen > common.MaxWalletQuota || payment.PaymentRefundedFen > common.MaxWalletQuota {
+			return nil, ErrWalletQuotaLimitExceeded
+		}
+		if payment.PaymentPrincipalFen <= payment.PaymentRefundedFen {
+			continue
+		}
+		net := payment.PaymentPrincipalFen - payment.PaymentRefundedFen
+		if result.SupportCNYFen > common.MaxWalletQuota-net {
+			return nil, ErrWalletQuotaLimitExceeded
+		}
+		result.SupportCNYFen += net
+		result.HasSupport = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // CreditCommunityLottery reuses the top-up receipt's unique trade number. The
 // receipt and balance are committed together; transport retries cannot recredit.
 func CreditCommunityLottery(userID int, reference string, cents int64) (*TopUp, bool, error) {

@@ -5,7 +5,9 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -30,7 +32,30 @@ func CommunityLotteryCredit(c *gin.Context) {
 		return
 	}
 	if c.Request.Method == http.MethodGet {
-		c.JSON(http.StatusOK, gin.H{"ready": true, "client_id": origin})
+		if c.Request.URL.RawQuery == "" {
+			c.JSON(http.StatusOK, gin.H{"ready": true, "client_id": origin})
+			return
+		}
+		query, err := url.ParseQuery(c.Request.URL.RawQuery)
+		if err != nil || len(query) != 2 || len(query["client_id"]) != 1 || len(query["user_id"]) != 1 || query.Get("client_id") != origin {
+			communitySSOError(c, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		userID, err := strconv.ParseInt(query.Get("user_id"), 10, 64)
+		if err != nil || userID <= 0 || userID > common.MaxWalletQuota || strconv.FormatInt(userID, 10) != query.Get("user_id") {
+			communitySSOError(c, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		support, err := model.GetCommunityLotterySupport(int(userID))
+		if err != nil {
+			status := http.StatusServiceUnavailable
+			if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, model.ErrInvalidTopUpQuota) {
+				status = http.StatusBadRequest
+			}
+			communitySSOError(c, status, "lottery_support_failed")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ready": true, "client_id": origin, "user_id": userID, "support_cny_fen": support.SupportCNYFen, "has_support": support.HasSupport})
 		return
 	}
 	var request struct {
