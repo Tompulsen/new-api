@@ -161,6 +161,186 @@ func TestCommunityLotteryConsumption(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, call(queryFor(user.Id), secret).Code)
 }
 
+func TestCommunityLotterySupport(t *testing.T) {
+	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.TopUp{}, &model.UnifiedWalletPaymentReceipt{}, &model.Log{})
+	oldDB, oldLogDB := model.DB, model.LOG_DB
+	oldMain, oldLog := common.MainDatabaseType(), common.LogDatabaseType()
+	model.DB, model.LOG_DB = db, db
+	common.SetDatabaseTypes(dialect, dialect)
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = oldDB, oldLogDB
+		common.SetDatabaseTypes(oldMain, oldLog)
+	})
+	t.Setenv("COMMUNITY_SSO_ORIGIN", communityTestOrigin)
+	t.Setenv("UNIFIED_WALLET_ENABLED", "true")
+	t.Setenv("UNIFIED_WALLET_QUOTA_PER_CNY", "500000")
+	secret := strings.Repeat("lottery-support-test", 3)
+	t.Setenv("COMMUNITY_LOTTERY_SECRET", secret)
+	user := model.User{Username: "support-user", AffCode: "support-user", Status: common.UserStatusEnabled, Quota: 5000000, UsedQuota: 5000000}
+	other := model.User{Username: "support-other", AffCode: "support-other", Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&user).Error)
+	require.NoError(t, db.Create(&other).Error)
+	query := "?" + url.Values{"client_id": {communityTestOrigin}, "user_id": {strconv.Itoa(user.Id)}, "basis": {"support"}}.Encode()
+	call := func(query, credential string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(response)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/community-sso/lottery"+query, nil)
+		ctx.Request.Header.Set("Authorization", "Bearer "+credential)
+		CommunityLotteryCredit(ctx)
+		return response
+	}
+	assert.Equal(t, http.StatusUnauthorized, call(query, "wrong").Code)
+	for _, invalid := range []string{
+		query + "&basis=support", query + "&extra=1",
+		strings.Replace(query, "basis=support", "basis=consumption", 1),
+		strings.Replace(query, "basis=support", "basis=", 1),
+		"?basis=support", "?basis=support&user_id=1",
+	} {
+		assert.Equal(t, http.StatusBadRequest, call(invalid, secret).Code, invalid)
+	}
+	legacy := func(provider, method string, money float64) model.TopUp {
+		return model.TopUp{PaymentProvider: provider, PaymentMethod: method, Money: money}
+	}
+	verified := func(currency, reference string, principal, refunded int64) model.TopUp {
+		return model.TopUp{PaymentProvider: model.PaymentProviderEpay, PaymentCurrency: currency, PaymentReference: reference,
+			PaymentVerified: true, PaymentPositive: true, PaymentPrincipalFen: principal, PaymentRefundedFen: refunded, Money: 99999}
+	}
+	adminLog := func(request, action, mode string, from, to any) model.Log {
+		data, err := common.Marshal(model.AuditOther{
+			AdminInfo: &model.AuditAdminInfo{AdminID: 99, AdminRole: common.RoleRootUser},
+			Op: &model.AuditOperation{Action: action, Params: model.AuditFields{
+				"target_user_id": user.Id, "mode": mode, "from": from, "to": to,
+			}},
+		})
+		require.NoError(t, err)
+		return model.Log{UserId: user.Id, Type: model.LogTypeTopup, RequestId: request, Other: string(data)}
+	}
+	failedLog := adminLog("failed", "user.quota_add", "add", 0, 500000)
+	var failedMetadata model.AuditOther
+	require.NoError(t, common.UnmarshalJsonStr(failedLog.Other, &failedMetadata))
+	failedMetadata.AuditInfo = &model.AuditRequestInfo{Success: false, Status: 500}
+	failedData, err := common.Marshal(failedMetadata)
+	require.NoError(t, err)
+	failedLog.Other = string(failedData)
+	wrongRoleLog := adminLog("wrong-role", "user.quota_add", "add", 0, 500000)
+	var wrongRoleMetadata model.AuditOther
+	require.NoError(t, common.UnmarshalJsonStr(wrongRoleLog.Other, &wrongRoleMetadata))
+	wrongRoleMetadata.AdminInfo.AdminRole = common.RoleCommonUser
+	wrongRoleData, err := common.Marshal(wrongRoleMetadata)
+	require.NoError(t, err)
+	wrongRoleLog.Other = string(wrongRoleData)
+	noPositive := verified("CNY", "non-positive", 500, 0)
+	noPositive.PaymentPositive = false
+	tests := []struct {
+		name     string
+		payments []model.TopUp
+		logs     []model.Log
+		orphan   bool
+		fen      int64
+		has      bool
+		status   int
+	}{
+		{name: "balance and usage do not imply support"},
+		{name: "historical and manually completed Epay orders accumulate", payments: []model.TopUp{
+			legacy(model.PaymentProviderEpay, "alipay", 3), legacy(model.PaymentProviderEpay, "wxpay", 7),
+		}, fen: 1000, has: true},
+		{name: "old providerless Chinese payment methods", payments: []model.TopUp{
+			legacy("", "alipay", 2), legacy("", "wxpay", 3), legacy("", "unknown", 999),
+		}, fen: 500, has: true},
+		{name: "verified principal less refunds ignores order money", payments: []model.TopUp{verified("CNY", "partial-refund", 2500, 500)}, fen: 2000, has: true},
+		{name: "fully refunded payment", payments: []model.TopUp{verified("CNY", "full-refund", 100, 100)}},
+		{name: "orphaned verification fields", payments: []model.TopUp{verified("CNY", "missing-receipt", 100, 0)}, orphan: true},
+		{name: "duplicate provider reference", payments: []model.TopUp{verified("CNY", "same", 100, 0), verified("CNY", "same", 100, 0)}, fen: 100, has: true},
+		{name: "foreign currencies and nonpayment rewards", payments: []model.TopUp{
+			verified("USD", "usd", 100, 0), noPositive, verified("CNY", "", 500, 0),
+			legacy("community_lottery", "community_lottery", 999), legacy(model.PaymentProviderBalance, "balance", 999),
+			legacy(model.PaymentProviderStripe, "stripe", 999),
+			{PaymentProvider: model.PaymentProviderEpay, PaymentCurrency: "USD", Money: 999},
+			{PaymentProvider: model.PaymentProviderEpay, PaymentCurrency: "CNY", Money: 999},
+			{PaymentProvider: model.PaymentProviderEpay, Money: 999, Status: common.TopUpStatusPending},
+		}},
+		{name: "administrator add and positive override", logs: []model.Log{
+			adminLog("add", "user.quota_add", "add", 0, 15000),
+			adminLog("override", "user.quota_override", "override", 500, 35500),
+		}, fen: 10, has: true},
+		{name: "administrator fractions accumulate before rounding", logs: []model.Log{
+			adminLog("first", "user.quota_add", "add", 0, 2000),
+			adminLog("second", "user.quota_override", "override", 1000, 4000),
+		}, fen: 1, has: true},
+		{name: "positive adjustment below one fen", logs: []model.Log{adminLog("tiny", "user.quota_add", "add", 0, 1)}, has: true},
+		{name: "administrator request is counted once", logs: []model.Log{
+			adminLog("same-request", "user.quota_add", "add", 0, 5000),
+			adminLog("same-request", "user.quota_add", "add", 0, 5000),
+		}, fen: 1, has: true},
+		{name: "failed unrelated negative and malformed adjustments", logs: []model.Log{
+			failedLog, wrongRoleLog,
+			adminLog("subtract", "user.quota_subtract", "subtract", 0, 500000),
+			adminLog("lower", "user.quota_override", "override", 10000, 5000),
+			adminLog("unchanged", "user.quota_override", "override", 5000, 5000),
+			adminLog("mismatch", "user.quota_add", "override", 0, 500000),
+			adminLog("decimal", "user.quota_add", "add", 0, 1.5),
+			adminLog("missing", "user.quota_add", "add", nil, 500000),
+			adminLog("overflow", "user.quota_add", "add", 0, "9223372036854775808"),
+		}},
+		{name: "maximum safe support", payments: []model.TopUp{verified("CNY", "safe", common.MaxWalletQuota, 0)}, fen: common.MaxWalletQuota, has: true},
+		{name: "sum overflow fails closed", payments: []model.TopUp{verified("CNY", "large", common.MaxWalletQuota, 0), verified("CNY", "one", 1, 0)}, status: http.StatusServiceUnavailable},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.NoError(t, db.Where("user_id = ?", user.Id).Delete(&model.TopUp{}).Error)
+			require.NoError(t, db.Where("user_id = ?", user.Id).Delete(&model.Log{}).Error)
+			for paymentIndex, payment := range test.payments {
+				payment.UserId = user.Id
+				payment.TradeNo = "support-" + strconv.Itoa(index) + "-" + strconv.Itoa(paymentIndex)
+				payment.CreateTime, payment.CompleteTime = 1, 1
+				if payment.Status == "" {
+					payment.Status = common.TopUpStatusSuccess
+				}
+				require.NoError(t, db.Create(&payment).Error)
+				if payment.PaymentVerified && !test.orphan {
+					require.NoError(t, db.Create(&model.UnifiedWalletPaymentReceipt{ID: payment.TradeNo, TopUpID: payment.Id}).Error)
+				}
+			}
+			if len(test.logs) > 0 {
+				require.NoError(t, db.Create(&test.logs).Error)
+			}
+			response := call(query, secret)
+			if test.status != 0 {
+				assert.Equal(t, test.status, response.Code, response.Body.String())
+				return
+			}
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var result map[string]any
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+			assert.Equal(t, "support", result["basis"])
+			assert.Equal(t, float64(test.fen), result["support_cny_fen"])
+			assert.Equal(t, test.has, result["has_support"])
+			assert.Equal(t, []any{"balance", "charity"}, result["reward_kinds"])
+			assert.Equal(t, float64(100), result["quota_per_point"])
+			assert.NotContains(t, result, "consumption_cny_fen")
+			assert.NotContains(t, result, "has_consumption")
+		})
+	}
+	t.Run("other users and unavailable log storage", func(t *testing.T) {
+		require.NoError(t, db.Where("user_id = ?", user.Id).Delete(&model.TopUp{}).Error)
+		require.NoError(t, db.Where("user_id = ?", user.Id).Delete(&model.Log{}).Error)
+		payment := legacy(model.PaymentProviderEpay, "alipay", 999)
+		payment.UserId, payment.Status, payment.TradeNo = other.Id, common.TopUpStatusSuccess, "other-user-order"
+		require.NoError(t, db.Create(&payment).Error)
+		log := adminLog("wrong-target", "user.quota_add", "add", 0, 500000)
+		log.UserId = other.Id
+		require.NoError(t, db.Create(&log).Error)
+		response := call(query, secret)
+		require.Equal(t, http.StatusOK, response.Code)
+		assert.Contains(t, response.Body.String(), `"has_support":false`)
+		model.LOG_DB = nil
+		assert.Equal(t, http.StatusServiceUnavailable, call(query, secret).Code)
+		model.LOG_DB = db
+		require.NoError(t, db.Model(&user).Update("status", common.UserStatusDisabled).Error)
+		assert.Equal(t, http.StatusBadRequest, call(query, secret).Code)
+	})
+}
+
 func TestCommunityReferralServiceAuthorizationAndConfig(t *testing.T) {
 	user, _ := setupCommunitySSOTest(t)
 	t.Setenv("COMMUNITY_SSO_ORIGIN", communityTestOrigin)

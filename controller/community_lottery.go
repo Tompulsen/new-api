@@ -46,13 +46,30 @@ func CommunityLotteryCredit(c *gin.Context) {
 			return
 		}
 		query, err := url.ParseQuery(c.Request.URL.RawQuery)
-		if err != nil || len(query) != 2 || len(query["client_id"]) != 1 || len(query["user_id"]) != 1 || query.Get("client_id") != origin {
+		support := len(query["basis"]) == 1 && query.Get("basis") == "support"
+		if err != nil || (len(query) != 2 && !(len(query) == 3 && support)) ||
+			(len(query["basis"]) != 0 && !support) || len(query["client_id"]) != 1 || len(query["user_id"]) != 1 || query.Get("client_id") != origin {
 			communitySSOError(c, http.StatusBadRequest, "invalid_request")
 			return
 		}
 		userID, err := strconv.ParseInt(query.Get("user_id"), 10, 64)
 		if err != nil || userID <= 0 || userID > common.MaxWalletQuota || strconv.FormatInt(userID, 10) != query.Get("user_id") {
 			communitySSOError(c, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		if support {
+			result, err := model.GetCommunityLotterySupport(int(userID))
+			if err != nil {
+				status := http.StatusServiceUnavailable
+				if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, model.ErrInvalidTopUpQuota) {
+					status = http.StatusBadRequest
+				}
+				communitySSOError(c, status, "lottery_support_failed")
+				return
+			}
+			capabilities["user_id"], capabilities["basis"] = userID, "support"
+			capabilities["support_cny_fen"], capabilities["has_support"] = result.SupportCNYFen, result.HasSupport
+			c.JSON(http.StatusOK, capabilities)
 			return
 		}
 		consumption, err := model.GetCommunityLotteryConsumption(int(userID))
