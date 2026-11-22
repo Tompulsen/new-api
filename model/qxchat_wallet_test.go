@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/stretchr/testify/assert"
@@ -158,6 +159,107 @@ func TestQXChatSharedWalletReservations(t *testing.T) {
 	count := len(reservations)
 	require.NoError(t, BeginWalletOperation(user.Id, WalletReference("shared-ordinary-api"), WalletAPI, 1, 0))
 	assert.Len(t, reservations, count, "ordinary API calls retain their original billing source")
+
+	t.Run("lottery precedes other welfare and permanent credit", func(t *testing.T) {
+		unifiedWalletPayment(t, user.Id, 25000, 5)
+		permanentBefore := getUserQuotaFromDB(t, user.Id)
+		sharedCallsBefore := len(reservations)
+		expiry := time.Now().Add(time.Hour).Unix()
+		ordinary := unifiedWalletCharity(t, user.Id, 10000, expiry-1800)
+		unlimited := unifiedWalletCharity(t, user.Id, 10000, 0)
+		later := unifiedWalletCharity(t, user.Id, 30000, expiry+3600)
+		soon := unifiedWalletCharity(t, user.Id, 20000, expiry)
+		expired := unifiedWalletCharity(t, user.Id, 40000, expiry-7200)
+		require.NoError(t, DB.Model(&UnifiedWalletLot{}).Where("id IN ?", []int64{later.ID, soon.ID, expired.ID}).Update("source", "community_lottery").Error)
+		mu.Lock()
+		available = 100000
+		mu.Unlock()
+		requestToken := unifiedWalletToken(t, user.Id, 200000)
+		operationID := WalletReference("lottery-priority")
+		require.NoError(t, BeginWalletOperation(user.Id, operationID, WalletCommunity, 10000, requestToken.Id))
+		assert.Len(t, reservations, sharedCallsBefore, "lottery-only usage must not reserve shared welfare")
+		require.NoError(t, DB.First(&soon, soon.ID).Error)
+		assert.Equal(t, int64(10000), soon.RemainingQuota, "earliest lottery batch is consumed first")
+		require.NoError(t, DB.First(&ordinary, ordinary.ID).Error)
+		assert.Equal(t, ordinary.InitialQuota, ordinary.RemainingQuota, "even earlier ordinary welfare follows lottery rewards")
+		assert.Equal(t, permanentBefore, getUserQuotaFromDB(t, user.Id))
+
+		require.NoError(t, ChangeWalletOperation(user.Id, operationID, 30000, "reserved", true))
+		require.NoError(t, DB.First(&later, later.ID).Error)
+		assert.Equal(t, int64(20000), later.RemainingQuota)
+		assert.Len(t, reservations, sharedCallsBefore)
+		exhausted, err := ReserveWalletRealtimeUsage(user.Id, operationID, 180000, 180000)
+		require.NoError(t, err)
+		assert.False(t, exhausted)
+		assert.Equal(t, permanentBefore-10000, getUserQuotaFromDB(t, user.Id))
+		assert.Equal(t, 20000, getTokenFromDB(t, requestToken.Id).RemainQuota)
+		require.Len(t, reservations, sharedCallsBefore+1)
+		sharedRequest := reservations[len(reservations)-1]
+		sharedStatus, err := GetQXChatWalletReservationStatus(sharedRequest)
+		require.NoError(t, err)
+		assert.Equal(t, int64(100000), sharedStatus.Quota)
+		for _, lot := range []UnifiedWalletLot{soon, later, ordinary, unlimited} {
+			require.NoError(t, DB.First(&lot, lot.ID).Error)
+			assert.Zero(t, lot.RemainingQuota)
+		}
+		require.NoError(t, DB.First(&expired, expired.ID).Error)
+		assert.Equal(t, expired.InitialQuota, expired.RemainingQuota)
+
+		require.NoError(t, ChangeWalletOperation(user.Id, operationID, 40000, "reserved", false))
+		assert.Equal(t, permanentBefore, getUserQuotaFromDB(t, user.Id))
+		assert.Equal(t, 160000, getTokenFromDB(t, requestToken.Id).RemainQuota)
+		sharedStatus, err = GetQXChatWalletReservationStatus(sharedRequest)
+		require.NoError(t, err)
+		assert.Zero(t, sharedStatus.Quota)
+		require.NoError(t, DB.First(&later, later.ID).Error)
+		assert.Equal(t, int64(10000), later.RemainingQuota, "reduced usage retains lottery spending")
+		for _, lot := range []UnifiedWalletLot{ordinary, unlimited} {
+			require.NoError(t, DB.First(&lot, lot.ID).Error)
+			assert.Equal(t, lot.InitialQuota, lot.RemainingQuota)
+		}
+
+		// A refund preserves the original expiry, including a batch that just expired.
+		soon.ExpiresAt = time.Now().Add(-time.Minute).Unix()
+		require.NoError(t, DB.Model(&soon).Update("expires_at", soon.ExpiresAt).Error)
+		require.NoError(t, ChangeWalletOperation(user.Id, operationID, 0, "refunded", false))
+		require.NoError(t, ChangeWalletOperation(user.Id, operationID, 0, "refunded", false))
+		assert.Equal(t, 200000, getTokenFromDB(t, requestToken.Id).RemainQuota)
+		sharedStatus, err = GetQXChatWalletReservationStatus(sharedRequest)
+		require.NoError(t, err)
+		assert.Zero(t, sharedStatus.Quota)
+		assert.True(t, sharedStatus.Terminal)
+
+		// Both local lottery debits and remote holds roll back when token charging fails.
+		mu.Lock()
+		available = 100000
+		mu.Unlock()
+		sharedCallsBefore = len(reservations)
+		assert.ErrorIs(t, BeginWalletOperation(user.Id, WalletReference("lottery-token-rollback"), WalletCommunity, 80000, token.Id), ErrWalletInsufficient)
+		require.Len(t, reservations, sharedCallsBefore+1)
+		sharedStatus, err = GetQXChatWalletReservationStatus(reservations[len(reservations)-1])
+		require.NoError(t, err)
+		assert.Zero(t, sharedStatus.Quota)
+		assert.True(t, sharedStatus.Terminal)
+		mu.Lock()
+		invalidSignature = true
+		mu.Unlock()
+		assert.ErrorIs(t, BeginWalletOperation(user.Id, WalletReference("lottery-source-rollback"), WalletCommunity, 80000, 0), ErrWalletUnavailable)
+		mu.Lock()
+		invalidSignature = false
+		mu.Unlock()
+		for _, original := range []UnifiedWalletLot{soon, later, ordinary, unlimited, expired} {
+			var stored UnifiedWalletLot
+			require.NoError(t, DB.First(&stored, original.ID).Error)
+			assert.Equal(t, original.InitialQuota, stored.RemainingQuota)
+			assert.Equal(t, original.ExpiresAt, stored.ExpiresAt)
+		}
+		assert.Equal(t, permanentBefore, getUserQuotaFromDB(t, user.Id))
+		sharedCallsBefore = len(reservations)
+		require.NoError(t, BeginWalletOperation(user.Id, WalletReference("lottery-ordinary-api"), WalletAPI, 1, 0))
+		assert.Len(t, reservations, sharedCallsBefore)
+		require.NoError(t, DB.First(&later, later.ID).Error)
+		assert.Equal(t, later.InitialQuota, later.RemainingQuota, "ordinary API calls cannot consume lottery welfare")
+	})
 
 	// Rebinding and soft deletion do not erase historical committed refund targets.
 	require.NoError(t, DB.Model(&identity).Update("state", QXChatIdentityPending).Error)

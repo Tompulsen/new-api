@@ -221,16 +221,6 @@ func walletEntry(tx *gorm.DB, userID int, operation string, allocation WalletAll
 func takeWalletQuota(tx *gorm.DB, account *UnifiedWalletAccount, operation, mode string, amount int64, requireAvailable bool) ([]WalletAllocation, error) {
 	allocations := []WalletAllocation{}
 	remaining := amount
-	if mode == WalletCommunity && remaining > 0 {
-		allocation, err := reserveQXChatWallet(tx, account.UserID, operation, remaining)
-		if err != nil {
-			return nil, err
-		}
-		if allocation.Quota > 0 {
-			allocations = append(allocations, allocation)
-			remaining -= allocation.Quota
-		}
-	}
 	if mode == WalletAPI && account.LegacyQuota > 0 {
 		take := min(remaining, account.LegacyQuota)
 		account.LegacyQuota -= take
@@ -239,16 +229,29 @@ func takeWalletQuota(tx *gorm.DB, account *UnifiedWalletAccount, operation, mode
 	}
 	kinds := []string{WalletPaid}
 	if mode == WalletCommunity {
-		kinds = []string{WalletCharity, WalletPaid}
+		kinds = []string{WalletCharity, WalletQXChat, WalletPaid}
 	}
 	for _, kind := range kinds {
 		if remaining == 0 {
 			break
 		}
+		if kind == WalletQXChat {
+			allocation, err := reserveQXChatWallet(tx, account.UserID, operation, remaining)
+			if err != nil {
+				return nil, err
+			}
+			if allocation.Quota > 0 {
+				allocations = append(allocations, allocation)
+				remaining -= allocation.Quota
+			}
+			continue
+		}
 		var lots []UnifiedWalletLot
 		query := tx.Where("user_id = ? AND kind = ? AND remaining_quota > 0", account.UserID, kind)
 		if kind == WalletCharity {
-			query = query.Where("expires_at = 0 OR expires_at > ?", time.Now().Unix())
+			// Lottery rewards precede other welfare, with the earliest expiry first.
+			query = query.Where("expires_at = 0 OR expires_at > ?", time.Now().Unix()).
+				Order("CASE WHEN source = 'community_lottery' AND expires_at > 0 THEN 0 ELSE 1 END")
 		}
 		if err := lockForUpdate(query).Order("CASE WHEN expires_at = 0 THEN 1 ELSE 0 END, expires_at, id").Find(&lots).Error; err != nil {
 			return nil, err

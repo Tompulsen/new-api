@@ -55,7 +55,7 @@ jobs:
           TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=postgres dbname=referral_test sslmode=disable
         run: |
           for dialect in sqlite mysql postgres; do
-            TEST_TASK_DB_DIALECT="$dialect" go test ./model -run '^TestCommunityReferral|^TestUnifiedWallet' -count=1 -v
+            TEST_TASK_DB_DIALECT="$dialect" go test ./model -run '^TestCommunityReferral|^TestUnifiedWallet|^TestQXChatSharedWalletReservations$' -count=1 -v
           done
           go test ./controller -run '^TestQXChat|^TestCommunityReferral|^TestOAuthRegistrationPersistsInviter|^TestUnifiedWallet|^TestCommunityLottery' -count=1
   publish:
