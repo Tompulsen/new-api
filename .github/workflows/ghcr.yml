@@ -53,11 +53,14 @@ jobs:
         env:
           TEST_MYSQL_DSN: root@tcp(127.0.0.1:3306)/referral_test?parseTime=true&charset=utf8mb4
           TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=postgres dbname=referral_test sslmode=disable
+          AUDIT_MYSQL_DSN: root@tcp(127.0.0.1:3306)/referral_test?parseTime=true&charset=utf8mb4
+          AUDIT_POSTGRES_DSN: postgres://postgres@127.0.0.1:5432/referral_test?sslmode=disable
         run: |
           for dialect in sqlite mysql postgres; do
             TEST_TASK_DB_DIALECT="$dialect" go test ./model -run '^TestCommunityReferral|^TestUnifiedWallet|^TestQXChatSharedWalletReservations$' -count=1 -v
           done
           go test ./controller -run '^TestQXChat|^TestCommunityReferral|^TestOAuthRegistrationPersistsInviter|^TestUnifiedWallet|^TestCommunityLottery' -count=1
+          go test ./controller -run '^TestUserUsageLogs' -count=1 -v
   publish:
     needs: verify-referrals
     if: github.ref == 'refs/heads/main'

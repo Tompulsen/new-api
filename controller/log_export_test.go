@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -22,6 +23,104 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestUserUsageLogsDatabaseMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		kind, env string
+		typ       common.DatabaseType
+	}{
+		{"sqlite", "", common.DatabaseTypeSQLite},
+		{"mysql", "AUDIT_MYSQL_DSN", common.DatabaseTypeMySQL},
+		{"postgres", "AUDIT_POSTGRES_DSN", common.DatabaseTypePostgreSQL},
+		{"clickhouse", "AUDIT_CLICKHOUSE_DSN", common.DatabaseTypeClickHouse},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			dsn := os.Getenv(tc.env)
+			if tc.env != "" && dsn == "" {
+				t.Skip(tc.env + " is not configured")
+			}
+			db, isolatedDSN := newAuditTestDatabase(t, tc.kind, dsn)
+			mainDB, mainType := db, tc.typ
+			if tc.kind == "clickhouse" {
+				mainDB, _ = newAuditTestDatabase(t, "sqlite", "")
+				mainType = common.DatabaseTypeSQLite
+			}
+			useLogExportDatabases(t, mainDB, db, mainType, tc.typ)
+			if tc.kind == "clickhouse" {
+				t.Setenv("LOG_SQL_DSN", isolatedDSN)
+				require.NoError(t, model.InitLogDB())
+			} else {
+				require.NoError(t, db.AutoMigrate(&model.Log{}))
+			}
+			var version string
+			versionQuery := "SELECT version()"
+			if tc.kind == "sqlite" {
+				versionQuery = "SELECT sqlite_version()"
+			}
+			require.NoError(t, model.LOG_DB.Raw(versionQuery).Scan(&version).Error)
+			t.Logf("log database: %s %s", tc.kind, version)
+			now := time.Now().Unix()
+			name := "vendor/模型_%&+"
+			logs := []model.Log{
+				{UserId: 1, Username: "old-name", CreatedAt: now - 10, Type: model.LogTypeConsume, ModelName: name, Quota: 100, PromptTokens: 20, CompletionTokens: 10, RequestId: "first", Other: `{"admin_info":{"secret":"private"}}`},
+				{UserId: 1, Username: "new%name", CreatedAt: now - 5, Type: model.LogTypeConsume, ModelName: name, Quota: 30, RequestId: "settlement"},
+				{UserId: 1, Username: "new%name", CreatedAt: now, Type: model.LogTypeRefund, ModelName: name, Quota: 40, PromptTokens: 999, RequestId: "refund"},
+				{UserId: 1, CreatedAt: now - 3, Type: model.LogTypeRefund, ModelName: "refund-only", Quota: 50},
+				{UserId: 1, CreatedAt: now - 4, Type: model.LogTypeConsume, ModelName: "", Quota: 0},
+				{UserId: 2, Username: "old-name", CreatedAt: now - 1, Type: model.LogTypeConsume, ModelName: name, Quota: 999999},
+				{UserId: 1, CreatedAt: now - 11, Type: model.LogTypeConsume, ModelName: name, Quota: 999999},
+				{UserId: 1, CreatedAt: now + 1, Type: model.LogTypeConsume, ModelName: name, Quota: 999999},
+				{UserId: 1, CreatedAt: now - 1, Type: model.LogTypeTopup, Quota: 999999},
+				{UserId: 1, CreatedAt: now - 1, Type: model.LogTypeError, Quota: 999999},
+			}
+			for i := range logs {
+				require.NoError(t, model.LOG_DB.Create(&logs[i]).Error)
+			}
+			query := fmt.Sprintf("start_timestamp=%d&end_timestamp=%d", now-10, now)
+			read := func(extra string) map[string]any {
+				result := callLogHandler(t, GetUserUsageLogs, 1, common.RoleCommonUser, query+extra)[0]
+				require.Equal(t, true, result["success"], result)
+				return result["data"].(map[string]any)
+			}
+			all := read("&page_size=1")
+			require.Len(t, all["items"], 1)
+			models := all["models"].([]any)
+			require.Len(t, models, 3)
+			assert.Equal(t, map[string]any{"model_name": name, "consume_quota": float64(130), "refund_quota": float64(40), "consume_records": float64(2), "refund_records": float64(1), "prompt_tokens": float64(20), "completion_tokens": float64(10)}, models[0])
+			filtered := read("&model_name=" + url.QueryEscape(name) + "&p=2&page_size=2")
+			assert.Equal(t, all["models"], filtered["models"])
+			items := filtered["items"].([]any)
+			require.Len(t, items, 1)
+			assert.Equal(t, "first", items[0].(map[string]any)["request_id"])
+			assert.NotContains(t, items[0].(map[string]any)["other"], "private")
+			assert.Len(t, read("&model_name=")["items"], 1)
+			assert.Empty(t, read("&model_name=nonexistent")["items"])
+			assert.Empty(t, read("&p=99")["items"])
+			for _, invalid := range []string{"&p=0", "&p=1000001", "&page_size=-1", "&page_size=101", "&user_id=2", "&model_name=a&model_name=b", "&model_name=%00"} {
+				result := callLogHandler(t, GetUserUsageLogs, 1, common.RoleCommonUser, query+invalid)[0]
+				assert.Equal(t, false, result["success"], invalid)
+			}
+			modelNames := []string{"gpt-case", "GPT-case", "gpt-case ", "modele", "modèle"}
+			for i, modelName := range modelNames {
+				require.NoError(t, model.LOG_DB.Create(&model.Log{UserId: 1, CreatedAt: now, Type: model.LogTypeConsume, ModelName: modelName, Quota: i + 1}).Error)
+			}
+			for i, modelName := range modelNames {
+				result := read("&model_name=" + url.QueryEscape(modelName))
+				require.Len(t, result["models"], 3+len(modelNames), "model IDs must not merge under database collation")
+				entries := result["items"].([]any)
+				require.Len(t, entries, 1, modelName)
+				assert.Equal(t, modelName, entries[0].(map[string]any)["model_name"])
+				assert.EqualValues(t, i+1, entries[0].(map[string]any)["quota"])
+				for _, summary := range result["models"].([]any) {
+					row := summary.(map[string]any)
+					if row["model_name"] == modelName {
+						assert.EqualValues(t, i+1, row["consume_quota"])
+					}
+				}
+			}
+		})
+	}
+}
 
 // callLogHandler runs a log handler as the given user and returns the JSON
 // lines of the response.
