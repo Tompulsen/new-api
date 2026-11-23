@@ -2381,6 +2381,7 @@
     "Enable Two-factor Authentication or Passkey in Security & Access to unlock sensitive operations.": "機密性の高い操作を行うには、「セキュリティとアクセス」で二要素認証またはパスキーを有効にしてください。",
     "Enable Two-factor Authentication or Passkey in your profile to unlock sensitive operations.": "機密性の高い操作を解除するには、プロフィールで二要素認証またはPasskeyを有効にしてください。",
     "Enable unlimited quota for this API key": "このAPIキーの無制限のクォータを有効にする",
+    "Enable video billing": "動画の課金を有効にする",
     "Enable violation deduction": "違反料金控除を有効にする",
     "Enable Waffo": "Waffoを有効化",
     "Enable Waffo Pancake": "Waffo Pancake を有効にする",

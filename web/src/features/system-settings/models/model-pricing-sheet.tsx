@@ -95,6 +95,7 @@ import { cn } from '@/lib/utils'
 import { usePricingPreferencesStore } from '@/stores/pricing-preferences-store'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
+import { SettingsSwitchField } from '../components/settings-form-layout'
 import {
   EMPTY_LANE_ENABLED,
   EMPTY_LANE_PRICES,
@@ -216,6 +217,7 @@ export const ModelPricingEditorPanel = forwardRef<
 ) {
   const { t } = useTranslation()
   const promptPriceId = useId()
+  const videoPricingId = useId()
   const formElementRef = useRef<HTMLFormElement>(null)
   const currencyConfig = useSystemConfigStore((state) => state.config.currency)
   const preference = usePricingPreferencesStore((state) => state.currency)
@@ -247,6 +249,7 @@ export const ModelPricingEditorPanel = forwardRef<
   })
   const [requestRuleExpr, setRequestRuleExpr] = useState('')
   const [videoExpression, setVideoExpression] = useState('')
+  const [videoPricingEnabled, setVideoPricingEnabled] = useState(false)
   const [pluginExpressions, setPluginExpressions] = useState<
     Record<string, string>
   >({})
@@ -404,6 +407,7 @@ export const ModelPricingEditorPanel = forwardRef<
     setConversionReason('')
     setPluginExpressions(editData?.pluginBillingExpr ?? {})
     setVideoExpression(initialVideoExpression)
+    setVideoPricingEnabled(Boolean(initialVideoExpression))
     setOrdinaryPricingModel(null)
     setWasConverted(false)
     setConversionPreview(null)
@@ -474,6 +478,7 @@ export const ModelPricingEditorPanel = forwardRef<
         pricingMode !== initialPricingMode ||
         billingExpr !== initialBillingExpr ||
         requestRuleExpr !== (editData?.requestRuleExpr ?? '') ||
+        videoPricingEnabled !== Boolean(initialVideoExpression) ||
         videoExpression !== initialVideoExpression ||
         !pluginExpressionsEqual(pluginExpressions, editData?.pluginBillingExpr)
     )
@@ -487,6 +492,7 @@ export const ModelPricingEditorPanel = forwardRef<
     initialPricingMode,
     initialBillingExpr,
     pluginExpressions,
+    videoPricingEnabled,
     videoExpression,
     initialVideoExpression,
   ])
@@ -694,13 +700,11 @@ export const ModelPricingEditorPanel = forwardRef<
   }, [editData, laneEnabled, lanePrices, pricingMode, promptPrice, t])
 
   const validatePricingValues = useCallback(() => {
-    if (pricingMode === 'video') {
-      if (!videoExpression.trim()) {
-        handleServerError(new Error(t('Billing expression is required')))
-        return false
-      }
-      return true
+    if (videoPricingEnabled && !videoExpression.trim()) {
+      handleServerError(new Error(t('Billing expression is required')))
+      return false
     }
+    if (pricingMode === 'video') return true
     if (
       pricingMode === 'per-token' &&
       ((toNumberOrNull(promptPrice) === 0 &&
@@ -751,13 +755,14 @@ export const ModelPricingEditorPanel = forwardRef<
     pricingMode,
     promptPrice,
     t,
+    videoPricingEnabled,
     videoExpression,
   ])
 
   const buildSubmitData = useCallback(
     (values: ModelPricingFormValues) => {
       const expressions = { ...pluginExpressions }
-      if (pricingMode === 'video') expressions[videoPluginKey] = videoExpression
+      if (videoPricingEnabled) expressions[videoPluginKey] = videoExpression
       else if (initialVideoExpression) delete expressions[videoPluginKey]
       const data: ModelRatioData = {
         name: values.name.trim(),
@@ -792,6 +797,7 @@ export const ModelPricingEditorPanel = forwardRef<
       pluginExpressions,
       editData,
       pluginVariants,
+      videoPricingEnabled,
       videoExpression,
       initialVideoExpression,
       videoPluginKey,
@@ -1266,14 +1272,25 @@ export const ModelPricingEditorPanel = forwardRef<
                       </FieldGroup>
                     </TabsContent>
                     {videoUsageSchema && (
-                      <TabsContent value='video' className='min-w-0 pt-0'>
-                        <VideoPricingEditor
-                          key={`${editorReloadToken}:${watchedValues.name}:video`}
-                          currency={currency}
-                          expression={videoExpression}
-                          schema={videoUsageSchema}
-                          onChange={setVideoExpression}
+                      <TabsContent
+                        value='video'
+                        className='min-w-0 space-y-3 pt-0'
+                      >
+                        <SettingsSwitchField
+                          controlId={videoPricingId}
+                          label={t('Enable video billing')}
+                          checked={videoPricingEnabled}
+                          onCheckedChange={setVideoPricingEnabled}
                         />
+                        {videoPricingEnabled && (
+                          <VideoPricingEditor
+                            key={`${editorReloadToken}:${watchedValues.name}:video`}
+                            currency={currency}
+                            expression={videoExpression}
+                            schema={videoUsageSchema}
+                            onChange={setVideoExpression}
+                          />
+                        )}
                       </TabsContent>
                     )}
                   </Tabs>

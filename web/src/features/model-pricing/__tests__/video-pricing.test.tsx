@@ -79,7 +79,7 @@ function wrapper(props: { children: React.ReactNode }) {
   )
 }
 
-it('offers an independent video mode, requires an explicit price, and keeps the draft across mode switches', async () => {
+it('enables video pricing explicitly, requires a price, and keeps the draft across mode switches', async () => {
   const editor = createRef<ModelPricingEditorPanelHandle>()
   const dirty = vi.fn()
   render(
@@ -99,6 +99,15 @@ it('offers an independent video mode, requires an explicit price, and keeps the 
   expect(dirty).toHaveBeenLastCalledWith(false)
   await user.click(screen.getByRole('tab', { name: 'Video billing' }))
   expect(dirty).toHaveBeenLastCalledWith(true)
+  const toggle = screen.getByRole('switch', { name: 'Enable video billing' })
+  expect(toggle).not.toBeChecked()
+  expect(
+    screen.queryByRole('textbox', {
+      name: /Video generation unit price:.*480p/,
+    })
+  ).not.toBeInTheDocument()
+  expect((await editor.current?.commitDraft())?.pluginBillingExpr).toEqual({})
+  await user.click(toggle)
   expect(await editor.current?.commitDraft()).toBeNull()
   const price = screen.getByRole('textbox', {
     name: /Video generation unit price:.*480p/,
@@ -166,6 +175,9 @@ it.each([
     render(<ModelPricingPanel modelName='example' />, { wrapper })
     const user = userEvent.setup()
     await user.click(await screen.findByRole('tab', { name: 'Video billing' }))
+    await user.click(
+      screen.getByRole('switch', { name: 'Enable video billing' })
+    )
     const price = screen.getByRole('textbox', {
       name: /Video generation unit price:.*480p/,
     })
@@ -187,8 +199,9 @@ it.each([
   }
 )
 
-it('reopens the stored video price and removes only that provider when saving an ordinary mode', async () => {
+it('disables the stored video price without removing C-compatible or ordinary prices and restores the unsaved draft when reenabled', async () => {
   const editor = createRef<ModelPricingEditorPanelHandle>()
+  const dirty = vi.fn()
   render(
     <ModelPricingEditorPanel
       ref={editor}
@@ -198,10 +211,11 @@ it('reopens the stored video price and removes only that provider when saving an
         price: '0.2',
         pluginBillingExpr: {
           sora: 'tier("base", 0.3)',
-          xai: 'tier("base", 0.5)',
+          'c-compatible': 'tier("base", u("seconds") * 0.2)',
         },
       }}
       videoUsageSchema={schema}
+      onDirtyChange={dirty}
     />,
     { wrapper }
   )
@@ -211,12 +225,30 @@ it('reopens the stored video price and removes only that provider when saving an
   )
   expect(await screen.findByLabelText('Per request (USD)')).toHaveValue('0.3')
   const user = userEvent.setup()
+  const toggle = screen.getByRole('switch', { name: 'Enable video billing' })
+  expect(toggle).toBeChecked()
+  expect(dirty).toHaveBeenLastCalledWith(false)
+  toggle.focus()
+  await user.keyboard(' ')
+  expect(toggle).not.toBeChecked()
+  expect(screen.queryByLabelText('Per request (USD)')).not.toBeInTheDocument()
+  expect(dirty).toHaveBeenLastCalledWith(true)
+  const draft = await editor.current?.commitDraft()
+  expect(draft?.pluginBillingExpr).toEqual({
+    'c-compatible': 'tier("base", u("seconds") * 0.2)',
+  })
+  expect(draft?.billingMode).toBe('video')
+  expect(draft?.price).toBe('0.2')
+  await user.keyboard(' ')
+  expect(toggle).toBeChecked()
+  expect(await screen.findByLabelText('Per request (USD)')).toHaveValue('0.3')
+  expect(dirty).toHaveBeenLastCalledWith(false)
   await user.click(
     screen.getByRole('tab', { name: 'Per-request (deprecated)' })
   )
-  const draft = await editor.current?.commitDraft()
-  expect(draft?.pluginBillingExpr).toEqual({ xai: 'tier("base", 0.5)' })
-  expect(draft?.price).toBe('0.2')
+  expect((await editor.current?.commitDraft())?.pluginBillingExpr?.sora).toBe(
+    'tier("base", 0.3)'
+  )
 })
 
 it('commits the edited raw video price and request rule together', async () => {
@@ -245,6 +277,74 @@ it('commits the edited raw video price and request rule together', async () => {
   )
   const draft = await editor.current?.commitDraft()
   expect(draft?.pluginBillingExpr?.sora).toBe(expression)
+})
+
+it('saves a disabled video price and reopens it disabled while preserving all other prices', async () => {
+  useAuthStore.getState().auth.setUser({
+    id: 1,
+    username: 'administrator',
+    role: 100,
+  })
+  let configured: PricingValues = {
+    ModelPrice: 0.2,
+    'billing_setting.billing_mode': 'ratio',
+    'billing_setting.plugin_billing_expr': {
+      sora: 'tier("base", 0.3)',
+      'c-compatible': 'tier("base", u("seconds") * 0.2)',
+    },
+  }
+  vi.mocked(api.get).mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data:
+        url === '/api/option/model_pricing'
+          ? {
+              entries: [
+                {
+                  model_name: 'saved-video',
+                  version: 'v1',
+                  configured,
+                  effective: configured,
+                },
+              ],
+              options: pricingOptions({}),
+              empty_version: 'empty',
+              video_usage_schema: schema,
+            }
+          : [],
+      vendors: [],
+    },
+  }))
+  const patch = vi
+    .spyOn(api, 'patch')
+    .mockImplementation(async (_url, body) => {
+      configured = (body as { changes: { pricing: PricingValues }[] })
+        .changes[0].pricing
+      return { data: { success: true } }
+    })
+  render(<ModelPricingPanel modelName='saved-video' />, { wrapper })
+  const user = userEvent.setup()
+  await user.click(
+    await screen.findByRole('switch', { name: 'Enable video billing' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Save model prices' }))
+  await waitFor(() => expect(patch).toHaveBeenCalled())
+  expect(configured).toEqual({
+    ModelPrice: 0.2,
+    'billing_setting.billing_mode': 'ratio',
+    'billing_setting.plugin_billing_expr': {
+      'c-compatible': 'tier("base", u("seconds") * 0.2)',
+    },
+  })
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Per-request (deprecated)' })
+    ).toHaveAttribute('aria-selected', 'true')
+  )
+  await user.click(screen.getByRole('tab', { name: 'Video billing' }))
+  expect(
+    screen.getByRole('switch', { name: 'Enable video billing' })
+  ).not.toBeChecked()
 })
 
 it('labels per-request pricing with the selected currency and preserves the USD price', async () => {
@@ -316,6 +416,7 @@ it('keeps an explicit zero video price when saved', async () => {
   )
   const user = userEvent.setup()
   await user.click(screen.getByRole('tab', { name: 'Video billing' }))
+  await user.click(screen.getByRole('switch', { name: 'Enable video billing' }))
   await user.click(screen.getByRole('tab', { name: 'Per request' }))
   await user.type(screen.getByLabelText('Per request (USD)'), '0')
   const draft = await editor.current?.commitDraft()
@@ -344,6 +445,10 @@ it('resets the video draft when switching to a different model', async () => {
   )
   const user = userEvent.setup()
   await user.click(screen.getByRole('tab', { name: 'Video billing' }))
+  expect(
+    screen.getByRole('switch', { name: 'Enable video billing' })
+  ).not.toBeChecked()
+  await user.click(screen.getByRole('switch', { name: 'Enable video billing' }))
   expect(await editor.current?.commitDraft()).toBeNull()
 })
 
@@ -374,9 +479,9 @@ it('preserves native Sora size prices without treating them as generic video pri
 
 it.each([
   ['async-compatible', 'video'],
-  ['async-compatible', 'ordinary'],
+  ['async-compatible', 'disabled'],
   ['sd-compatible', 'video'],
-  ['sd-compatible', 'ordinary'],
+  ['sd-compatible', 'disabled'],
 ])(
   'edits %s and preserves the separate Sora price when saving %s mode',
   async (pluginKey, mode) => {
@@ -430,7 +535,7 @@ it.each([
       await user.type(price, '0.6')
     } else {
       await user.click(
-        screen.getByRole('tab', { name: 'Per-request (deprecated)' })
+        screen.getByRole('switch', { name: 'Enable video billing' })
       )
     }
     const draft = await editor.current?.commitDraft()
@@ -473,6 +578,9 @@ it.each(['async-compatible', 'sd-compatible'])(
     )
     const user = userEvent.setup()
     await user.click(screen.getByRole('tab', { name: 'Video billing' }))
+    await user.click(
+      screen.getByRole('switch', { name: 'Enable video billing' })
+    )
     expect(await editor.current?.commitDraft()).toBeNull()
     await user.click(screen.getByRole('tab', { name: 'Per request' }))
     await user.type(screen.getByLabelText('Per request (USD)'), '0.3')

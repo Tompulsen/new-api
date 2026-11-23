@@ -2381,6 +2381,7 @@
     "Enable Two-factor Authentication or Passkey in Security & Access to unlock sensitive operations.": "請在「安全與存取」中啟用兩步驟驗證或 Passkey，以進行敏感操作。",
     "Enable Two-factor Authentication or Passkey in your profile to unlock sensitive operations.": "在您的個人資料中啟用雙重身份驗證或 Passkey 以解鎖敏感操作。",
     "Enable unlimited quota for this API key": "為此 API 金鑰啟用無限配額",
+    "Enable video billing": "啟用影片計費",
     "Enable violation deduction": "啟用違規扣費",
     "Enable Waffo": "啟用 Waffo",
     "Enable Waffo Pancake": "啟用 Waffo Pancake",
