@@ -20,6 +20,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/abema/go-mp4"
 	"github.com/gin-gonic/gin"
 )
 
@@ -38,6 +39,7 @@ type videoReferenceUploader struct {
 }
 
 var generationFileID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{16,100}$`)
+var videoMediaID = regexp.MustCompile(`^med_[A-Za-z0-9_-]{1,200}$`)
 
 func (u *videoReferenceUploader) discard() {
 	if u == nil || u.adaptor.plugin.Meta.Key != "sd-compatible" {
@@ -57,7 +59,8 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 	}
 	async := u.adaptor.plugin.Meta.Key == "async-compatible"
 	sd := u.adaptor.plugin.Meta.Key == "sd-compatible"
-	if !u.info.HasChannelMeta() || (!async && !sd && (u.adaptor.plugin.Meta.Key != "sora" || u.info.ChannelSetting.VideoRequestFormat != "json")) {
+	cCompatible := u.adaptor.plugin.Meta.Key == "c-compatible"
+	if !u.info.HasChannelMeta() || (!async && !sd && !cCompatible && (u.adaptor.plugin.Meta.Key != "sora" || u.info.ChannelSetting.VideoRequestFormat != "json")) {
 		return reject("video reference uploads require the channel JSON video format")
 	}
 	source, ok := placeholder["__videoUpload"].(map[string]any)
@@ -65,7 +68,7 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		return reject("invalid video reference upload")
 	}
 	mediaType := "image"
-	if async {
+	if async || cCompatible {
 		if value, exists := source["mediaType"]; exists {
 			mediaType, _ = value.(string)
 			if mediaType != "image" && mediaType != "video" && mediaType != "audio" {
@@ -74,7 +77,7 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		}
 	}
 	expectedFields := 1
-	if async && source["mediaType"] != nil {
+	if (async || cCompatible) && source["mediaType"] != nil {
 		expectedFields++
 	}
 	if len(source) != expectedFields {
@@ -86,6 +89,9 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		if mediaType == "image" {
 			maxBytes = min(limit, 16<<20)
 		}
+	}
+	if cCompatible && mediaType != "image" {
+		maxBytes = min(limit, 64<<20)
 	}
 	var data []byte
 	filename := "reference"
@@ -140,6 +146,38 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		return reject("too many reference image uploads in one request")
 	}
 	contentType := http.DetectContentType(data)
+	if cCompatible && mediaType == "audio" && len(data) >= 12 && bytes.Equal(data[4:8], []byte("ftyp")) {
+		// MP4 MIME sniffing cannot distinguish M4A audio from a video container.
+		audio, video, visited := false, false, 0
+		_, err := mp4.ReadBoxStructure(bytes.NewReader(data), func(handle *mp4.ReadHandle) (any, error) {
+			visited++
+			if visited > 512 {
+				return nil, fmt.Errorf("reference audio metadata exceeds the box limit")
+			}
+			depth, kind := len(handle.Path), handle.BoxInfo.Type
+			if (depth == 1 && kind == mp4.BoxTypeMoov()) || (depth == 2 && kind == mp4.BoxTypeTrak()) || (depth == 3 && kind == mp4.BoxTypeMdia()) {
+				return handle.Expand()
+			}
+			if depth == 4 && kind == mp4.BoxTypeHdlr() {
+				if handle.BoxInfo.Size > 4096 {
+					return nil, fmt.Errorf("reference audio metadata header is too large")
+				}
+				box, _, err := handle.ReadPayload()
+				if err != nil {
+					return nil, err
+				}
+				handler := box.(*mp4.Hdlr).HandlerType
+				audio = audio || handler == [4]byte{'s', 'o', 'u', 'n'}
+				video = video || handler == [4]byte{'v', 'i', 'd', 'e'}
+			}
+			return nil, nil
+		})
+		if err == nil && audio && !video {
+			contentType = "audio/mp4"
+		} else {
+			return reject("reference audio must contain audio tracks without video")
+		}
+	}
 	if !strings.HasPrefix(contentType, mediaType+"/") {
 		return reject("reference file must contain " + mediaType + " media")
 	}
@@ -158,7 +196,7 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 	if model == "" {
 		model = u.info.OriginModelName
 	}
-	if !async {
+	if !async && !cCompatible {
 		if err := writer.WriteField("model", model); err != nil {
 			return "", err
 		}
@@ -180,10 +218,13 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		return "", err
 	}
 	baseURL := strings.TrimRight(u.info.ChannelBaseUrl, "/")
-	if async {
+	if async || cCompatible {
 		baseURL = strings.TrimSuffix(baseURL, "/v1")
 	}
 	uploadURL := baseURL + "/v1/files"
+	if cCompatible {
+		uploadURL = baseURL + "/v1/media/uploads"
+	}
 	if err := pluginruntime.ValidateRequestURL(uploadURL, u.info.ChannelBaseUrl, nil); err != nil {
 		return reject("invalid reference upload endpoint")
 	}
@@ -219,16 +260,24 @@ func (u *videoReferenceUploader) resolve(c *gin.Context, placeholder map[string]
 		return reject("invalid reference image upload response")
 	}
 	var result struct {
-		URL    string `json:"url"`
-		ID     string `json:"id"`
-		FileID string `json:"file_id"`
-		Data   struct {
+		URL     string `json:"url"`
+		ID      string `json:"id"`
+		FileID  string `json:"file_id"`
+		MediaID string `json:"media_id"`
+		Data    struct {
 			URL string `json:"url"`
 			ID  string `json:"id"`
 		} `json:"data"`
 	}
 	if common.Unmarshal(reply, &result) != nil {
 		return reject("invalid reference image upload response")
+	}
+	if cCompatible {
+		if !videoMediaID.MatchString(result.MediaID) {
+			return reject("reference upload did not return a valid media ID")
+		}
+		u.urls[cacheKey] = result.MediaID
+		return result.MediaID, nil
 	}
 	if async {
 		id := result.ID

@@ -1238,6 +1238,97 @@ export function egress(ctx, req) {
 	}
 }
 
+func TestRelayTaskSubmitCCompatibleBillingAndRetryBoundary(t *testing.T) {
+	setupRelayChannelDB(t)
+	saveBillingConfig(t)
+	service.InitHttpClient()
+	source, err := plugins.Source("c-compatible")
+	require.NoError(t, err)
+	registry := pluginruntime.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "c-compatible"})
+	require.NoError(t, err)
+	previousRegistry := pluginruntime.DefaultRegistry
+	pluginruntime.DefaultRegistry = registry
+	t.Cleanup(func() { pluginruntime.DefaultRegistry = previousRegistry })
+	const expression = `tier("video", u("seconds") * 0.1)`
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		billing_setting.PluginBillingExprOption: `{"c-compatible::client-video":"tier(\"video\", u(\"seconds\") * 0.1)","sora::client-video":"tier(\"wrong\", u(\"seconds\") * 99)"}`,
+		"group_ratio_setting.group_ratio":       `{"default":1}`,
+	}))
+	var reference bytes.Buffer
+	require.NoError(t, png.Encode(&reference, image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	for _, tc := range []struct {
+		name, reply, wantCode string
+		wallet, status        int
+		wantRequests          int
+	}{
+		{"mapped model and reserved upload", `{"id":"upstream-123","status":"queued","content_url":"https://private.example"}`, "", 1 << 30, 202, 2},
+		{"no funds prevents upload and generation", "", "insufficient_user_quota", 0, 0, 0},
+		{"ambiguous submission is not retried", `{"error":"private-provider https://private.example"}`, "fail_to_fetch_task", 1 << 30, 502, 2},
+		{"missing task ID is not retried", `{}`, "plugin_submit_response_failed", 1 << 30, 202, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			billing := &imageReservation{limit: tc.wallet}
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				assert.Equal(t, 300000, billing.held)
+				if r.URL.Path == "/v1/media/uploads" {
+					require.NoError(t, r.ParseMultipartForm(1<<20))
+					assert.Empty(t, r.MultipartForm.Value)
+					w.WriteHeader(http.StatusCreated)
+					_, _ = w.Write([]byte(`{"media_id":"med_reference"}`))
+					return
+				}
+				assert.Equal(t, "/v1/videos", r.URL.Path)
+				var actual map[string]any
+				require.NoError(t, common.DecodeJson(r.Body, &actual))
+				assert.Equal(t, float64(6), actual["seconds"])
+				assert.Equal(t, "mapped-video", actual["model"])
+				assert.Equal(t, "768p", actual["resolution"])
+				assert.NotContains(t, actual, "duration")
+				assert.NotContains(t, actual, "metadata")
+				assert.NotEmpty(t, r.Header.Get("Idempotency-Key"))
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.reply))
+			}))
+			defer server.Close()
+			c, info := newTaskSubmitContext(t, "client-video", `{"client-video":"mapped-video"}`)
+			c.Set("task_request", map[string]any{
+				"prompt": "waves", "seconds": 6, "metadata": map[string]any{
+					"duration": 10, "resolution": "768p", "images": []any{"data:" + "image/png;base64," + base64.StdEncoding.EncodeToString(reference.Bytes())},
+				},
+			})
+			c.Set("channel_type", constant.ChannelTypeTaskPlugin)
+			c.Set("group", "default")
+			c.Set("task_plugin_key", "c-compatible")
+			c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+			info.OriginModelName, info.UserGroup, info.UsingGroup = "client-video", "default", "default"
+			info.Billing = billing
+			result, taskErr := RelayTaskSubmit(c, info)
+			assert.Equal(t, tc.wantRequests, requests)
+			if tc.wantCode != "" {
+				require.NotNil(t, taskErr)
+				assert.Equal(t, tc.wantCode, taskErr.Code)
+				assert.Equal(t, tc.wallet > 0, taskErr.NoRetry)
+				assert.NotContains(t, taskErr.Message, "private-provider")
+				assert.NotContains(t, taskErr.Message, "private.example")
+				return
+			}
+			require.Nil(t, taskErr, "%+v", taskErr)
+			require.NotNil(t, result)
+			assert.Equal(t, "upstream-123", result.UpstreamTaskID)
+			assert.Equal(t, 300000, result.Quota)
+			require.NotNil(t, info.TieredBillingSnapshot)
+			assert.Equal(t, expression, info.TieredBillingSnapshot.ExprString)
+			settled, _, err := service.EvaluateTaskCompletionUsage(info.TieredBillingSnapshot, map[string]any{"seconds": 6.5})
+			require.NoError(t, err)
+			assert.Equal(t, 325000, settled.ActualQuotaAfterGroup)
+		})
+	}
+}
+
 func TestRelayTaskSubmitVideoBillingLegacyFallback(t *testing.T) {
 	database := setupRelayChannelDB(t)
 	saveBillingConfig(t)

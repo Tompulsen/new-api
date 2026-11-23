@@ -578,7 +578,11 @@ func lookupTaskPluginEndpoint(generation *pluginruntime.RoutingGeneration, metho
 	}
 	candidates := generation.LookupEndpointCandidates(method, path, lookupModel)
 	if protocol, operation, ok := pluginruntime.LookupHostProtocolOperation(method, path); ok && protocol == "openai_video" && operation.Name == "create" {
-		if plugin, exists := generation.Get("sd-compatible"); exists && model.TaskPluginServesModel(generation, plugin, pinModel) && !slices.ContainsFunc(candidates, func(candidate pluginruntime.ProtocolBinding) bool { return candidate.Plugin == plugin }) {
+		for _, key := range []string{"sd-compatible", "c-compatible"} {
+			plugin, exists := generation.Get(key)
+			if !exists || !model.TaskPluginServesModel(generation, plugin, pinModel) || slices.ContainsFunc(candidates, func(candidate pluginruntime.ProtocolBinding) bool { return candidate.Plugin == plugin }) {
+				continue
+			}
 			for _, claim := range plugin.Meta.Protocols {
 				if claim.Name == protocol {
 					candidates = append(candidates, pluginruntime.ProtocolBinding{Plugin: plugin, Protocol: protocol, Operation: operation, Model: pinModel})

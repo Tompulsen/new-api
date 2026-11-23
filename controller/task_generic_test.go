@@ -784,6 +784,45 @@ func TestTaskMediaRequestHeaderPolicy(t *testing.T) {
 	assert.ErrorIs(t, applyTaskMediaRequestHeaders(http.Header{}, map[string]string{"X-Test": "bad\r\ninjected"}), errTaskMediaRequestRejected)
 }
 
+func TestTaskMediaSignedRedirectStripsEveryCredential(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	allowPrivateTaskMediaTest(t)
+	var hops []string
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hops = append(hops, "cdn")
+		assert.Empty(t, r.Header.Get("Authorization"))
+		assert.Empty(t, r.Header.Get("Cookie"))
+		assert.Empty(t, r.Header.Get("X-Provider-Key"))
+		assert.Empty(t, r.Header.Get("Referer"))
+		assert.Equal(t, "bytes=0-3", r.Header.Get("Range"))
+		_, _ = w.Write([]byte("video"))
+	}))
+	defer destination.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hops = append(hops, r.URL.Path)
+		if r.URL.Path == "/content" {
+			assert.Equal(t, "Bearer secret", r.Header.Get("Authorization"))
+			http.Redirect(w, r, "/signed", http.StatusFound)
+			return
+		}
+		assert.Empty(t, r.Header.Get("Authorization"), "even a same-origin signed redirect must be anonymous")
+		assert.Empty(t, r.Header.Get("Cookie"))
+		assert.Empty(t, r.Header.Get("X-Provider-Key"))
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/artifact", nil)
+	c.Request.Header.Set("Range", "bytes=0-3")
+	require.NoError(t, proxyTaskMedia(c, task, &relaychannel.TaskContentRequest{
+		URL: source.URL + "/content", Method: http.MethodGet, StripCredentialsOnRedirect: true,
+		Headers: map[string]string{"Authorization": "Bearer secret", "Cookie": "session=secret", "X-Provider-Key": "secret", "Referer": "https://secret.example"},
+	}))
+	assert.Equal(t, []string{"/content", "/signed", "cdn"}, hops)
+	assert.Equal(t, "video", recorder.Body.String())
+}
+
 func TestCredentiallessTaskMediaDescriptorRejectsCredentialsAndBody(t *testing.T) {
 	task := setupGenericTaskTest(t)
 	recorder := httptest.NewRecorder()

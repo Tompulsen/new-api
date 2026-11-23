@@ -977,7 +977,8 @@ func (a *TaskAdaptor) doFetchDescriptor(ctx context.Context, baseURL, key, proxy
 		}
 		// Redirects use the same credential recipients as direct plugin
 		// requests: the channel base host and the plugin's allowedHosts.
-		if pluginruntime.ValidateRequestURL(next.URL.String(), baseURL, a.plugin.Meta.AllowedHosts) != nil {
+		if pluginruntime.ValidateRequestURL(next.URL.String(), baseURL, a.plugin.Meta.AllowedHosts) != nil ||
+			(a.plugin.Meta.Key == "c-compatible" && strings.HasSuffix(req.URL.Path, "/content") && (method == http.MethodGet || method == http.MethodHead)) {
 			credentialsStripped = true
 		}
 		if credentialsStripped {
@@ -1442,13 +1443,14 @@ func (a *TaskAdaptor) BuildContentRequest(ctx context.Context, task *model.Task,
 		}
 	}
 	return &channel.TaskContentRequest{
-		URL:            requestURL,
-		Method:         method,
-		Headers:        headers,
-		Body:           body,
-		Credentialless: descriptor.Credentialless,
-		ContentPath:    descriptor.ContentPath,
-		MimeType:       descriptor.MimeType,
+		URL:                        requestURL,
+		Method:                     method,
+		Headers:                    headers,
+		Body:                       body,
+		Credentialless:             descriptor.Credentialless,
+		StripCredentialsOnRedirect: a.plugin.Meta.Key == "c-compatible",
+		ContentPath:                descriptor.ContentPath,
+		MimeType:                   descriptor.MimeType,
 	}, nil
 }
 

@@ -118,6 +118,8 @@ type TaskContentRequest struct {
 	Headers        map[string]string
 	Body           []byte
 	Credentialless bool
+	// Some APIs authenticate the initial download but require every signed redirect to be anonymous.
+	StripCredentialsOnRedirect bool
 	// ContentPath, when set, locates the artifact's bytes as a base64 string
 	// in the JSON reply instead of the reply being the artifact; MimeType is
 	// then its media type.

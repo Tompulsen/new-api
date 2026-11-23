@@ -35,11 +35,13 @@ func TestVideoBillingDatabaseMatrix(t *testing.T) {
 	plugin, err := jsplugin.DefaultRegistry.Register(string(source), jsplugin.Options{})
 	require.NoError(t, err)
 	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister("sora") })
-	sdSource, err := os.ReadFile("../plugins/tasks/sd-compatible/plugin.js")
-	require.NoError(t, err)
-	_, err = jsplugin.DefaultRegistry.Register(string(sdSource), jsplugin.Options{})
-	require.NoError(t, err)
-	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister("sd-compatible") })
+	for _, key := range []string{"sd-compatible", "c-compatible"} {
+		source, err := os.ReadFile("../plugins/tasks/" + key + "/plugin.js")
+		require.NoError(t, err)
+		_, err = jsplugin.DefaultRegistry.Register(string(source), jsplugin.Options{})
+		require.NoError(t, err)
+		t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister(key) })
+	}
 	_, err = jsplugin.DefaultRegistry.Register(`
 export const meta={apiVersion:1,key:"native-video-billing",name:"Native video",version:"1.0.0",author:{name:"Test"},models:["native-video-billing"],fetchMode:"per_task",
 usageSchema:{seconds:{type:"number",unit:"second"},resolution:{enum:["768P","2K"]}}};
@@ -104,63 +106,81 @@ export function parseTaskResult(){return {};}
 			require.NoError(t, db.Raw(query).Scan(&version).Error)
 			t.Logf("database version: %s", version)
 
-			t.Run("SD channel model pricing", func(t *testing.T) {
-				const name = "S-2.0-九图10s-线路一"
-				channel := &Channel{Type: constant.ChannelTypeNewAPI, Name: "SD arbitrary model", Models: name, Status: common.ChannelStatusEnabled,
-					Setting: common.GetPointer(`{"task_plugin_key":"sd-compatible"}`)}
-				require.NoError(t, db.Create(channel).Error)
-				require.NoError(t, db.Create(&Ability{ChannelId: channel.Id, Group: "default", Model: name, Enabled: true}).Error)
-				rebuildTaskAliasView()
-				t.Cleanup(func() {
-					require.NoError(t, db.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error)
-					require.NoError(t, db.Delete(channel).Error)
+			for _, key := range []string{"sd-compatible", "c-compatible"} {
+				t.Run(key+" channel model pricing", func(t *testing.T) {
+					name := key + "-video-model"
+					settings, err := common.Marshal(map[string]string{"task_plugin_key": key})
+					require.NoError(t, err)
+					channel := &Channel{Type: constant.ChannelTypeNewAPI, Name: "SD arbitrary model", Models: name, Status: common.ChannelStatusEnabled,
+						Setting: common.GetPointer(string(settings))}
+					require.NoError(t, db.Create(channel).Error)
+					require.NoError(t, db.Create(&Ability{ChannelId: channel.Id, Group: "default", Model: name, Enabled: true}).Error)
 					rebuildTaskAliasView()
+					t.Cleanup(func() {
+						require.NoError(t, db.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error)
+						require.NoError(t, db.Delete(channel).Error)
+						rebuildTaskAliasView()
+					})
+					generation := jsplugin.DefaultRegistry.Generation()
+					_, declared := generation.CanonicalModel(name)
+					assert.False(t, declared, "channel models must not become global plugin declarations")
+					providers := TaskPricingPlugins(generation, name)
+					require.Len(t, providers, 1)
+					assert.Equal(t, key, providers[0].Meta.Key)
+					otherKey := "c-compatible"
+					if key == otherKey {
+						otherKey = "sd-compatible"
+					}
+					other, exists := generation.Get(otherKey)
+					require.True(t, exists)
+					assert.False(t, TaskPluginServesModel(generation, other, name), "one driver's channel list cannot grant models to another driver")
+					assert.True(t, VideoBillingRequiresProviderPrice(generation, name))
+					assert.Empty(t, TaskPricingPlugins(generation, "unconfigured-sd-model"))
+					issues, err := GetModelPricingIssues(key)
+					require.NoError(t, err)
+					require.Len(t, issues, 1)
+					assert.Equal(t, name, issues[0].ModelName)
+					assert.Equal(t, ModelPricingIssueUnconfigured, issues[0].Reason)
+					expression := `u("resolution") == "480p" ? tier("480p", u("seconds") * 0.05) : u("resolution") == "720p" ? tier("720p", u("seconds") * 0.075) : tier("1080p", u("seconds") * 0.1)`
+					if key == "c-compatible" {
+						expression = `tier("video", u("seconds") * 0.1)`
+					}
+					for _, price := range []string{expression, `tier("free", 0)`} {
+						draft := PricingValues{billing_setting.PluginBillingExprOption: map[string]any{key: price}}
+						require.NoError(t, ValidateModelPricing(name, draft))
+						snapshot, err := GetModelPricingSnapshot([]string{name})
+						require.NoError(t, err)
+						taskAliasViewPtr.Store(nil) // Cold metadata must load before the single connection enters a transaction.
+						require.NoError(t, UpdateModelPricing([]ModelPricingChange{{ModelName: name, ExpectedVersion: snapshot.Entries[0].Version, Pricing: draft}}))
+						selected, overridden, exists := billing_setting.ResolveTaskBillingExpr(key, name, "vendor-model-id")
+						assert.True(t, exists)
+						assert.True(t, overridden)
+						assert.Equal(t, price, selected)
+						_, exists = billing_setting.GetPluginBillingExpr("sora", name)
+						assert.False(t, exists)
+						snapshot, err = GetModelPricingSnapshot([]string{name})
+						require.NoError(t, err)
+						require.Len(t, snapshot.Entries[0].PluginVariants, 1)
+						variant := snapshot.Entries[0].PluginVariants[0]
+						assert.Equal(t, key, variant.PluginKey)
+						assert.False(t, variant.Stale)
+						assert.True(t, variant.Compatible)
+						assert.Contains(t, variant.UsageSchema, "seconds")
+						if key == "sd-compatible" {
+							assert.Contains(t, variant.UsageSchema, "resolution")
+						} else {
+							assert.NotContains(t, variant.UsageSchema, "resolution")
+						}
+						issues, err = GetModelPricingIssues(key)
+						require.NoError(t, err)
+						assert.Empty(t, issues)
+					}
+					encoded, err := common.Marshal(billing_setting.GetPluginBillingExprCopy())
+					require.NoError(t, err)
+					taskAliasViewPtr.Store(nil)
+					require.NoError(t, UpdateModelPricingOptions(map[string]string{billing_setting.PluginBillingExprOption: string(encoded)}))
 				})
-				generation := jsplugin.DefaultRegistry.Generation()
-				_, declared := generation.CanonicalModel(name)
-				assert.False(t, declared, "channel models must not become global plugin declarations")
-				providers := TaskPricingPlugins(generation, name)
-				require.Len(t, providers, 1)
-				assert.Equal(t, "sd-compatible", providers[0].Meta.Key)
-				assert.True(t, VideoBillingRequiresProviderPrice(generation, name))
-				assert.Empty(t, TaskPricingPlugins(generation, "unconfigured-sd-model"))
-				issues, err := GetModelPricingIssues("sd-compatible")
-				require.NoError(t, err)
-				require.Len(t, issues, 1)
-				assert.Equal(t, name, issues[0].ModelName)
-				assert.Equal(t, ModelPricingIssueUnconfigured, issues[0].Reason)
-				const expression = `u("resolution") == "480p" ? tier("480p", u("seconds") * 0.05) : u("resolution") == "720p" ? tier("720p", u("seconds") * 0.075) : tier("1080p", u("seconds") * 0.1)`
-				for _, price := range []string{expression, `tier("free", 0)`} {
-					draft := PricingValues{billing_setting.PluginBillingExprOption: map[string]any{"sd-compatible": price}}
-					require.NoError(t, ValidateModelPricing(name, draft))
-					snapshot, err := GetModelPricingSnapshot([]string{name})
-					require.NoError(t, err)
-					taskAliasViewPtr.Store(nil) // Cold metadata must load before the single connection enters a transaction.
-					require.NoError(t, UpdateModelPricing([]ModelPricingChange{{ModelName: name, ExpectedVersion: snapshot.Entries[0].Version, Pricing: draft}}))
-					selected, overridden, exists := billing_setting.ResolveTaskBillingExpr("sd-compatible", name, "vendor-model-id")
-					assert.True(t, exists)
-					assert.True(t, overridden)
-					assert.Equal(t, price, selected)
-					_, exists = billing_setting.GetPluginBillingExpr("sora", name)
-					assert.False(t, exists)
-					snapshot, err = GetModelPricingSnapshot([]string{name})
-					require.NoError(t, err)
-					require.Len(t, snapshot.Entries[0].PluginVariants, 1)
-					variant := snapshot.Entries[0].PluginVariants[0]
-					assert.Equal(t, "sd-compatible", variant.PluginKey)
-					assert.False(t, variant.Stale)
-					assert.True(t, variant.Compatible)
-					assert.Contains(t, variant.UsageSchema, "seconds")
-					assert.Contains(t, variant.UsageSchema, "resolution")
-					issues, err = GetModelPricingIssues("sd-compatible")
-					require.NoError(t, err)
-					assert.Empty(t, issues)
-				}
-				encoded, err := common.Marshal(billing_setting.GetPluginBillingExprCopy())
-				require.NoError(t, err)
-				taskAliasViewPtr.Store(nil)
-				require.NoError(t, UpdateModelPricingOptions(map[string]string{billing_setting.PluginBillingExprOption: string(encoded)}))
-			})
+			}
 
 			channel := &Channel{Id: 84301, Type: constant.ChannelTypeOpenAI, Name: "video billing test", Models: "minimax_h3", Status: 1}
 			require.NoError(t, db.Create(channel).Error)

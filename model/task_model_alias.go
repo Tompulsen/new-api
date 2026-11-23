@@ -21,10 +21,10 @@ type TaskAliasTarget struct {
 }
 
 type taskAliasView struct {
-	generation uint64
-	expiresAt  time.Time
-	byFold     map[string]TaskAliasTarget
-	sdModels   map[string]bool
+	generation    uint64
+	expiresAt     time.Time
+	byFold        map[string]TaskAliasTarget
+	channelModels map[string]map[string]bool
 }
 
 const taskAliasViewTTL = 60 * time.Second
@@ -49,27 +49,29 @@ func ResolveTaskModelAlias(g *jsplugin.RoutingGeneration, name string) (TaskAlia
 	return target, ok
 }
 
-// TaskPluginServesModel also accepts channel-configured models for SD compatibility.
+// TaskPluginServesModel also accepts channel-configured compatibility models.
 // Channel selection still enforces the binding, enabled ability and request group.
 func TaskPluginServesModel(g *jsplugin.RoutingGeneration, plugin *jsplugin.LoadedPlugin, name string) bool {
 	if taskPluginServesModel(plugin, name, nil) {
 		return true
 	}
-	if plugin == nil || plugin.Meta.Key != "sd-compatible" {
+	if plugin == nil || (plugin.Meta.Key != "sd-compatible" && plugin.Meta.Key != "c-compatible") {
 		return false
 	}
-	return taskPluginServesModel(plugin, name, sdChannelModels(g))
+	return taskPluginServesModel(plugin, name, channelTaskModels(g))
 }
 
-func taskPluginServesModel(plugin *jsplugin.LoadedPlugin, name string, sdModels map[string]bool) bool {
-	return plugin != nil && (slices.Contains(plugin.Meta.Models, name) || (plugin.Meta.Key == "sd-compatible" && sdModels[name]))
+func taskPluginServesModel(plugin *jsplugin.LoadedPlugin, name string, channelModels map[string]map[string]bool) bool {
+	return plugin != nil && (slices.Contains(plugin.Meta.Models, name) || channelModels[plugin.Meta.Key][name])
 }
 
-func sdChannelModels(g *jsplugin.RoutingGeneration) map[string]bool {
-	if _, enabled := g.Get("sd-compatible"); !enabled {
+func channelTaskModels(g *jsplugin.RoutingGeneration) map[string]map[string]bool {
+	_, sd := g.Get("sd-compatible")
+	_, cCompatible := g.Get("c-compatible")
+	if !sd && !cCompatible {
 		return nil
 	}
-	return loadFreshTaskAliasView(g).sdModels
+	return loadFreshTaskAliasView(g).channelModels
 }
 
 // ResolveTaskPluginModel matches a client model name against a plugin's
@@ -130,10 +132,10 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 		genNum = generation.Number
 	}
 	view := &taskAliasView{
-		generation: genNum,
-		expiresAt:  time.Now().Add(taskAliasViewTTL),
-		byFold:     make(map[string]TaskAliasTarget),
-		sdModels:   make(map[string]bool),
+		generation:    genNum,
+		expiresAt:     time.Now().Add(taskAliasViewTTL),
+		byFold:        make(map[string]TaskAliasTarget),
+		channelModels: make(map[string]map[string]bool),
 	}
 	if DB == nil {
 		return view
@@ -151,9 +153,17 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 	drafts := make(map[string]*taskAliasDraft)
 	for i := range channels {
 		channel := &channels[i]
-		if (channel.Type == constant.ChannelTypeTaskPlugin || channel.Type == constant.ChannelTypeNewAPI) && channel.GetSetting().BindsTaskPlugin("sd-compatible") {
-			for _, name := range channel.GetModels() {
-				view.sdModels[name] = true
+		if channel.Type == constant.ChannelTypeTaskPlugin || channel.Type == constant.ChannelTypeNewAPI {
+			for _, key := range []string{"sd-compatible", "c-compatible"} {
+				if !channel.GetSetting().BindsTaskPlugin(key) {
+					continue
+				}
+				if view.channelModels[key] == nil {
+					view.channelModels[key] = make(map[string]bool)
+				}
+				for _, name := range channel.GetModels() {
+					view.channelModels[key][name] = true
+				}
 			}
 		}
 		mappingJSON := channel.GetModelMapping()

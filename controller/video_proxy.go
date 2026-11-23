@@ -209,6 +209,12 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 			message: "Credentialless artifact request was rejected", err: errTaskMediaRequestRejected,
 		}
 	}
+	if descriptor.StripCredentialsOnRedirect && (method != http.MethodGet && method != http.MethodHead || len(descriptor.Body) > 0) {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_request_rejected",
+			message: "Artifact request was rejected", err: errTaskMediaRequestRejected,
+		}
+	}
 
 	channel, err := model.CacheGetChannel(task.ChannelId)
 	if err != nil {
@@ -262,7 +268,7 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 		req.Header.Set(name, value)
 	}
 
-	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless)
+	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless, descriptor.StripCredentialsOnRedirect)
 	clientWithoutBodyTimeout := *client
 	clientWithoutBodyTimeout.Timeout = 0
 	resp, err := doTaskMediaRequest(&clientWithoutBodyTimeout, req, taskMediaResponseHeaderTimeout)
@@ -491,7 +497,7 @@ func applyTaskMediaRequestHeaders(destination http.Header, headers map[string]st
 	return nil
 }
 
-func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, clientHeaders map[string]string, credentialless bool) *http.Client {
+func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, clientHeaders map[string]string, credentialless, stripCredentials bool) *http.Client {
 	cloned := *base
 	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
@@ -507,8 +513,17 @@ func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, cl
 		if isSelfTaskMediaURL(c, req.URL) {
 			return fmt.Errorf("%w: proxy loop", errTaskMediaRequestRejected)
 		}
+		if stripCredentials && len(via) > 0 && via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
+			return fmt.Errorf("%w: HTTPS downgrade", errTaskMediaRequestRejected)
+		}
+		if stripCredentials {
+			for name := range req.Header {
+				req.Header.Del(name)
+			}
+			req.Host = ""
+		}
 		if len(via) > 0 && !sameTaskMediaOrigin(via[len(via)-1].URL, req.URL) {
-			if !credentialless {
+			if !credentialless && !stripCredentials {
 				return fmt.Errorf("%w: credentialed cross-origin redirect", errTaskMediaRequestRejected)
 			}
 			for name := range req.Header {

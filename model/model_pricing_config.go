@@ -395,8 +395,10 @@ func GetModelPricingIssues(pluginKey string) ([]ModelPricingIssue, error) {
 	served := make(map[string]bool)
 	names := make(map[string]bool)
 	for _, name := range GetEnabledModels() {
-		if sd, ok := generation.Get("sd-compatible"); ok && (pluginKey == "" || pluginKey == sd.Meta.Key) && TaskPluginServesModel(generation, sd, name) {
-			served[name], names[name] = true, true
+		for _, key := range []string{"sd-compatible", "c-compatible"} {
+			if plugin, ok := generation.Get(key); ok && (pluginKey == "" || pluginKey == key) && TaskPluginServesModel(generation, plugin, name) {
+				served[name], names[name] = true, true
+			}
 		}
 		if declared, ok := generation.CanonicalModel(name); ok {
 			served[declared] = true
@@ -522,7 +524,7 @@ func validateModelPricingWithBindings(name string, values, previous PricingValue
 	if strings.TrimSpace(name) == "" {
 		return errors.New("model name is required")
 	}
-	sdModels := aliases.sdModels
+	channelModels := aliases.channelModels
 	// The proposed provider price enables its schema in the same atomic save.
 	videoModels = maps.Clone(videoModels)
 	if videoModels == nil {
@@ -548,12 +550,12 @@ func validateModelPricingWithBindings(name string, values, previous PricingValue
 				return fmt.Errorf("model %s: plugin %s: billing expression is required", name, key)
 			}
 			plugin, exists := generation.Get(key)
-			declared := exists && (taskPluginServesModel(plugin, name, sdModels) || (key == "sora" && videoModels[name]))
+			declared := exists && (taskPluginServesModel(plugin, name, channelModels) || (key == "sora" && videoModels[name]))
 			// An unchanged override stays saveable after its plugin disappears or
 			// stops declaring the model. A sole provider also keeps it after
 			// narrowing its usage profile; relay checks shared models against
 			// each profile, so their prices must follow it.
-			if previousVariants[key] == expression && (!declared || len(taskPricingPlugins(generation, name, videoModels, sdModels)) < 2) {
+			if previousVariants[key] == expression && (!declared || len(taskPricingPlugins(generation, name, videoModels, channelModels)) < 2) {
 				continue
 			}
 			if !declared {
@@ -596,7 +598,7 @@ func validateModelPricingWithBindings(name string, values, previous PricingValue
 				return fmt.Errorf("model %s: an expression cannot read both u() usage facts and chat request quantities such as token counts or image_count", name)
 			}
 			var err error
-			if plugins := taskPricingPlugins(generation, name, videoModels, sdModels); len(plugins) > 0 {
+			if plugins := taskPricingPlugins(generation, name, videoModels, channelModels); len(plugins) > 0 {
 				// A chat price is tested as one; the plugins it cannot price
 				// show as unconfigured and reject tasks until they get a price.
 				chatPrice := false

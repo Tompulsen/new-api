@@ -402,7 +402,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (submitted *Ta
 	}
 
 	// 9. 发送请求
-	if pluginKey == "async-compatible" || pluginKey == "sd-compatible" {
+	if pluginKey == "async-compatible" || pluginKey == "sd-compatible" || pluginKey == "c-compatible" {
 		// A lost reply may already have created a paid job; changing channel
 		// or rebuilding references could create another paid job.
 		defer func() {
@@ -413,6 +413,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (submitted *Ta
 	}
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
+		if pluginKey == "c-compatible" {
+			return nil, service.TaskErrorWrapperLocal(errors.New("Video submission could not be confirmed"), "do_request_failed", http.StatusBadGateway)
+		}
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError, common.UpstreamAddresses(c)...)
 	}
 	if resp == nil {
@@ -422,6 +425,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (submitted *Ta
 	// Any 2xx is a successful submission: task APIs commonly answer 201 Created
 	// or 202 Accepted, and parseSubmitResponse receives the exact status code.
 	if resp.StatusCode/100 != 2 {
+		if pluginKey == "c-compatible" {
+			return nil, service.TaskErrorWrapperLocal(fmt.Errorf("Video submission failed (HTTP %d)", resp.StatusCode), "fail_to_fetch_task", resp.StatusCode)
+		}
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode, common.UpstreamAddresses(c)...)
 	}
