@@ -824,6 +824,42 @@ func TestConvertRequestResponsesToGeminiSkipsThoughtSignatureWhenDisabled(t *tes
 	assert.Empty(t, geminiReq.Contents[0].Parts[0].ThoughtSignature)
 }
 
+func TestConvertRequestGeminiToOpenAIChatPreservesImageConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config string
+	}{
+		{name: "omitted"},
+		{name: "4K", config: `{"imageSize":"4K"}`},
+		{name: "4K with aspect ratio", config: `{"imageSize":"4K","aspectRatio":"16:9"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := &dto.GeminiChatRequest{
+				Contents: []dto.GeminiChatContent{{
+					Role:  "user",
+					Parts: []dto.GeminiPart{{Text: "one cat"}},
+				}},
+				GenerationConfig: dto.GeminiChatGenerationConfig{
+					ImageConfig: json.RawMessage(tt.config),
+				},
+			}
+			info := &convmeta.Values{UpstreamModelName: "gemini-3-pro-image"}
+			result, err := ConvertRequest(context.Background(), info, types.RelayFormatOpenAI, request)
+			require.NoError(t, err)
+			body, err := kitutil.Marshal(result.Value)
+			require.NoError(t, err)
+			var upstream map[string]json.RawMessage
+			require.NoError(t, kitutil.Unmarshal(body, &upstream))
+			if tt.config == "" {
+				assert.NotContains(t, upstream, "imageConfig")
+				return
+			}
+			require.Contains(t, upstream, "imageConfig")
+			assert.JSONEq(t, tt.config, string(upstream["imageConfig"]))
+		})
+	}
+}
+
 func TestConvertRequestOpenAIChatToGeminiImageConfig(t *testing.T) {
 	tests := []struct {
 		name   string

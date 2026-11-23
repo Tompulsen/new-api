@@ -23,8 +23,9 @@ func GeminiGenerateContentRequestToOpenAIChat(ctx context.Context, geminiRequest
 	}
 	modelName = convmeta.UpstreamModelName(info)
 	openaiRequest := &dto.GeneralOpenAIRequest{
-		Model:  modelName,
-		Stream: kitutil.GetPointer(isStream),
+		Model:       modelName,
+		Stream:      kitutil.GetPointer(isStream),
+		ImageConfig: geminiRequest.GenerationConfig.ImageConfig,
 	}
 	sourceModelName := modelName
 	if info != nil && info.GetOriginModelName() != "" {
