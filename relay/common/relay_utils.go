@@ -169,13 +169,8 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 		Mode:     formData.Get("mode"),
 		Image:    formData.Get("image"),
 		Size:     formData.Get("size"),
+		Seconds:  formData.Get("seconds"),
 		Metadata: make(map[string]any),
-	}
-
-	if durationStr := formData.Get("seconds"); durationStr != "" {
-		if duration, err := strconv.Atoi(durationStr); err == nil {
-			req.Duration = duration
-		}
 	}
 
 	if images := formData["images"]; len(images) > 0 {
@@ -274,6 +269,7 @@ func isKnownTaskField(field string) bool {
 		"image":           true,
 		"images":          true,
 		"size":            true,
+		"seconds":         true,
 		"duration":        true,
 		"input_reference": true, // Sora 特有字段
 	}
