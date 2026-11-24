@@ -1258,14 +1258,26 @@ func TestRelayTaskSubmitCCompatibleBillingAndRetryBoundary(t *testing.T) {
 	var reference bytes.Buffer
 	require.NoError(t, png.Encode(&reference, image.NewRGBA(image.Rect(0, 0, 2, 2))))
 	for _, tc := range []struct {
-		name, reply, wantCode string
-		wallet, status        int
-		wantRequests          int
+		name, reply, wantCode, wantMessage string
+		wallet, status                     int
+		wantRequests                       int
 	}{
-		{"mapped model and reserved upload", `{"id":"upstream-123","status":"queued","content_url":"https://private.example"}`, "", 1 << 30, 202, 2},
-		{"no funds prevents upload and generation", "", "insufficient_user_quota", 0, 0, 0},
-		{"ambiguous submission is not retried", `{"error":"private-provider https://private.example"}`, "fail_to_fetch_task", 1 << 30, 502, 2},
-		{"missing task ID is not retried", `{}`, "plugin_submit_response_failed", 1 << 30, 202, 2},
+		{"mapped model and reserved upload", `{"id":"upstream-123","status":"queued","content_url":"https://private.example"}`, "", "", 1 << 30, 202, 2},
+		{"no funds prevents upload and generation", "", "insufficient_user_quota", "", 0, 0, 0},
+		{"ambiguous submission is not retried", `{"error":"private-provider https://private.example"}`, "fail_to_fetch_task", "Video submission failed (HTTP 502)", 1 << 30, 502, 2},
+		{"validation field and reason survive without echoed input", `{"detail":[{"loc":["body","resolution"],"type":"value_error","msg":"private-provider rejected sk-secret https://private.example","input":"data:image/png;base64,cHJpdmF0ZQ==","ctx":{"error":"private-provider"}}]}`, "fail_to_fetch_task", "Video submission failed (HTTP 422): resolution: invalid value (value_error)", 1 << 30, 422, 2},
+		{"missing field is actionable", `{"detail":[{"loc":["body","frame_rate"],"type":"missing","msg":"Field required"}]}`, "fail_to_fetch_task", "Video submission failed (HTTP 422): frame_rate: required field (missing)", 1 << 30, 422, 2},
+		{"multiple validation fields are bounded", `{"detail":[{"loc":["body","resolution"],"type":"literal_error"},{"loc":["body","frame_rate"],"type":"int_parsing"},{"loc":["body","prompt"],"type":"string_too_long"},{"loc":["body","model"],"type":"missing"}]}`, "fail_to_fetch_task", "Video submission failed (HTTP 422): resolution: unsupported value (literal_error); frame_rate: expected integer (int_parsing); prompt: value too long (string_too_long)", 1 << 30, 422, 2},
+		{"structured error preserves safe code", `{"error":{"param":"resolution","code":"unsupported_value","message":"private-provider supports only secret-model https://private.example"}}`, "fail_to_fetch_task", "Video submission failed (HTTP 400): resolution: unsupported value (unsupported_value)", 1 << 30, 400, 2},
+		{"structured error type supplies safe reason", `{"error":{"param":"size","type":"invalid_request_error","message":"private-provider"}}`, "fail_to_fetch_task", "Video submission failed (HTTP 400): size: invalid request (invalid_request_error)", 1 << 30, 400, 2},
+		{"unknown field never exposes provider identity", `{"error":{"param":"private-provider","code":"invalid_value","message":"sk-secret"}}`, "fail_to_fetch_task", "Video submission failed (HTTP 400): invalid value (invalid_value)", 1 << 30, 400, 2},
+		{"unknown code and arbitrary message remain private", `{"error":{"param":"resolution","code":"private-provider","message":"sk-secret"}}`, "fail_to_fetch_task", "Video submission failed (HTTP 400)", 1 << 30, 400, 2},
+		{"validation with unknown type remains private", `{"detail":[{"loc":["body","resolution"],"type":"private-provider","msg":"sk-secret"}]}`, "fail_to_fetch_task", "Video submission failed (HTTP 422)", 1 << 30, 422, 2},
+		{"HTML remains private", `<html>private-provider https://private.example sk-secret</html>`, "fail_to_fetch_task", "Video submission failed (HTTP 502)", 1 << 30, 502, 2},
+		{"trailing JSON is rejected", `{"error":{"param":"resolution","code":"invalid_value"}} {"message":"private-provider"}`, "fail_to_fetch_task", "Video submission failed (HTTP 400)", 1 << 30, 400, 2},
+		{"oversized body is rejected", `{"error":{"param":"resolution","code":"invalid_value"},"input":"` + strings.Repeat("x", 64<<10) + `"}`, "fail_to_fetch_task", "Video submission failed (HTTP 400)", 1 << 30, 400, 2},
+		{"unconfirmed transport is logged without its private cause", "", "do_request_failed", "Video submission could not be confirmed", 1 << 30, -1, 2},
+		{"missing task ID is not retried", `{}`, "plugin_submit_response_failed", "", 1 << 30, 202, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			billing := &imageReservation{limit: tc.wallet}
@@ -1289,6 +1301,14 @@ func TestRelayTaskSubmitCCompatibleBillingAndRetryBoundary(t *testing.T) {
 				assert.NotContains(t, actual, "duration")
 				assert.NotContains(t, actual, "metadata")
 				assert.NotEmpty(t, r.Header.Get("Idempotency-Key"))
+				if tc.status == -1 {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					require.NoError(t, err)
+					_, err = conn.Write([]byte("HTTP/1.1 invalid\r\n\r\n"))
+					require.NoError(t, err)
+					require.NoError(t, conn.Close())
+					return
+				}
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.reply))
 			}))
@@ -1314,6 +1334,17 @@ func TestRelayTaskSubmitCCompatibleBillingAndRetryBoundary(t *testing.T) {
 				assert.Equal(t, tc.wallet > 0, taskErr.NoRetry)
 				assert.NotContains(t, taskErr.Message, "private-provider")
 				assert.NotContains(t, taskErr.Message, "private.example")
+				if tc.wantMessage != "" {
+					assert.Equal(t, tc.wantMessage, taskErr.Message)
+					require.NotNil(t, taskErr.Error)
+					assert.Equal(t, tc.wantMessage, taskErr.Error.Error())
+					assert.False(t, taskErr.LocalError, "upstream failures must use normal correlated error logging")
+					if tc.status != -1 {
+						assert.Equal(t, tc.status, taskErr.StatusCode)
+					} else {
+						assert.Equal(t, http.StatusBadGateway, taskErr.StatusCode)
+					}
+				}
 				return
 			}
 			require.Nil(t, taskErr, "%+v", taskErr)

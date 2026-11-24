@@ -414,7 +414,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (submitted *Ta
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		if pluginKey == "c-compatible" {
-			return nil, service.TaskErrorWrapperLocal(errors.New("Video submission could not be confirmed"), "do_request_failed", http.StatusBadGateway)
+			return nil, service.TaskErrorWrapper(errors.New("Video submission could not be confirmed"), "do_request_failed", http.StatusBadGateway)
 		}
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError, common.UpstreamAddresses(c)...)
 	}
@@ -426,7 +426,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (submitted *Ta
 	// or 202 Accepted, and parseSubmitResponse receives the exact status code.
 	if resp.StatusCode/100 != 2 {
 		if pluginKey == "c-compatible" {
-			return nil, service.TaskErrorWrapperLocal(fmt.Errorf("Video submission failed (HTTP %d)", resp.StatusCode), "fail_to_fetch_task", resp.StatusCode)
+			return nil, cCompatibleSubmissionError(resp)
 		}
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode, common.UpstreamAddresses(c)...)
@@ -481,6 +481,105 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (submitted *Ta
 		Immediate:      parsed.Immediate,
 		PluginState:    parsed.PluginState,
 	}, nil
+}
+
+func cCompatibleSubmissionError(resp *http.Response) *dto.TaskError {
+	message := fmt.Sprintf("Video submission failed (HTTP %d)", resp.StatusCode)
+	const maxErrorBody = 64 << 10
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
+	var payload map[string]any
+	if err != nil || len(body) > maxErrorBody || common.Unmarshal(body, &payload) != nil {
+		return service.TaskErrorWrapper(errors.New(message), "fail_to_fetch_task", resp.StatusCode)
+	}
+	var candidates []struct{ field, code string }
+	if details, ok := payload["detail"].([]any); ok {
+		for _, detail := range details {
+			entry, ok := detail.(map[string]any)
+			if !ok {
+				continue
+			}
+			location, _ := entry["loc"].([]any)
+			if len(location) > 1 && location[0] == "body" {
+				location = location[1:]
+			}
+			if len(location) == 0 {
+				continue
+			}
+			field, _ := location[0].(string)
+			code, _ := entry["type"].(string)
+			candidates = append(candidates, struct{ field, code string }{field, code})
+		}
+	} else {
+		entry := payload
+		if nested, ok := payload["error"].(map[string]any); ok {
+			entry = nested
+		}
+		field, _ := entry["param"].(string)
+		code, _ := entry["code"].(string)
+		if code == "" {
+			code, _ = entry["type"].(string)
+		}
+		candidates = append(candidates, struct{ field, code string }{field, code})
+	}
+	var details []string
+	for _, candidate := range candidates {
+		// Upstream messages and echoed input can identify the provider or expose secrets.
+		// Only known field names, codes and fixed validation reasons cross this boundary.
+		switch candidate.field {
+		case "model", "prompt", "seconds", "duration", "duration_seconds", "size", "resolution", "resolution_name",
+			"aspect_ratio", "aspectRatio", "ratio", "video_reference_frame_mode", "frame_rate", "generate_audio",
+			"generation_options", "input_images", "input_videos", "input_audios", "reference_images", "reference_videos",
+			"reference_audios", "input_reference", "first_frame", "last_frame", "image", "images", "content", "metadata":
+		default:
+			candidate.field = ""
+		}
+		var reason string
+		switch candidate.code {
+		case "missing", "missing_required_parameter":
+			reason = "required field"
+		case "invalid_value", "invalid_parameter", "invalid_parameter_value", "value_error":
+			reason = "invalid value"
+		case "unsupported_value", "literal_error", "enum":
+			reason = "unsupported value"
+		case "invalid_request_error":
+			reason = "invalid request"
+		case "unsupported_parameter", "extra_forbidden":
+			reason = "unexpected parameter"
+		case "string_type":
+			reason = "expected string"
+		case "int_type", "int_parsing":
+			reason = "expected integer"
+		case "float_type", "float_parsing":
+			reason = "expected number"
+		case "bool_type", "bool_parsing":
+			reason = "expected boolean"
+		case "list_type":
+			reason = "expected array"
+		case "dict_type":
+			reason = "expected object"
+		case "greater_than", "greater_than_equal":
+			reason = "value too small"
+		case "less_than", "less_than_equal":
+			reason = "value too large"
+		case "too_short", "string_too_short":
+			reason = "value too short"
+		case "too_long", "string_too_long":
+			reason = "value too long"
+		default:
+			continue
+		}
+		if candidate.field != "" {
+			reason = candidate.field + ": " + reason
+		}
+		details = append(details, reason+" ("+candidate.code+")")
+		if len(details) == 3 {
+			break
+		}
+	}
+	if len(details) > 0 {
+		message += ": " + strings.Join(details, "; ")
+	}
+	return service.TaskErrorWrapper(errors.New(message), "fail_to_fetch_task", resp.StatusCode)
 }
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
