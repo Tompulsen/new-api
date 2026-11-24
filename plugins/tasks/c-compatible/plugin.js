@@ -4,7 +4,7 @@ export const meta = {
   name: "C兼容",
   icon: "text:C",
   description: { en: "Asynchronous video generation with reference media", zh: "异步视频生成，支持参考素材" },
-  version: "1.0.0",
+  version: "1.0.1",
   author: { name: "QuantumNous" },
   models: [],
   fetchMode: "per_task",
@@ -52,24 +52,36 @@ function reference(value, mediaType) {
   return { media_id: { __videoUpload: { dataUrl: value, mediaType } } };
 }
 
-function videoRequest(req, files, model) {
+function videoRequest(req, files, model, decoding = false) {
   if (!object(req)) throw new Error("request body must be an object");
   if (req.metadata !== undefined && !object(req.metadata)) throw new Error("metadata must be an object");
   rejectClientPlaceholders(req);
-  if (!trimmed(req.prompt)) throw new Error("prompt is required");
-  // Freeze an explicit duration for both reservation and submission, without guessing model defaults.
-  const duration = selected(req, ["seconds", "duration_seconds", "duration"]);
-  if (typeof duration !== "string" && typeof duration !== "number") throw new Error("seconds is required");
-  const seconds = Number(duration);
-  if (!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 3600)
-    throw new Error("seconds must be a positive integer no greater than 3600");
-  const body = { model, prompt: req.prompt, seconds };
+  const upscale = model === "DMC 视频超分" || decoding && selected(req, ["operation"]) === "upscale";
+  if (!upscale && selected(req, ["operation"]) === "upscale") throw new Error("upscale requires the DMC video upscaling model");
+  const body = { model };
+  if (upscale && req.prompt !== undefined) {
+    if (typeof req.prompt !== "string" || req.prompt.length > 24000 || new TextEncoder().encode(req.prompt).length > 24000)
+      throw new Error("video upscaling prompt must be text no longer than 24000 UTF-8 bytes");
+    if (req.prompt.trim()) body.prompt = req.prompt;
+  }
+  if (!upscale) {
+    if (!trimmed(req.prompt)) throw new Error("prompt is required");
+    // Freeze an explicit duration for both reservation and submission, without guessing model defaults.
+    const duration = selected(req, ["seconds", "duration_seconds", "duration"]);
+    if (typeof duration !== "string" && typeof duration !== "number") throw new Error("seconds is required");
+    const seconds = Number(duration);
+    if (!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 3600)
+      throw new Error("seconds must be a positive integer no greater than 3600");
+    body.prompt = req.prompt;
+    body.seconds = seconds;
+  }
   for (const [key, aliases] of [
     ["size", ["size"]],
     ["resolution", ["resolution", "resolution_name"]],
     ["aspect_ratio", ["aspect_ratio", "aspectRatio", "ratio"]],
     ["video_reference_frame_mode", ["video_reference_frame_mode"]],
   ]) {
+    if (upscale && key !== "resolution") continue;
     const value = selected(req, aliases);
     if (value !== undefined) {
       if (typeof value !== "string" || !value.trim() || value.length > 128) throw new Error(key + " must be a non-empty string");
@@ -84,10 +96,14 @@ function videoRequest(req, files, model) {
       throw new Error("frame_rate must be an integer between 0 and 240");
     body.frame_rate = value;
   }
+  if (upscale) {
+    if (body.frame_rate !== undefined && body.frame_rate !== 0) throw new Error("video upscaling supports frame_rate 0 only");
+    body.frame_rate = 0;
+  }
   const audio = selected(req, ["generate_audio"]);
   if (audio !== undefined) {
     if (audio !== false && audio !== "false") throw new Error("generate_audio supports false only");
-    body.generate_audio = false;
+    if (!upscale) body.generate_audio = false;
   }
   if (selected(req, ["generation_options"]) !== undefined)
     throw new Error("generation_options is not supported by this video plugin");
@@ -155,6 +171,12 @@ function videoRequest(req, files, model) {
     if (values.length > 128) throw new Error("too many reference media items");
     if (values.length) body["input_" + mediaType + "s"] = values;
   }
+  if (upscale) {
+    if (!body.input_videos || body.input_videos.length !== 1 || body.input_images || body.input_audios)
+      throw new Error("video upscaling requires exactly one source video and no image or audio references");
+    if (!["720p", "1080p", "2k", "4k"].includes(body.resolution))
+      throw new Error("video upscaling resolution must be 720p, 1080p, 2k, or 4k");
+  }
   return body;
 }
 
@@ -180,8 +202,8 @@ function decode(ctx) {
   }
   const model = ctx.model || (object(req) && trimmed(req.model));
   if (!model) throw new Error("model is required");
-  const body = videoRequest(req, ctx.body.files, model);
-  return { kind: "submit", model, action: body.input_images || body.input_videos || body.input_audios ? "reference_to_video" : "text_to_video", requestBody: req };
+  const body = videoRequest(req, ctx.body.files, model, true);
+  return { kind: "submit", model, action: model === "DMC 视频超分" || selected(req, ["operation"]) === "upscale" ? "upscale" : body.input_images || body.input_videos || body.input_audios ? "reference_to_video" : "text_to_video", requestBody: req };
 }
 
 export function buildSubmitRequest(ctx) {
@@ -203,7 +225,14 @@ export function parseSubmitResponse(ctx, response) {
 }
 
 export function extractUsage(ctx) {
-  return { seconds: videoRequest(ctx.requestBody, ctx.files, ctx.upstreamModel || ctx.model).seconds };
+  const model = ctx.upstreamModel || ctx.model;
+  const body = videoRequest(ctx.requestBody, ctx.files, model);
+  if (model !== "DMC 视频超分") return { seconds: body.seconds };
+  // The host replaces this billing-only field with the measured source duration before reservation.
+  const seconds = Number(ctx.requestBody.seconds);
+  if (!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 3600)
+    throw new Error("video upscaling requires a measured source duration no greater than 3600 seconds");
+  return { seconds };
 }
 
 export function extractUsageOnComplete(task, result, body) {

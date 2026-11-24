@@ -1839,6 +1839,29 @@ func (a *TaskAdaptor) buildSubmit(c *gin.Context, info *relaycommon.RelayInfo) (
 	if descriptor.RewriteModel != "" {
 		info.UpstreamModelName = descriptor.RewriteModel
 	}
+	upstreamModel := info.UpstreamModelName
+	if upstreamModel == "" {
+		upstreamModel = info.OriginModelName
+	}
+	if a.plugin.Meta.Key == "c-compatible" && upstreamModel == "DMC 视频超分" {
+		seconds, err := measureVideoUpscaleSource(c, descriptor.Body)
+		if err != nil {
+			return nil, err
+		}
+		value, _ := c.Get("task_request")
+		request, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("video upscaling requires an object request")
+		}
+		// Keep hook inputs immutable and replace client-supplied billing seconds with measured bytes.
+		normalized := make(map[string]any, len(request)+1)
+		maps.Copy(normalized, request)
+		normalized["seconds"] = seconds
+		c.Set("task_request", normalized)
+		if a.routeRequest != nil {
+			a.routeRequest.RequestBody = normalized
+		}
+	}
 	a.submit = &descriptor
 	method := strings.ToUpper(strings.TrimSpace(descriptor.Method))
 	if method == "" {

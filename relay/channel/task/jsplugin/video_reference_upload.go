@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -40,6 +41,142 @@ type videoReferenceUploader struct {
 
 var generationFileID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{16,100}$`)
 var videoMediaID = regexp.MustCompile(`^med_[A-Za-z0-9_-]{1,200}$`)
+
+func measureVideoUpscaleSource(c *gin.Context, value any) (float64, error) {
+	body, _ := value.(map[string]any)
+	references, ok := body["input_videos"].([]any)
+	if !ok || len(references) != 1 {
+		return 0, fmt.Errorf("video upscaling requires exactly one source video")
+	}
+	reference, _ := references[0].(map[string]any)
+	placeholder, _ := reference["media_id"].(map[string]any)
+	source, _ := placeholder["__videoUpload"].(map[string]any)
+	limit := min(maxInlineFileBytes(), int64(64<<20))
+	var data []byte
+	if ref, ok := source["fileRef"].(string); ok {
+		form, err := common.ParseMultipartFormReusable(c)
+		if err != nil {
+			return 0, fmt.Errorf("could not read source video")
+		}
+		defer form.RemoveAll()
+		field, index, valid := pluginruntime.ParseFileReference(ref)
+		if !valid || index >= len(form.File[field]) {
+			return 0, fmt.Errorf("unknown source video file")
+		}
+		header := form.File[field][index]
+		if header.Size <= 0 || header.Size > limit {
+			return 0, fmt.Errorf("source video exceeds the upload size limit")
+		}
+		file, err := header.Open()
+		if err != nil {
+			return 0, fmt.Errorf("could not read source video")
+		}
+		defer file.Close()
+		data, err = io.ReadAll(io.LimitReader(file, limit+1))
+		if err != nil {
+			return 0, fmt.Errorf("could not read source video")
+		}
+	} else if value, ok := source["dataUrl"].(string); ok {
+		header, encoded, valid := strings.Cut(value, ",")
+		if !valid || strings.ToLower(header) != "data:video/mp4;base64" || len(encoded) > base64.StdEncoding.EncodedLen(int(limit)) {
+			return 0, fmt.Errorf("source video must be an MP4 base64 data URL within the upload limit")
+		}
+		var err error
+		data, err = base64.StdEncoding.Strict().DecodeString(encoded)
+		if err != nil {
+			return 0, fmt.Errorf("invalid source video base64")
+		}
+	} else {
+		return 0, fmt.Errorf("attach an MP4 source video")
+	}
+	if len(data) == 0 || int64(len(data)) > limit {
+		return 0, fmt.Errorf("source video exceeds the upload size limit")
+	}
+	if http.DetectContentType(data) != "video/mp4" {
+		return 0, fmt.Errorf("source video must contain MP4 video media")
+	}
+	facts, err := measureMP4Video(data)
+	if err != nil {
+		return 0, fmt.Errorf("source video must contain readable MP4 duration and dimensions")
+	}
+	seconds, _ := facts["seconds"].(float64)
+	var movieTimescale uint32
+	var tracks []struct {
+		video         bool
+		duration      uint64
+		mediaDuration uint64
+		timescale     uint32
+	}
+	visited := 0
+	_, err = mp4.ReadBoxStructure(bytes.NewReader(data), func(handle *mp4.ReadHandle) (any, error) {
+		visited++
+		if visited > 512 {
+			return nil, fmt.Errorf("source video metadata exceeds the box limit")
+		}
+		depth, kind := len(handle.Path), handle.BoxInfo.Type
+		if depth == 2 && kind == mp4.BoxTypeTrak() {
+			tracks = append(tracks, struct {
+				video         bool
+				duration      uint64
+				mediaDuration uint64
+				timescale     uint32
+			}{})
+			return handle.Expand()
+		}
+		if (depth == 1 && kind == mp4.BoxTypeMoov()) || (depth == 3 && kind == mp4.BoxTypeMdia()) {
+			return handle.Expand()
+		}
+		if depth == 2 && kind == mp4.BoxTypeMvhd() || depth == 3 && kind == mp4.BoxTypeTkhd() || depth == 4 && (kind == mp4.BoxTypeMdhd() || kind == mp4.BoxTypeHdlr()) {
+			if handle.BoxInfo.Size > 4096 {
+				return nil, fmt.Errorf("source video metadata header is too large")
+			}
+			box, _, err := handle.ReadPayload()
+			if err != nil {
+				return nil, err
+			}
+			if movie, ok := box.(*mp4.Mvhd); ok {
+				if movieTimescale != 0 || movie.Timescale == 0 {
+					return nil, fmt.Errorf("source video movie timescale is invalid")
+				}
+				movieTimescale = movie.Timescale
+				seconds = max(seconds, float64(movie.GetDuration())/float64(movie.Timescale))
+			} else if len(tracks) > 0 {
+				track := &tracks[len(tracks)-1]
+				switch header := box.(type) {
+				case *mp4.Tkhd:
+					track.duration = header.GetDuration()
+				case *mp4.Mdhd:
+					track.mediaDuration, track.timescale = header.GetDuration(), header.Timescale
+				case *mp4.Hdlr:
+					track.video = header.HandlerType == [4]byte{'v', 'i', 'd', 'e'}
+				}
+			}
+		}
+		return nil, nil
+	})
+	if err != nil || movieTimescale == 0 {
+		return 0, fmt.Errorf("source video must contain readable MP4 movie and track headers")
+	}
+	video := false
+	for _, track := range tracks {
+		if !track.video {
+			continue
+		}
+		video = true
+		if track.timescale == 0 {
+			return 0, fmt.Errorf("source video track timescale is invalid")
+		}
+		// One short movie or track header must not reduce the source reservation.
+		seconds = max(seconds, float64(track.duration)/float64(movieTimescale), float64(track.mediaDuration)/float64(track.timescale))
+	}
+	if !video {
+		return 0, fmt.Errorf("source video must contain a video track")
+	}
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 || seconds > relaycommon.MaxTaskDurationSeconds {
+		return 0, fmt.Errorf("source video duration must be greater than zero and no greater than 3600 seconds")
+	}
+	return math.Ceil(seconds), nil
+}
 
 func (u *videoReferenceUploader) discard() {
 	if u == nil || u.adaptor.plugin.Meta.Key != "sd-compatible" {

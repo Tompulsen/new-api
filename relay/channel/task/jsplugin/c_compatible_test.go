@@ -279,3 +279,156 @@ func TestCCompatibleMP4AudioRequiresAudioOnlyTracks(t *testing.T) {
 		})
 	}
 }
+
+func TestCCompatibleVideoUpscaling(t *testing.T) {
+	service.InitHttpClient()
+	source, err := plugins.Source("c-compatible")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "c-compatible"})
+	require.NoError(t, err)
+	for _, input := range []string{"multipart", "base64", "optional prompt", "short movie header", "short movie and track headers", "short media header", "long media track", "long prompt", "no video", "audio only", "zero duration", "too long", "unsupported format", "multiple videos", "wrong mapped model"} {
+		t.Run(input, func(t *testing.T) {
+			duration, handler := uint32(6500), [4]byte{'v', 'i', 'd', 'e'}
+			if input == "zero duration" {
+				duration = 0
+			} else if input == "too long" {
+				duration = 3600001
+			} else if input == "audio only" {
+				handler = [4]byte{'s', 'o', 'u', 'n'}
+			}
+			movieDuration, trackDuration, mediaDuration := duration, duration, duration
+			if input == "short movie header" || input == "short movie and track headers" || input == "long media track" {
+				movieDuration = 1000
+			}
+			if input == "short movie and track headers" || input == "long media track" {
+				trackDuration = 1000
+			}
+			if input == "short media header" {
+				mediaDuration = 1000
+			} else if input == "long media track" {
+				mediaDuration = 3600001
+			}
+			video := cCompatibleUpscaleMP4(t, movieDuration, trackDuration, mediaDuration, handler)
+			if input == "unsupported format" {
+				video = []byte("not a readable MP4 video")
+			}
+			uploads := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				uploads++
+				assert.Equal(t, "/v1/media/uploads", r.URL.Path)
+				assert.Equal(t, "Bearer secret", r.Header.Get("Authorization"))
+				require.NoError(t, r.ParseMultipartForm(1<<20))
+				file, _, err := r.FormFile("file")
+				require.NoError(t, err)
+				defer file.Close()
+				data, err := io.ReadAll(file)
+				require.NoError(t, err)
+				assert.Equal(t, video, data)
+				_, _ = w.Write([]byte(`{"media_id":"med_source_video"}`))
+			}))
+			defer upstream.Close()
+			request := map[string]any{"seconds": 1, "resolution": "1080p", "metadata": map[string]any{"operation": "upscale"}}
+			if input == "optional prompt" {
+				request["prompt"] = "  Preserve faces and fine details\n"
+			} else if input == "long prompt" {
+				request["prompt"] = strings.Repeat("中", 8001)
+			}
+			c := newMultipartFileContext(t, "input_videos", "source.mp4", "video/mp4", video)
+			if input == "base64" || input == "no video" || input == "multiple videos" {
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader("{}"))
+				c.Request.Header.Set("Content-Type", "application/json")
+				if input != "no video" {
+					dataURL := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(video)
+					request["input_videos"] = []any{dataURL}
+					if input == "multiple videos" {
+						request["input_videos"] = []any{dataURL, "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(append(video, 0))}
+					}
+				}
+			}
+			c.Set("task_request", request)
+			mapped := "DMC 视频超分"
+			if input == "wrong mapped model" {
+				mapped = "video-generation"
+			}
+			info := &relaycommon.RelayInfo{
+				ChannelMeta:   &relaycommon.ChannelMeta{ChannelBaseUrl: upstream.URL, ApiKey: "secret", UpstreamModelName: mapped},
+				TaskRelayInfo: &relaycommon.TaskRelayInfo{PublicTaskID: "task-public-upscale"}, OriginModelName: "client-upscale-alias",
+			}
+			adaptor := New(plugin)
+			adaptor.Init(info)
+			taskErr := adaptor.ValidateRequestAndSetAction(c, info)
+			assert.Zero(t, uploads, "source validation and quota estimation must precede uploads")
+			if input != "multipart" && input != "base64" && input != "optional prompt" && input != "short movie header" && input != "short movie and track headers" && input != "short media header" {
+				require.NotNil(t, taskErr)
+				return
+			}
+			require.Nil(t, taskErr)
+			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+			require.NoError(t, err)
+			assert.Equal(t, float64(7), facts["seconds"], "client-supplied one-second reservation must be replaced")
+			assert.Equal(t, 1, request["seconds"], "the original hook input must not be mutated")
+			assert.Zero(t, uploads)
+			body, err := adaptor.BuildRequestBody(c, info)
+			require.NoError(t, err)
+			var sent map[string]any
+			require.NoError(t, common.DecodeJson(body, &sent))
+			want := map[string]any{"model": "DMC 视频超分", "resolution": "1080p", "frame_rate": float64(0),
+				"input_videos": []any{map[string]any{"media_id": "med_source_video"}}}
+			if input == "optional prompt" {
+				want["prompt"] = request["prompt"]
+			}
+			assert.Equal(t, want, sent)
+			assert.Equal(t, 1, uploads)
+			var settled map[string]any
+			require.NoError(t, plugin.Engine.CallInto(t.Context(), &settled, "extractUsageOnComplete", nil, nil, map[string]any{"seconds": 6.5}))
+			assert.Equal(t, map[string]any{"seconds": 6.5}, settled)
+		})
+	}
+	t.Run("upscaling aliases may decode without generation prompt", func(t *testing.T) {
+		var intent map[string]any
+		require.NoError(t, plugin.Engine.CallPathInto(t.Context(), &intent, "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+			"model": "client-upscale-alias", "body": map[string]any{"kind": "json", "value": map[string]any{
+				"resolution": "1080p", "metadata": map[string]any{"operation": "upscale"}, "input_videos": []any{"data:video/mp4;base64,AA=="},
+			}},
+		}))
+		assert.Equal(t, "upscale", intent["action"])
+		_, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+			"model": "ordinary-video", "body": map[string]any{"kind": "json", "value": map[string]any{"seconds": 6}},
+		})
+		require.ErrorContains(t, err, "prompt is required")
+	})
+}
+
+func cCompatibleUpscaleMP4(t *testing.T, movieDuration, trackDuration, mediaDuration uint32, handler [4]byte) []byte {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "source-*.mp4")
+	require.NoError(t, err)
+	writer := mp4.NewWriter(file)
+	for _, header := range []mp4.IImmutableBox{&mp4.Ftyp{MajorBrand: [4]byte{'m', 'p', '4', '2'}}, &mp4.Mvhd{Timescale: 1000, DurationV0: movieDuration},
+		&mp4.Tkhd{TrackID: 1, DurationV0: trackDuration, Width: 1920 << 16, Height: 1080 << 16}, &mp4.Mdhd{Timescale: 1000, DurationV0: mediaDuration}, &mp4.Hdlr{HandlerType: handler}} {
+		if header.GetType() == mp4.BoxTypeMvhd() {
+			_, err = writer.StartBox(&mp4.BoxInfo{Type: mp4.BoxTypeMoov()})
+			require.NoError(t, err)
+		} else if header.GetType() == mp4.BoxTypeTkhd() {
+			_, err = writer.StartBox(&mp4.BoxInfo{Type: mp4.BoxTypeTrak()})
+			require.NoError(t, err)
+		} else if header.GetType() == mp4.BoxTypeMdhd() {
+			_, err = writer.StartBox(&mp4.BoxInfo{Type: mp4.BoxTypeMdia()})
+			require.NoError(t, err)
+		}
+		_, err = writer.StartBox(&mp4.BoxInfo{Type: header.GetType()})
+		require.NoError(t, err)
+		_, err = mp4.Marshal(writer, header, mp4.Context{})
+		require.NoError(t, err)
+		_, err = writer.EndBox()
+		require.NoError(t, err)
+	}
+	for range 3 {
+		_, err = writer.EndBox()
+		require.NoError(t, err)
+	}
+	require.NoError(t, file.Close())
+	data, err := os.ReadFile(file.Name())
+	require.NoError(t, err)
+	return data
+}
