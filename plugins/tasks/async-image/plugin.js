@@ -3,20 +3,10 @@ export const meta = {
   key: "async-image",
   name: "异步图片",
   icon: "text:异步图",
-  version: "1.0.0",
+  version: "1.0.1",
   author: { name: "QuantumNous" },
   description: { en: "Image tasks with configurable submission and polling", zh: "可配置提交和查询接口的图片任务" },
-  models: [
-    "gpt-image-2-4k",
-    "gpt-image-2-5-flare",
-    "gpt-image-2-6-flare",
-    "gpt-image-2-6-sunburst",
-    "gpt-image-2-5-sunburst",
-    "gpt-image-2.5-cdn渠道二",
-    "gpt-image-2-adobe",
-    "gpt-image-2-5-flare-adobe",
-    "gpt-image-2-5-sunburst-adobe",
-  ],
+  models: [],
   fetchMode: "per_task",
   upstreams: ["vendor"],
   protocols: ["openai_image"],
@@ -109,7 +99,7 @@ function request(ctx) {
   // Billing and routing are derived from the same final body sent upstream.
   const body = Object.assign({}, req, extra, { model: ctx.upstreamModel || ctx.model });
   body.n = count(body);
-  body.response_format = "url";
+  body.response_format = extra.response_format === undefined ? "url" : extra.response_format;
   delete body.stream;
   delete body.partial_images;
   delete body.metadata;

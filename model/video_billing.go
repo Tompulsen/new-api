@@ -127,7 +127,7 @@ func TaskPricingPlugins(generation *jsplugin.RoutingGeneration, name string) []*
 
 func taskPricingPlugins(generation *jsplugin.RoutingGeneration, name string, videoModels map[string]bool, channelModels map[string]map[string]bool) []*jsplugin.LoadedPlugin {
 	plugins := slices.Clone(generation.PluginsByModel(name))
-	for _, key := range []string{"sd-compatible", "c-compatible"} {
+	for _, key := range []string{"sd-compatible", "c-compatible", "async-image"} {
 		if plugin, ok := generation.Get(key); ok && taskPluginServesModel(plugin, name, channelModels) && !slices.Contains(plugins, plugin) {
 			plugins = append(plugins, plugin)
 		}

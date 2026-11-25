@@ -55,7 +55,7 @@ func TaskPluginServesModel(g *jsplugin.RoutingGeneration, plugin *jsplugin.Loade
 	if taskPluginServesModel(plugin, name, nil) {
 		return true
 	}
-	if plugin == nil || (plugin.Meta.Key != "sd-compatible" && plugin.Meta.Key != "c-compatible") {
+	if plugin == nil || (plugin.Meta.Key != "sd-compatible" && plugin.Meta.Key != "c-compatible" && plugin.Meta.Key != "async-image") {
 		return false
 	}
 	return taskPluginServesModel(plugin, name, channelTaskModels(g))
@@ -68,7 +68,8 @@ func taskPluginServesModel(plugin *jsplugin.LoadedPlugin, name string, channelMo
 func channelTaskModels(g *jsplugin.RoutingGeneration) map[string]map[string]bool {
 	_, sd := g.Get("sd-compatible")
 	_, cCompatible := g.Get("c-compatible")
-	if !sd && !cCompatible {
+	_, asyncImage := g.Get("async-image")
+	if !sd && !cCompatible && !asyncImage {
 		return nil
 	}
 	return loadFreshTaskAliasView(g).channelModels
@@ -154,7 +155,7 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 	for i := range channels {
 		channel := &channels[i]
 		if channel.Type == constant.ChannelTypeTaskPlugin || channel.Type == constant.ChannelTypeNewAPI {
-			for _, key := range []string{"sd-compatible", "c-compatible"} {
+			for _, key := range []string{"sd-compatible", "c-compatible", "async-image"} {
 				if !channel.GetSetting().BindsTaskPlugin(key) {
 					continue
 				}

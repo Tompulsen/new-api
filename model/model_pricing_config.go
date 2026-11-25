@@ -395,7 +395,7 @@ func GetModelPricingIssues(pluginKey string) ([]ModelPricingIssue, error) {
 	served := make(map[string]bool)
 	names := make(map[string]bool)
 	for _, name := range GetEnabledModels() {
-		for _, key := range []string{"sd-compatible", "c-compatible"} {
+		for _, key := range []string{"sd-compatible", "c-compatible", "async-image"} {
 			if plugin, ok := generation.Get(key); ok && (pluginKey == "" || pluginKey == key) && TaskPluginServesModel(generation, plugin, name) {
 				served[name], names[name] = true, true
 			}

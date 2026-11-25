@@ -1689,7 +1689,7 @@ func normalizeV1Meta(meta *Meta) error {
 			return fmt.Errorf("plugin meta fetchMode must be per_task or batch")
 		}
 		// Compatibility drivers take their models from bound channels.
-		if len(meta.Models) == 0 && meta.Key != "sd-compatible" && meta.Key != "c-compatible" {
+		if len(meta.Models) == 0 && meta.Key != "sd-compatible" && meta.Key != "c-compatible" && meta.Key != "async-image" {
 			return fmt.Errorf("plugin meta models must contain at least one model")
 		}
 	}

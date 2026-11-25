@@ -38,6 +38,14 @@ func TestAsyncImageConfigurableTaskContract(t *testing.T) {
 	assert.Equal(t, "2304x3456", body["size"])
 	assert.Equal(t, "url", body["response_format"])
 	assert.NotContains(t, body, "wait", "the vendor's undocumented wait default must not be guessed")
+	settings["submit_parameters"] = map[string]any{"response_format": "async"}
+	require.NoError(t, plugin.Engine.CallInto(t.Context(), &request, "buildSubmitRequest", ctx))
+	assert.Equal(t, "async", request.Body.(map[string]any)["response_format"])
+	ctx["files"] = []any{map[string]any{"field": "image", "ref": "ref-1", "filename": "reference.png"}}
+	require.NoError(t, plugin.Engine.CallInto(t.Context(), &request, "buildSubmitRequest", ctx))
+	assert.Equal(t, "multipart", request.BodyType)
+	assert.Contains(t, request.Parts, requestPart{Name: "response_format", Value: "async"})
+	delete(ctx, "files")
 
 	settings["submit_parameters"] = map[string]any{"wait": false, "n": 2}
 	var facts map[string]any

@@ -2165,6 +2165,7 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 						originPin, retry           bool
 						legacy, mapped, shared     bool
 						sd, cCompatible, dualBound bool
+						asyncImage                 bool
 						wantStatus                 int
 					}{
 						{name: "ordinary images bypass plugin decoder", decoderRejects: true},
@@ -2212,6 +2213,16 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 						{name: "C in another group cannot claim request", cCompatible: true, path: "/v1/videos", wrongGroup: true, pluginPriority: 20},
 						{name: "C without requested model cannot claim request", cCompatible: true, path: "/v1/videos", wrongModel: true, pluginPriority: 20},
 						{name: "C channel does not claim image endpoints", cCompatible: true, ordinaryPriority: 20, decoderRejects: true},
+						{name: "async image accepts channel model", asyncImage: true, pluginOnly: true, wantPlugin: true},
+						{name: "async image multipart edits accept channel model", asyncImage: true, path: "/v1/images/edits", multipart: true, pluginOnly: true, wantPlugin: true},
+						{name: "async image accepts mapped channel model", asyncImage: true, model: "friendly-image", mapped: true, pluginOnly: true, wantPlugin: true},
+						{name: "async image wins by priority", asyncImage: true, pluginPriority: 20, wantPlugin: true},
+						{name: "ordinary image wins by priority", asyncImage: true, ordinaryPriority: 20, decoderRejects: true},
+						{name: "disabled async image cannot claim model", asyncImage: true, disabled: true, pluginPriority: 20},
+						{name: "async image in another group cannot claim request", asyncImage: true, wrongGroup: true, pluginPriority: 20},
+						{name: "async image without requested model cannot claim request", asyncImage: true, wrongModel: true, pluginPriority: 20},
+						{name: "unrelated image binding cannot claim model", asyncImage: true, unrelated: true, pluginPriority: 20},
+						{name: "async image channel does not claim video endpoints", asyncImage: true, path: "/v1/videos", ordinaryPriority: 20, decoderRejects: true},
 						{name: "selected plugin retains validation errors", pluginOnly: true, decoderRejects: true, wantStatus: http.StatusBadRequest},
 						{name: "selected plugin retains mode errors", path: "/v1/responses", pluginOnly: true, stream: true, syncOnly: true, wantStatus: http.StatusBadRequest},
 						{name: "origin task still pins its channel", pluginOnly: true, originPin: true, wantPlugin: true},
@@ -2234,6 +2245,10 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 								key = "c-compatible"
 								modelName = common.GetStringIfEmpty(tc.model, "channel-video-model")
 							}
+							if tc.asyncImage {
+								key = "async-image"
+								modelName = common.GetStringIfEmpty(tc.model, "custom-image-model")
+							}
 							if tc.legacy {
 								key, modelName = "alibaba", "qwen-image-3.0"
 							}
@@ -2244,7 +2259,7 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 								decode = `return {model: ctx.model, originTaskIds: ["task-route-origin"], requestBody: {normalized: true}};`
 							}
 							source := taskProtocolPluginSource(key, "1.0.0", `["channel-route-model"]`, path, decode)
-							if tc.sd || tc.cCompatible {
+							if tc.sd || tc.cCompatible || tc.asyncImage {
 								source = taskProtocolPluginSource(key, "1.0.0", `[]`, path, decode)
 							}
 							if tc.syncOnly {
@@ -2346,7 +2361,7 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 								_, pinned := c.Get(jsplugin.ContextKeyPinnedEndpoint)
 								assert.Equal(t, tc.wantPlugin, pinned)
 								_, relayEndpoint := c.Get(jsplugin.ContextKeyRelayEndpoint)
-								if (!tc.sd && !tc.cCompatible) || relayEndpoint || tc.wantPlugin {
+								if (!tc.sd && !tc.cCompatible && !tc.asyncImage) || relayEndpoint || tc.wantPlugin {
 									assert.Equal(t, !tc.wantPlugin, relayEndpoint)
 								}
 								expected := ordinary
@@ -2362,7 +2377,7 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 									} else {
 										assert.Equal(t, map[string]any{"normalized": true}, c.MustGet("task_request"))
 									}
-									if tc.mapped && !tc.sd && !tc.cCompatible {
+									if tc.mapped && !tc.sd && !tc.cCompatible && !tc.asyncImage {
 										assert.Equal(t, "channel-route-model", c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint).MappedModel)
 									}
 									if tc.originPin || tc.shared {

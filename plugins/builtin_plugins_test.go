@@ -191,9 +191,9 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 			}
 			if key == "async-image" {
 				assert.False(t, foundResponses, "the image task plugin does not claim Responses")
-				binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/images/generations", "gpt-image-2-4k")
-				require.True(t, claimed)
-				assert.Same(t, plugin, binding.Plugin)
+				assert.Empty(t, plugin.Meta.Models, "image models are configured on channels")
+				_, claimed := registry.Generation().LookupEndpoint("POST", "/v1/images/generations", "gpt-image-2-4k")
+				assert.False(t, claimed, "no image model is claimed globally")
 			} else if key == "async-compatible" || key == "sd-compatible" || key == "c-compatible" {
 				assert.False(t, foundResponses, "the asynchronous compatibility plugin serves video only")
 			} else {

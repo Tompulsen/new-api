@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"image"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -990,7 +991,7 @@ func TestRelayTaskSubmitAsyncImageReservesBeforeSubmissionAndNeverReplays(t *tes
 	pluginruntime.DefaultRegistry = registry
 	t.Cleanup(func() { pluginruntime.DefaultRegistry = previousRegistry })
 	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
-		billing_setting.PluginBillingExprOption: `{"async-image::gpt-image-2-4k":"tier(\"base\", u(\"image_count\") * 0.1)"}`,
+		billing_setting.PluginBillingExprOption: `{"async-image::custom-image-model":"tier(\"base\", u(\"image_count\") * 0.1)"}`,
 		"group_ratio_setting.group_ratio":       `{"default":1}`,
 	}))
 	for _, tc := range []struct {
@@ -1010,15 +1011,20 @@ func TestRelayTaskSubmitAsyncImageReservesBeforeSubmissionAndNeverReplays(t *tes
 				posts++
 				assert.Equal(t, 100000, billing.held, "reserve both images before contacting the upstream")
 				assert.Equal(t, "/v1/images/generations", r.URL.Path)
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				var request map[string]any
+				require.NoError(t, common.Unmarshal(body, &request))
+				assert.Equal(t, "custom-image-model", request["model"])
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.reply))
 			}))
 			defer server.Close()
-			stored := &model.Channel{Type: constant.ChannelTypeTaskPlugin, BaseURL: &server.URL}
+			stored := &model.Channel{Type: constant.ChannelTypeTaskPlugin, Models: "custom-image-model", BaseURL: &server.URL}
 			stored.SetSetting(kitdto.ChannelSettings{TaskPluginKey: "async-image"})
 			require.NoError(t, model.DB.Create(stored).Error)
-			c, info := newTaskSubmitContext(t, "gpt-image-2-4k", "")
+			c, info := newTaskSubmitContext(t, "custom-image-model", "")
 			c.Set("task_request", map[string]any{"prompt": "poster", "n": 2})
 			c.Set("task_plugin_key", "async-image")
 			c.Set("group", "default")
@@ -1026,7 +1032,7 @@ func TestRelayTaskSubmitAsyncImageReservesBeforeSubmissionAndNeverReplays(t *tes
 			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeTaskPlugin)
 			common.SetContextKey(c, constant.ContextKeyChannelId, stored.Id)
 			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
-			info.OriginModelName, info.UserGroup, info.UsingGroup = "gpt-image-2-4k", "default", "default"
+			info.OriginModelName, info.UserGroup, info.UsingGroup = "custom-image-model", "default", "default"
 			info.Billing = billing
 			result, taskErr := RelayTaskSubmit(c, info)
 			if tc.code != "" {

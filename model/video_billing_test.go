@@ -35,7 +35,7 @@ func TestVideoBillingDatabaseMatrix(t *testing.T) {
 	plugin, err := jsplugin.DefaultRegistry.Register(string(source), jsplugin.Options{})
 	require.NoError(t, err)
 	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister("sora") })
-	for _, key := range []string{"sd-compatible", "c-compatible"} {
+	for _, key := range []string{"sd-compatible", "c-compatible", "async-image"} {
 		source, err := os.ReadFile("../plugins/tasks/" + key + "/plugin.js")
 		require.NoError(t, err)
 		_, err = jsplugin.DefaultRegistry.Register(string(source), jsplugin.Options{})
@@ -106,7 +106,7 @@ export function parseTaskResult(){return {};}
 			require.NoError(t, db.Raw(query).Scan(&version).Error)
 			t.Logf("database version: %s", version)
 
-			for _, key := range []string{"sd-compatible", "c-compatible"} {
+			for _, key := range []string{"sd-compatible", "c-compatible", "async-image"} {
 				t.Run(key+" channel model pricing", func(t *testing.T) {
 					name := key + "-video-model"
 					settings, err := common.Marshal(map[string]string{"task_plugin_key": key})
@@ -145,6 +145,9 @@ export function parseTaskResult(){return {};}
 					if key == "c-compatible" {
 						expression = `tier("video", u("seconds") * 0.1)`
 					}
+					if key == "async-image" {
+						expression = `tier("image", u("image_count") * 0.1)`
+					}
 					for _, price := range []string{expression, `tier("free", 0)`} {
 						draft := PricingValues{billing_setting.PluginBillingExprOption: map[string]any{key: price}}
 						require.NoError(t, ValidateModelPricing(name, draft))
@@ -165,7 +168,12 @@ export function parseTaskResult(){return {};}
 						assert.Equal(t, key, variant.PluginKey)
 						assert.False(t, variant.Stale)
 						assert.True(t, variant.Compatible)
-						assert.Contains(t, variant.UsageSchema, "seconds")
+						if key == "async-image" {
+							assert.Contains(t, variant.UsageSchema, "image_count")
+							assert.NotContains(t, variant.UsageSchema, "seconds")
+						} else {
+							assert.Contains(t, variant.UsageSchema, "seconds")
+						}
 						if key == "sd-compatible" {
 							assert.Contains(t, variant.UsageSchema, "resolution")
 						} else {

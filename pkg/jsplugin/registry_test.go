@@ -70,7 +70,10 @@ func TestValidateV1MetaEnforcesTaskPluginKeyLength(t *testing.T) {
 
 func TestValidateV1MetaAllowsChannelScopedSDModels(t *testing.T) {
 	meta := Meta{APIVersion: 1, Key: "sd-compatible", Name: "Test", Version: "1.0.0", Author: AuthorMeta{Name: "Test"}, FetchMode: "per_task"}
-	require.NoError(t, ValidateV1Meta(meta))
+	for _, key := range []string{"sd-compatible", "c-compatible", "async-image"} {
+		meta.Key = key
+		require.NoError(t, ValidateV1Meta(meta), key)
+	}
 	meta.Key = "other-task"
 	require.ErrorContains(t, ValidateV1Meta(meta), "models must contain at least one model")
 }
