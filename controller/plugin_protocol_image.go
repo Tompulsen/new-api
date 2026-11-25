@@ -17,17 +17,16 @@ import (
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/requestplugin"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
 // serveTaskPluginImageProtocol answers an OpenAI Images API request that a
-// task plugin claimed. The API is synchronous: the durable submission runs
-// first on a context that survives a client disconnect, an asynchronous
-// upstream task is then polled inside the request until it is terminal or the
-// protocol timeout elapses, and the plugin's render hook finally shapes the
-// OpenAI image response from the terminal task.
+// task plugin claimed. Submission survives a client disconnect and is durable
+// before any reply. Async channels return the public task ID immediately;
+// other channels wait for a terminal task and render the OpenAI image result.
 func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEndpoint, deps pluginProtocolBridgeDeps) {
 	deps = deps.withDefaults()
 	requestValue, exists := c.Get(pluginruntime.ContextKeyProtocolRequest)
@@ -101,6 +100,21 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 	}
 	task := outcome.Task
 	if task.Status != model.TaskStatusSuccess && task.Status != model.TaskStatusFailure {
+		var config struct {
+			ImageAsyncEnabled bool `json:"image_async_enabled"`
+		}
+		settings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+		if common.Unmarshal(settings.PluginConfig, &config) == nil && config.ImageAsyncEnabled {
+			statusURL := "/v1/tasks/" + task.TaskID
+			c.Header("Location", statusURL)
+			c.Header("Retry-After", "3")
+			c.Header("Cache-Control", "private, no-store")
+			c.JSON(http.StatusAccepted, gin.H{
+				"task_id": task.TaskID, "status": task.Status, "progress": task.Progress,
+				"status_url": statusURL, "artifacts_url": statusURL + "/artifacts",
+			})
+			return
+		}
 		if taskErr = waitTaskPluginImageTask(c, task, deps); taskErr != nil {
 			if c.Request.Context().Err() == nil {
 				respondTaskPluginImageError(c, taskErr)
@@ -131,7 +145,16 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
-	payload, err := pinned.Plugin.Engine.CallPathWithAdmissionTimeout(c.Request.Context(), deps.admissionTimeout, "protocols", []string{pinned.Protocol, "render"}, protocolRequest.JSValue(), viewValue)
+	renderContext := protocolRequest.JSValue()
+	if len(task.PrivateData.PluginState) > 0 {
+		var state any
+		if err := common.Unmarshal(task.PrivateData.PluginState, &state); err != nil {
+			respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
+			return
+		}
+		renderContext["state"] = state
+	}
+	payload, err := pinned.Plugin.Engine.CallPathWithAdmissionTimeout(c.Request.Context(), deps.admissionTimeout, "protocols", []string{pinned.Protocol, "render"}, renderContext, viewValue)
 	if err != nil {
 		logger.LogError(c, common.LogText("task protocol image render hook failed: %s", err.Error()))
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")

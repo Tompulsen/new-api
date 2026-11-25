@@ -974,6 +974,81 @@ func TestRelayTaskSubmitJSONVideoReservesBeforeUpload(t *testing.T) {
 	}
 }
 
+func TestRelayTaskSubmitAsyncImageReservesBeforeSubmissionAndNeverReplays(t *testing.T) {
+	setupRelayChannelDB(t)
+	saveBillingConfig(t)
+	service.InitHttpClient()
+	previousQuota := common.QuotaPerUnit
+	common.QuotaPerUnit = 500000
+	t.Cleanup(func() { common.QuotaPerUnit = previousQuota })
+	source, err := plugins.Source("async-image")
+	require.NoError(t, err)
+	registry := pluginruntime.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "async-image"})
+	require.NoError(t, err)
+	previousRegistry := pluginruntime.DefaultRegistry
+	pluginruntime.DefaultRegistry = registry
+	t.Cleanup(func() { pluginruntime.DefaultRegistry = previousRegistry })
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		billing_setting.PluginBillingExprOption: `{"async-image::gpt-image-2-4k":"tier(\"base\", u(\"image_count\") * 0.1)"}`,
+		"group_ratio_setting.group_ratio":       `{"default":1}`,
+	}))
+	for _, tc := range []struct {
+		name, reply, code string
+		wallet, status    int
+		noRetry           bool
+	}{
+		{"insufficient funds prevent submission", "", "insufficient_user_quota", 0, 0, false},
+		{"accepted task keeps the reservation for completion", `{"task_no":"upstream-original"}`, "", 1000000, 202, false},
+		{"missing task ID cannot trigger another paid submit", `{}`, "plugin_submit_response_failed", 1000000, 202, true},
+		{"upstream timeout cannot trigger another paid submit", `{"error":"timeout"}`, "fail_to_fetch_task", 1000000, 504, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			billing := &imageReservation{limit: tc.wallet}
+			posts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				posts++
+				assert.Equal(t, 100000, billing.held, "reserve both images before contacting the upstream")
+				assert.Equal(t, "/v1/images/generations", r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.reply))
+			}))
+			defer server.Close()
+			stored := &model.Channel{Type: constant.ChannelTypeTaskPlugin, BaseURL: &server.URL}
+			stored.SetSetting(kitdto.ChannelSettings{TaskPluginKey: "async-image"})
+			require.NoError(t, model.DB.Create(stored).Error)
+			c, info := newTaskSubmitContext(t, "gpt-image-2-4k", "")
+			c.Set("task_request", map[string]any{"prompt": "poster", "n": 2})
+			c.Set("task_plugin_key", "async-image")
+			c.Set("group", "default")
+			c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeTaskPlugin)
+			common.SetContextKey(c, constant.ContextKeyChannelId, stored.Id)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+			info.OriginModelName, info.UserGroup, info.UsingGroup = "gpt-image-2-4k", "default", "default"
+			info.Billing = billing
+			result, taskErr := RelayTaskSubmit(c, info)
+			if tc.code != "" {
+				require.NotNil(t, taskErr)
+				assert.Equal(t, tc.code, taskErr.Code)
+				assert.Equal(t, tc.noRetry, taskErr.NoRetry)
+				if tc.wallet == 0 {
+					assert.Zero(t, posts)
+				} else {
+					assert.Equal(t, 1, posts)
+				}
+				return
+			}
+			require.Nil(t, taskErr, "%+v", taskErr)
+			assert.Equal(t, 1, posts)
+			assert.Equal(t, "upstream-original", result.UpstreamTaskID)
+			assert.Equal(t, 100000, result.Quota)
+			assert.Nil(t, result.Immediate)
+		})
+	}
+}
+
 func TestRelayTaskSubmitAsyncVideoBillingAndRetryBoundary(t *testing.T) {
 	setupRelayChannelDB(t)
 	saveBillingConfig(t)

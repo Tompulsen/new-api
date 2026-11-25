@@ -19,6 +19,7 @@ import (
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -1713,9 +1714,34 @@ func TestServeTaskPluginImageProtocolRendersImmediateResultAndInlinesBase64(t *t
 	}
 }
 
-// An asynchronous vendor task is polled inside the request until it is
-// terminal; a failure and the protocol timeout become OpenAI error envelopes
-// while the durable task stays with the background poller.
+func TestServeTaskPluginImageProtocolReturnsAcceptedWhenChannelEnablesAsync(t *testing.T) {
+	c, recorder := newImageProtocolTestContext("")
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, kitdto.ChannelOtherSettings{PluginConfig: []byte(`{"image_async_enabled":true}`)})
+	deps := pluginProtocolTestDeps()
+	var submitted *model.Task
+	deps.submit = func(_ *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+		outcome := imageProtocolTestOutcome(info, model.TaskStatusSubmitted)
+		submitted = outcome.Task
+		return outcome, nil
+	}
+	deps.pollTask = func(context.Context, *model.Task) error {
+		t.Fatal("an asynchronous response must not wait for upstream completion")
+		return nil
+	}
+	serveTaskPluginImageProtocol(c, imageProtocolTestEndpoint(t), deps)
+	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
+	var response map[string]any
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "task_image", response["task_id"])
+	assert.Equal(t, "/v1/tasks/task_image", response["status_url"])
+	assert.Equal(t, "/v1/tasks/task_image/artifacts", response["artifacts_url"])
+	assert.Equal(t, response["status_url"], recorder.Header().Get("Location"))
+	assert.NotContains(t, recorder.Body.String(), "vendor")
+	assert.Equal(t, model.TaskStatus(model.TaskStatusSubmitted), submitted.Status)
+}
+
+// Synchronous clients wait for completion while the durable task survives
+// a protocol timeout and stays with the background poller.
 func TestServeTaskPluginImageProtocolWaitsForAsynchronousTask(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

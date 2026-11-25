@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "async-compatible", "c-compatible", "doubao", "google", "hailuo", "jimeng", "kling", "sd-compatible", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
+var expectedKeys = []string{"alibaba", "async-compatible", "async-image", "c-compatible", "doubao", "google", "hailuo", "jimeng", "kling", "sd-compatible", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
 
 // The built-in request processing plugins and the stage hooks each exports.
 var requestPluginHooks = map[string][]string{
@@ -189,7 +189,12 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 					break
 				}
 			}
-			if key == "async-compatible" || key == "sd-compatible" || key == "c-compatible" {
+			if key == "async-image" {
+				assert.False(t, foundResponses, "the image task plugin does not claim Responses")
+				binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/images/generations", "gpt-image-2-4k")
+				require.True(t, claimed)
+				assert.Same(t, plugin, binding.Plugin)
+			} else if key == "async-compatible" || key == "sd-compatible" || key == "c-compatible" {
 				assert.False(t, foundResponses, "the asynchronous compatibility plugin serves video only")
 			} else {
 				require.True(t, foundResponses, "openai_responses claim must be present")
@@ -246,7 +251,7 @@ func TestBuiltInRequestPluginsExportTheirStageHooks(t *testing.T) {
 func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
 	bodyOverrides := map[string]map[string]any{}
 	for _, key := range expectedKeys {
-		if key == "async-compatible" || key == "sd-compatible" || key == "c-compatible" {
+		if key == "async-compatible" || key == "sd-compatible" || key == "c-compatible" || key == "async-image" {
 			continue
 		}
 		t.Run(key, func(t *testing.T) {

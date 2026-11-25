@@ -402,7 +402,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (submitted *Ta
 	}
 
 	// 9. 发送请求
-	if pluginKey == "async-compatible" || pluginKey == "sd-compatible" || pluginKey == "c-compatible" {
+	if pluginKey == "async-compatible" || pluginKey == "sd-compatible" || pluginKey == "c-compatible" || pluginKey == "async-image" {
 		// A lost reply may already have created a paid job; changing channel
 		// or rebuilding references could create another paid job.
 		defer func() {

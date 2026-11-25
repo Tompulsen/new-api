@@ -16,6 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { runInNewContext } from 'node:vm'
+
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FormProvider, useForm } from 'react-hook-form'
@@ -62,7 +66,10 @@ const models = ['gpt-5', 'claude-opus-4-7', 'custom-model']
 
 let form: ReturnType<typeof useForm<ChannelFormValues>>
 
-function Harness(props: { config?: Record<string, unknown> }) {
+function Harness(props: {
+  config?: Record<string, unknown>
+  schema?: RequestPluginConfigSchema
+}) {
   form = useForm<ChannelFormValues>({
     defaultValues: {
       ...CHANNEL_FORM_DEFAULT_VALUES,
@@ -73,7 +80,7 @@ function Harness(props: { config?: Record<string, unknown> }) {
     <FormProvider {...form}>
       <ChannelPluginConfigFields
         pluginKey='vendor-x'
-        schema={schema}
+        schema={props.schema ?? schema}
         models={models}
       />
     </FormProvider>
@@ -204,4 +211,38 @@ test('a choice left empty shows the default that applies to it', async () => {
   await user.click(region)
   await user.click(await screen.findByRole('option', { name: 'US East' }))
   expect(savedConfig()).toEqual({ region: 'us-east' })
+})
+
+test('the async image channel switch and query path save through the existing plugin form', async () => {
+  const asyncImageSource = readFileSync(
+    resolve(process.cwd(), '../plugins/tasks/async-image/plugin.js'),
+    'utf8'
+  )
+  const asyncSchema = runInNewContext(
+    `${asyncImageSource.replaceAll(/^export /gm, '')}\nmeta.channelConfig`
+  ) as RequestPluginConfigSchema
+  const user = userEvent.setup()
+  render(<Harness schema={asyncSchema} />)
+
+  const toggle = screen.getByRole('switch', {
+    name: /Enable asynchronous image responses|开启图片异步返回/,
+  })
+  expect(toggle).not.toBeChecked()
+  const path = screen.getByRole('textbox', {
+    name: /Task query path|任务查询路径/,
+  })
+  expect(path).toHaveAttribute('placeholder', '/v1/tasks/{task_id}')
+
+  await user.click(toggle)
+  await user.click(path)
+  await user.paste('/custom/tasks/{task_id}')
+  const saved = fromRequestPluginConfigDraft(
+    asyncSchema,
+    form.getValues('plugin_config_draft') ?? {}
+  )
+  expect(saved.errors).toEqual({})
+  expect(saved.config).toMatchObject({
+    image_async_enabled: true,
+    query_path: '/custom/tasks/{task_id}',
+  })
 })
