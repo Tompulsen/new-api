@@ -14,12 +14,14 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/plugins"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/abema/go-mp4"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -91,11 +93,11 @@ func TestCCompatibleVideoContract(t *testing.T) {
 		}))
 		assert.Empty(t, rendered)
 		var submitted map[string]any
-		require.NoError(t, plugin.Engine.CallInto(t.Context(), &submitted, "parseSubmitResponse", nil, map[string]any{
+		require.NoError(t, plugin.Engine.CallInto(t.Context(), &submitted, "parseSubmitResponse", ctx, map[string]any{
 			"status": 202, "body": map[string]any{"id": "upstream-123", "status_url": "https://private.example"},
 		}))
-		assert.Equal(t, map[string]any{"taskId": "upstream-123"}, submitted)
-		_, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse", nil, map[string]any{"body": map[string]any{}})
+		assert.Equal(t, map[string]any{"taskId": "upstream-123", "state": map[string]any{"reference_video_seconds": float64(0)}}, submitted)
+		_, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse", ctx, map[string]any{"body": map[string]any{}})
 		require.ErrorContains(t, err, "task ID")
 	})
 	t.Run("lifecycle and actual usage", func(t *testing.T) {
@@ -179,6 +181,9 @@ func TestCCompatibleMediaAndTaskRequests(t *testing.T) {
 			adaptor.Init(info)
 			_, err = adaptor.buildSubmit(c, info)
 			require.NoError(t, err)
+			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]any{"seconds": float64(6)}, facts, "image references do not add video seconds")
 			assert.Zero(t, uploads, "validation must not upload before billing reservation")
 			reader, err := adaptor.BuildRequestBody(c, info)
 			if input == "upload failure" || input == "invalid media ID" {
@@ -272,6 +277,9 @@ func TestCCompatibleMP4AudioRequiresAudioOnlyTracks(t *testing.T) {
 			if tracks == "soun" {
 				require.NoError(t, err)
 				assert.Equal(t, 1, uploads)
+				facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+				require.NoError(t, err)
+				assert.Equal(t, map[string]any{"seconds": float64(6)}, facts, "audio references do not add video seconds")
 			} else {
 				require.ErrorContains(t, err, "audio tracks without video")
 				assert.Zero(t, uploads, "a video renamed to M4A must not be uploaded as audio")
@@ -379,8 +387,15 @@ func TestCCompatibleVideoUpscaling(t *testing.T) {
 			}
 			assert.Equal(t, want, sent)
 			assert.Equal(t, 1, uploads)
+			parsed, taskErr := adaptor.ParseResponse(c, &http.Response{StatusCode: http.StatusAccepted,
+				Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"upstream-upscale-task"}`))}, info)
+			require.Nil(t, taskErr)
+			require.NotNil(t, parsed)
+			assert.JSONEq(t, `{"reference_video_seconds":0}`, string(parsed.PluginState), "upscaling must not freeze an additional source charge")
 			var settled map[string]any
-			require.NoError(t, plugin.Engine.CallInto(t.Context(), &settled, "extractUsageOnComplete", nil, nil, map[string]any{"seconds": 6.5}))
+			require.NoError(t, plugin.Engine.CallInto(t.Context(), &settled, "extractUsageOnComplete", map[string]any{
+				"model": "client-upscale-alias", "upstreamModel": "DMC 视频超分", "state": map[string]any{"reference_video_seconds": 0},
+			}, nil, map[string]any{"seconds": 6.5}))
 			assert.Equal(t, map[string]any{"seconds": 6.5}, settled)
 		})
 	}
@@ -397,6 +412,185 @@ func TestCCompatibleVideoUpscaling(t *testing.T) {
 		})
 		require.ErrorContains(t, err, "prompt is required")
 	})
+}
+
+func TestCCompatibleReferenceVideoBilling(t *testing.T) {
+	service.InitHttpClient()
+	source, err := plugins.Source("c-compatible")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "c-compatible"})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name         string
+		milliseconds []uint32
+		multipart    bool
+		forged       bool
+		metadata     bool
+		want         float64
+		invalid      bool
+		invalidUsage bool
+	}{
+		{name: "multipart fractional source", milliseconds: []uint32{2250}, multipart: true, want: 8.25},
+		{name: "multiple fractional data URLs", milliseconds: []uint32{1250, 2500}, want: 9.75},
+		{name: "forged measured source", milliseconds: []uint32{2250}, forged: true, want: 8.25},
+		{name: "forged source without video", forged: true, want: 6},
+		{name: "final descriptor overrides metadata references", milliseconds: []uint32{1500}, metadata: true, want: 7.5},
+		{name: "total duration at ceiling", milliseconds: []uint32{3594000}, want: 3600},
+		{name: "total duration above ceiling", milliseconds: []uint32{3594500}, invalidUsage: true},
+		{name: "invalid source metadata", milliseconds: []uint32{0}, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			uploads := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				uploads++
+				assert.Equal(t, "/v1/media/uploads", r.URL.Path)
+				_, _ = w.Write([]byte(`{"media_id":"med_reference"}`))
+			}))
+			defer upstream.Close()
+			request := map[string]any{"prompt": "waves", "seconds": 6}
+			if tc.forged {
+				request["__c_reference_video_seconds"] = 9999
+			}
+			if tc.metadata {
+				ignored := cCompatibleUpscaleMP4(t, 3600000, 3600000, 3600000, [4]byte{'v', 'i', 'd', 'e'})
+				request["metadata"] = map[string]any{"input_videos": []any{"data:video/mp4;base64," + base64.StdEncoding.EncodeToString(ignored)}}
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader("{}"))
+			c.Request.Header.Set("Content-Type", "application/json")
+			videos := make([]any, 0, len(tc.milliseconds))
+			for _, milliseconds := range tc.milliseconds {
+				video := cCompatibleUpscaleMP4(t, milliseconds, milliseconds, milliseconds, [4]byte{'v', 'i', 'd', 'e'})
+				if tc.multipart {
+					c = newMultipartFileContext(t, "input_videos", "reference.mp4", "video/mp4", video)
+				} else {
+					videos = append(videos, "data:video/mp4;base64,"+base64.StdEncoding.EncodeToString(video))
+				}
+			}
+			if len(videos) > 0 {
+				request["input_videos"] = videos
+			}
+			c.Set("task_request", request)
+			info := &relaycommon.RelayInfo{
+				ChannelMeta:   &relaycommon.ChannelMeta{ChannelBaseUrl: upstream.URL, ApiKey: "secret", UpstreamModelName: "mapped-video-model"},
+				TaskRelayInfo: &relaycommon.TaskRelayInfo{PublicTaskID: "reference-video-task"}, OriginModelName: "client-alias",
+			}
+			adaptor := New(plugin)
+			adaptor.Init(info)
+			taskErr := adaptor.ValidateRequestAndSetAction(c, info)
+			assert.Zero(t, uploads, "reference measurement must not upload before quota reservation")
+			if tc.invalid {
+				require.NotNil(t, taskErr)
+				return
+			}
+			require.Nil(t, taskErr)
+			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+			if tc.invalidUsage {
+				require.Error(t, err)
+				_, err = adaptor.EstimateBillingValidated(c, info)
+				require.Error(t, err)
+				assert.Zero(t, uploads, "an oversized combined quantity is rejected before reservation or upload")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, map[string]any{"seconds": tc.want}, facts)
+			ratios, err := adaptor.EstimateBillingValidated(c, info)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]float64{"seconds": tc.want}, ratios, "legacy pricing multiplies the combined seconds only once")
+			assert.Zero(t, uploads)
+			body, err := adaptor.BuildRequestBody(c, info)
+			require.NoError(t, err)
+			var sent map[string]any
+			require.NoError(t, common.DecodeJson(body, &sent))
+			assert.Equal(t, float64(6), sent["seconds"], "upstream duration remains output duration")
+			assert.NotContains(t, sent, "__c_reference_video_seconds")
+			assert.Equal(t, len(tc.milliseconds), uploads)
+			assert.Equal(t, 6, request["seconds"])
+			if tc.forged {
+				assert.Equal(t, 9999, request["__c_reference_video_seconds"], "host measurement does not mutate client input")
+			}
+			parsed, taskErr := adaptor.ParseResponse(c, &http.Response{StatusCode: http.StatusAccepted,
+				Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"upstream-reference-task"}`))}, info)
+			require.Nil(t, taskErr)
+			require.NotNil(t, parsed)
+			var state map[string]any
+			require.NoError(t, common.Unmarshal(parsed.PluginState, &state))
+			assert.Equal(t, map[string]any{"reference_video_seconds": tc.want - 6}, state)
+			task := &model.Task{TaskID: "reference-video-task", Status: model.TaskStatusSuccess,
+				Properties:  model.Properties{OriginModelName: "client-alias", UpstreamModelName: "mapped-video-model"},
+				PrivateData: model.TaskPrivateData{PluginState: parsed.PluginState}}
+			result, err := adaptor.ParseTaskResult(task, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)},
+				[]byte(`{"status":"completed","seconds":5.5,"reference_video_seconds":9999}`))
+			require.NoError(t, err)
+			assert.Equal(t, map[string]any{"seconds": tc.want - 0.5}, result.UsageFacts, "completion retains frozen source seconds")
+			adaptor.AdjustBillingOnComplete(task, result)
+			assert.Equal(t, map[string]any{"seconds": tc.want - 0.5}, result.UsageFacts)
+		})
+	}
+}
+
+func TestCCompatibleReferenceVideoCompletionBilling(t *testing.T) {
+	source, err := plugins.Source("c-compatible")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "c-compatible"})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name   string
+		state  string
+		actual any
+		want   float64
+	}{
+		{name: "frozen source plus actual output", state: `{"reference_video_seconds":3}`, actual: 5, want: 8},
+		{name: "fractional source plus fractional output", state: `{"reference_video_seconds":3.75}`, actual: 5.5, want: 9.25},
+		{name: "no source", state: `{"reference_video_seconds":0}`, actual: 5, want: 5},
+		{name: "legacy task", actual: 5.5, want: 5.5},
+		{name: "missing actual", state: `{"reference_video_seconds":3}`},
+		{name: "zero actual", state: `{"reference_video_seconds":3}`, actual: 0},
+		{name: "negative actual", state: `{"reference_video_seconds":3}`, actual: -1},
+		{name: "invalid actual", state: `{"reference_video_seconds":3}`, actual: true},
+		{name: "nonfinite actual", state: `{"reference_video_seconds":3}`, actual: "NaN"},
+		{name: "actual above ceiling", state: `{"reference_video_seconds":3}`, actual: 3601},
+		{name: "combined actual above ceiling", state: `{"reference_video_seconds":3}`, actual: 3600},
+		{name: "missing frozen quantity", state: `{}`, actual: 5},
+		{name: "negative frozen quantity", state: `{"reference_video_seconds":-1}`, actual: 5},
+		{name: "invalid frozen quantity", state: `{"reference_video_seconds":"3"}`, actual: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adaptor := New(plugin)
+			adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://upstream.example"}})
+			snapshot := &billingexpr.BillingSnapshot{ExprString: `tier("base", u("seconds") * 0.1)`,
+				TaskUsageBilling: true, ExprVersion: 1, QuotaPerUnit: 1, GroupRatio: 1,
+				UsageFacts: map[string]any{"seconds": float64(9)}, VideoUsagePending: false}
+			task := &model.Task{TaskID: "completion-video-task", Status: model.TaskStatusSuccess,
+				Properties:  model.Properties{OriginModelName: "client-alias", UpstreamModelName: "mapped-video-model"},
+				PrivateData: model.TaskPrivateData{PluginState: []byte(tc.state), BillingContext: &model.TaskBillingContext{TieredSnapshot: snapshot}}}
+			body := map[string]any{"status": "completed", "reference_video_seconds": 9999}
+			if tc.actual != nil {
+				body["seconds"] = tc.actual
+			}
+			encoded, err := common.Marshal(body)
+			require.NoError(t, err)
+			result, err := adaptor.ParseTaskResult(task, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, encoded)
+			require.NoError(t, err)
+			assert.Equal(t, model.TaskStatusSuccess, result.Status)
+			if tc.want == 0 {
+				assert.Empty(t, result.UsageFacts, "missing or invalid completion facts preserve the full reservation")
+			} else {
+				assert.Equal(t, map[string]any{"seconds": tc.want}, result.UsageFacts)
+			}
+			adaptor.AdjustBillingOnComplete(task, result)
+			settlement, facts, err := service.EvaluateTaskCompletionUsage(snapshot, result.UsageFacts)
+			require.NoError(t, err)
+			want := tc.want
+			if want == 0 {
+				want = 9
+			}
+			assert.Equal(t, map[string]any{"seconds": want}, facts)
+			assert.InDelta(t, want*0.1, settlement.ActualQuotaBeforeGroup, 1e-12, "the frozen per-second unit price is unchanged")
+			assert.Equal(t, map[string]any{"seconds": float64(9)}, snapshot.UsageFacts)
+			assert.Equal(t, tc.state, string(task.PrivateData.PluginState))
+		})
+	}
 }
 
 func cCompatibleUpscaleMP4(t *testing.T, movieDuration, trackDuration, mediaDuration uint32, handler [4]byte) []byte {

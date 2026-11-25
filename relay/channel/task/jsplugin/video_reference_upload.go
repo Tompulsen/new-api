@@ -42,23 +42,43 @@ type videoReferenceUploader struct {
 var generationFileID = regexp.MustCompile(`^file_[A-Za-z0-9_-]{16,100}$`)
 var videoMediaID = regexp.MustCompile(`^med_[A-Za-z0-9_-]{1,200}$`)
 
-func measureVideoUpscaleSource(c *gin.Context, value any) (float64, error) {
+func measureVideoReferenceSeconds(c *gin.Context, value any) (float64, error) {
 	body, _ := value.(map[string]any)
-	references, ok := body["input_videos"].([]any)
-	if !ok || len(references) != 1 {
-		return 0, fmt.Errorf("video upscaling requires exactly one source video")
+	references, _ := body["input_videos"].([]any)
+	var form *multipart.Form
+	defer func() {
+		if form != nil {
+			_ = form.RemoveAll()
+		}
+	}()
+	seconds := 0.0
+	for _, value := range references {
+		reference, _ := value.(map[string]any)
+		placeholder, _ := reference["media_id"].(map[string]any)
+		source, _ := placeholder["__videoUpload"].(map[string]any)
+		if _, ok := source["fileRef"].(string); ok && form == nil {
+			var err error
+			form, err = common.ParseMultipartFormReusable(c)
+			if err != nil {
+				return 0, fmt.Errorf("could not read source video")
+			}
+		}
+		duration, err := measureVideoSource(source, form)
+		if err != nil {
+			return 0, err
+		}
+		seconds += duration
+		if seconds > relaycommon.MaxTaskDurationSeconds {
+			return 0, fmt.Errorf("total reference video duration must be no greater than 3600 seconds")
+		}
 	}
-	reference, _ := references[0].(map[string]any)
-	placeholder, _ := reference["media_id"].(map[string]any)
-	source, _ := placeholder["__videoUpload"].(map[string]any)
+	return seconds, nil
+}
+
+func measureVideoSource(source map[string]any, form *multipart.Form) (float64, error) {
 	limit := min(maxInlineFileBytes(), int64(64<<20))
 	var data []byte
-	if ref, ok := source["fileRef"].(string); ok {
-		form, err := common.ParseMultipartFormReusable(c)
-		if err != nil {
-			return 0, fmt.Errorf("could not read source video")
-		}
-		defer form.RemoveAll()
+	if ref, ok := source["fileRef"].(string); ok && form != nil {
 		field, index, valid := pluginruntime.ParseFileReference(ref)
 		if !valid || index >= len(form.File[field]) {
 			return 0, fmt.Errorf("unknown source video file")
@@ -175,7 +195,7 @@ func measureVideoUpscaleSource(c *gin.Context, value any) (float64, error) {
 	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 || seconds > relaycommon.MaxTaskDurationSeconds {
 		return 0, fmt.Errorf("source video duration must be greater than zero and no greater than 3600 seconds")
 	}
-	return math.Ceil(seconds), nil
+	return seconds, nil
 }
 
 func (u *videoReferenceUploader) discard() {

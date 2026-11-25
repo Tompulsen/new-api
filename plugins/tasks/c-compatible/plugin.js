@@ -4,7 +4,7 @@ export const meta = {
   name: "C兼容",
   icon: "text:C",
   description: { en: "Asynchronous video generation with reference media", zh: "异步视频生成，支持参考素材" },
-  version: "1.0.1",
+  version: "1.0.2",
   author: { name: "QuantumNous" },
   models: [],
   fetchMode: "per_task",
@@ -22,6 +22,21 @@ function object(value) {
 
 function trimmed(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function measuredReferenceSeconds(ctx) {
+  const seconds = ctx.requestBody.__c_reference_video_seconds;
+  if (seconds === undefined) return 0;
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0 || seconds > 3600)
+    throw new Error("reference video duration must be a measured non-negative number no greater than 3600 seconds");
+  return seconds;
+}
+
+function billedVideoSeconds(outputSeconds, referenceSeconds) {
+  const seconds = outputSeconds + referenceSeconds;
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600)
+    throw new Error("total billable video duration must be greater than zero and no greater than 3600 seconds");
+  return seconds;
 }
 
 function apiRoot(ctx) {
@@ -221,13 +236,19 @@ export function parseSubmitResponse(ctx, response) {
   const body = response.body;
   const id = object(body) && trimmed(body.id);
   if (!id || id.length > 256) throw new Error("video submission response is missing a valid task ID");
-  return { taskId: id };
+  const referenceSeconds = (ctx.upstreamModel || ctx.model) === "DMC 视频超分" ? 0 : measuredReferenceSeconds(ctx);
+  return { taskId: id, state: { reference_video_seconds: referenceSeconds } };
 }
 
 export function extractUsage(ctx) {
   const model = ctx.upstreamModel || ctx.model;
   const body = videoRequest(ctx.requestBody, ctx.files, model);
-  if (model !== "DMC 视频超分") return { seconds: body.seconds };
+  if (model !== "DMC 视频超分") {
+    const referenceSeconds = measuredReferenceSeconds(ctx);
+    if (body.input_videos && referenceSeconds <= 0)
+      throw new Error("video references require a measured source duration before billing");
+    return { seconds: billedVideoSeconds(body.seconds, referenceSeconds) };
+  }
   // The host replaces this billing-only field with the measured source duration before reservation.
   const seconds = Number(ctx.requestBody.seconds);
   if (!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 3600)
@@ -239,7 +260,17 @@ export function extractUsageOnComplete(task, result, body) {
   if (!object(body)) return {};
   const value = body.seconds === undefined ? body.duration_seconds : body.seconds;
   const seconds = typeof value === "number" || typeof value === "string" ? Number(value) : NaN;
-  return Number.isFinite(seconds) && seconds > 0 && seconds <= 3600 ? { seconds } : {};
+  const validOutput = Number.isFinite(seconds) && seconds > 0 && seconds <= 3600;
+  if (!object(task) || task.state === undefined || task.state === null)
+    return validOutput ? { seconds } : {};
+  if (!object(task.state)) throw new Error("frozen reference video usage is invalid");
+  const referenceSeconds = task.state.reference_video_seconds;
+  if (typeof referenceSeconds !== "number" || !Number.isFinite(referenceSeconds) || referenceSeconds < 0 || referenceSeconds > 3600)
+    throw new Error("frozen reference video duration must be a non-negative number no greater than 3600 seconds");
+  if (!validOutput) throw new Error("completed video duration must be greater than zero and no greater than 3600 seconds");
+  if ((task.upstreamModel || task.model) === "DMC 视频超分" && referenceSeconds !== 0)
+    throw new Error("video upscaling must not include reference video charges");
+  return { seconds: billedVideoSeconds(seconds, referenceSeconds) };
 }
 
 export function buildQueryRequest(ctx) {
