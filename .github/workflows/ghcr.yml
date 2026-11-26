@@ -58,6 +58,7 @@ jobs:
         run: |
           for dialect in sqlite mysql postgres; do
             TEST_TASK_DB_DIALECT="$dialect" go test ./model -run '^TestCommunityReferral|^TestUnifiedWallet|^TestQXChatSharedWalletReservations$' -count=1 -v
+            TEST_TASK_DB_DIALECT="$dialect" go test ./controller -run '^TestCommunityLottery' -count=1 -v
           done
           go test ./controller -run '^TestQXChat|^TestCommunityReferral|^TestOAuthRegistrationPersistsInviter|^TestUnifiedWallet|^TestCommunityLottery' -count=1
           go test ./controller -run '^TestUserUsageLogs' -count=1 -v

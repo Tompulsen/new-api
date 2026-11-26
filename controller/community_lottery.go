@@ -37,7 +37,7 @@ func CommunityLotteryCredit(c *gin.Context) {
 		if model.UnifiedWalletEnabled() && rateErr == nil {
 			rewardKinds = append(rewardKinds, model.WalletCharity)
 		}
-		capabilities := gin.H{"ready": true, "client_id": origin, "reward_kinds": rewardKinds}
+		capabilities := gin.H{"ready": true, "client_id": origin, "reward_kinds": rewardKinds, "exact_points": true, "quota_per_usd": common.QuotaPerUnit}
 		if rateErr == nil {
 			capabilities["quota_per_point"] = quotaPerPoint
 		}
@@ -93,13 +93,14 @@ func CommunityLotteryCredit(c *gin.Context) {
 		Cents         int64             `json:"amount_cents"`
 		RewardKind    common.RawMessage `json:"reward_kind"`
 		ValidityHours common.RawMessage `json:"validity_hours"`
+		Points        *int64            `json:"points"`
 	}
 	if !strings.HasPrefix(c.GetHeader("Content-Type"), "application/json") || common.DecodeJsonBody(c.Request.Body, &request) != nil || request.ClientID != origin {
 		communitySSOError(c, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	var rewards []model.CommunityLotteryReward
-	if strings.HasSuffix(c.Request.URL.Path, "/lottery/charity") || len(request.RewardKind) != 0 || len(request.ValidityHours) != 0 {
+	if strings.HasSuffix(c.Request.URL.Path, "/lottery/charity") || len(request.RewardKind) != 0 || len(request.ValidityHours) != 0 || request.Points != nil {
 		var reward model.CommunityLotteryReward
 		if len(request.RewardKind) == 0 || len(request.ValidityHours) == 0 ||
 			common.Unmarshal(request.RewardKind, &reward.Kind) != nil ||
@@ -107,6 +108,13 @@ func CommunityLotteryCredit(c *gin.Context) {
 			reward.Kind != model.WalletCharity || reward.ValidityHours < 1 || reward.ValidityHours > 8760 {
 			communitySSOError(c, http.StatusBadRequest, "invalid_request")
 			return
+		}
+		if request.Points != nil {
+			if *request.Points <= 0 || *request.Points > 1000000000 || request.Cents != 0 {
+				communitySSOError(c, http.StatusBadRequest, "invalid_request")
+				return
+			}
+			reward.Points = *request.Points
 		}
 		rewards = append(rewards, reward)
 	}
@@ -129,6 +137,9 @@ func CommunityLotteryCredit(c *gin.Context) {
 			fields["reward_kind"], fields["validity_hours"] = receipt.LotteryCredit.RewardKind, receipt.LotteryCredit.ValidityHours
 			fields["expires_at"], fields["credited_at"] = receipt.LotteryCredit.ExpiresAt, receipt.LotteryCredit.CreditedAt
 			fields["points"], fields["lot_id"], fields["quota_per_point"] = receipt.LotteryCredit.Points, receipt.LotteryCredit.LotID, receipt.LotteryCredit.QuotaPerPoint
+			if receipt.LotteryCredit.RequestedPoints > 0 {
+				fields["requested_points"] = receipt.LotteryCredit.RequestedPoints
+			}
 		}
 		snapshot = fields
 	}

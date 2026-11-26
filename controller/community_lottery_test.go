@@ -53,7 +53,7 @@ func TestCommunityLotteryConsumption(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	var readiness map[string]any
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &readiness))
-	assert.Equal(t, map[string]any{"ready": true, "client_id": communityTestOrigin, "reward_kinds": []any{"balance", "charity"}, "quota_per_point": float64(100)}, readiness)
+	assert.Equal(t, map[string]any{"ready": true, "client_id": communityTestOrigin, "reward_kinds": []any{"balance", "charity"}, "quota_per_point": float64(100), "exact_points": true, "quota_per_usd": float64(500000)}, readiness)
 	assert.Equal(t, http.StatusUnauthorized, call(queryFor(user.Id), "invalid").Code)
 	for _, query := range []string{
 		"?client_id=" + url.QueryEscape(communityTestOrigin),
@@ -586,6 +586,57 @@ func TestCommunityLotteryReceiptUpgrade(t *testing.T) {
 }
 
 const communityLotteryCharitySecret = "community-lottery-charity-test-service-secret"
+
+func TestCommunityLotteryExactPoints(t *testing.T) {
+	user := setupCommunityLotteryWalletTest(t)
+	body := map[string]any{"client_id": communityTestOrigin, "user_id": user.Id, "reference": "community_lottery_checkin_0", "amount_cents": 0, "points": 617, "reward_kind": "charity", "validity_hours": 24}
+	response := communityLotteryRewardCall(t, "/api/community-sso/lottery/charity", body)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var result struct {
+		Replayed bool                                 `json:"replayed"`
+		Receipt  model.CommunityLotteryCreditSnapshot `json:"receipt"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	assert.Equal(t, "617", result.Receipt.Points)
+	assert.EqualValues(t, 617, result.Receipt.RequestedPoints)
+	assert.Equal(t, 61700, result.Receipt.QuotaAdded)
+	assert.EqualValues(t, 86400, result.Receipt.ExpiresAt-result.Receipt.CreditedAt)
+	var receipt model.TopUp
+	require.NoError(t, model.DB.Where("trade_no = ?", body["reference"]).First(&receipt).Error)
+	assert.Zero(t, receipt.Amount)
+	assert.Zero(t, receipt.Money)
+	// A changed conversion rate and an expired lot cannot change an already granted reward.
+	common.QuotaPerUnit = 1000000
+	require.NoError(t, model.DB.Model(&model.UnifiedWalletLot{}).Where("id = ?", result.Receipt.LotID).Update("expires_at", 1).Error)
+	replay := communityLotteryRewardCall(t, "/api/community-sso/lottery/charity", body)
+	require.Equal(t, http.StatusOK, replay.Code, replay.Body.String())
+	var again struct {
+		Replayed bool                                 `json:"replayed"`
+		Receipt  model.CommunityLotteryCreditSnapshot `json:"receipt"`
+	}
+	require.NoError(t, common.Unmarshal(replay.Body.Bytes(), &again))
+	assert.True(t, again.Replayed)
+	assert.Equal(t, result.Receipt, again.Receipt)
+	body["points"] = 618
+	assert.Equal(t, http.StatusConflict, communityLotteryRewardCall(t, "/api/community-sso/lottery/charity", body).Code)
+	body["points"] = 617
+	body["validity_hours"] = 25
+	assert.Equal(t, http.StatusConflict, communityLotteryRewardCall(t, "/api/community-sso/lottery/charity", body).Code)
+	body["validity_hours"] = 24
+	for _, value := range []any{0, -1, 1.5, "617", 1000000001} {
+		body["points"] = value
+		assert.Equal(t, http.StatusBadRequest, communityLotteryRewardCall(t, "/api/community-sso/lottery/charity", body).Code)
+	}
+	body["points"], body["amount_cents"] = 617, 1
+	assert.Equal(t, http.StatusBadRequest, communityLotteryRewardCall(t, "/api/community-sso/lottery/charity", body).Code)
+	delete(body, "points")
+	assert.Equal(t, http.StatusConflict, communityLotteryRewardCall(t, "/api/community-sso/lottery/charity", body).Code)
+	var lots, grants int64
+	require.NoError(t, model.DB.Model(&model.UnifiedWalletLot{}).Count(&lots).Error)
+	require.NoError(t, model.DB.Model(&model.UnifiedWalletEntry{}).Where("event = ?", "grant").Count(&grants).Error)
+	assert.EqualValues(t, 1, lots)
+	assert.EqualValues(t, 1, grants)
+}
 
 func setupCommunityLotteryWalletTest(t *testing.T) *model.User {
 	t.Helper()

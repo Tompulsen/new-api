@@ -17,20 +17,22 @@ var lotteryReference = regexp.MustCompile(`^community_lottery_[a-zA-Z0-9]{1,32}_
 var ErrLotteryCreditConflict = errors.New("lottery credit reference already has different parameters")
 
 type CommunityLotteryCreditSnapshot struct {
-	QuotaAdded    int    `json:"quota_added"`
-	QuotaPerUSD   string `json:"quota_per_usd"`
-	RewardKind    string `json:"reward_kind,omitempty"`
-	ValidityHours int    `json:"validity_hours,omitempty"`
-	ExpiresAt     int64  `json:"expires_at,omitempty"`
-	CreditedAt    int64  `json:"credited_at,omitempty"`
-	Points        string `json:"points,omitempty"`
-	LotID         int64  `json:"lot_id,omitempty"`
-	QuotaPerPoint int64  `json:"quota_per_point,omitempty"`
+	QuotaAdded      int    `json:"quota_added"`
+	QuotaPerUSD     string `json:"quota_per_usd"`
+	RewardKind      string `json:"reward_kind,omitempty"`
+	ValidityHours   int    `json:"validity_hours,omitempty"`
+	ExpiresAt       int64  `json:"expires_at,omitempty"`
+	CreditedAt      int64  `json:"credited_at,omitempty"`
+	Points          string `json:"points,omitempty"`
+	LotID           int64  `json:"lot_id,omitempty"`
+	QuotaPerPoint   int64  `json:"quota_per_point,omitempty"`
+	RequestedPoints int64  `json:"requested_points,omitempty"`
 }
 
 type CommunityLotteryReward struct {
 	Kind          string
 	ValidityHours int
+	Points        int64
 }
 
 type CommunityLotteryConsumption struct {
@@ -190,13 +192,13 @@ func communityLotteryReceiptMatches(receipt *TopUp, userID int, cents int64, rew
 	if receipt.LotteryCredit == nil {
 		return reward.Kind == "" && reward.ValidityHours == 0
 	}
-	return receipt.LotteryCredit.RewardKind == reward.Kind && receipt.LotteryCredit.ValidityHours == reward.ValidityHours
+	return receipt.LotteryCredit.RewardKind == reward.Kind && receipt.LotteryCredit.ValidityHours == reward.ValidityHours && receipt.LotteryCredit.RequestedPoints == reward.Points
 }
 
 // CreditCommunityLottery commits the unique receipt and its reward together.
 // Omitting the reward keeps pending deliveries on their original permanent path.
 func CreditCommunityLottery(userID int, reference string, cents int64, rewards ...CommunityLotteryReward) (*TopUp, bool, error) {
-	if userID <= 0 || !lotteryReference.MatchString(reference) || cents < 1 || cents > 1000000 {
+	if userID <= 0 || !lotteryReference.MatchString(reference) {
 		return nil, false, ErrInvalidTopUpQuota
 	}
 	var reward CommunityLotteryReward
@@ -205,9 +207,12 @@ func CreditCommunityLottery(userID int, reference string, cents int64, rewards .
 	}
 	if len(rewards) == 1 {
 		reward = rewards[0]
-		if reward.Kind != WalletCharity || reward.ValidityHours < 1 || reward.ValidityHours > 8760 {
+		if reward.Kind != WalletCharity || reward.ValidityHours < 1 || reward.ValidityHours > 8760 || reward.Points < 0 || reward.Points > 1000000000 {
 			return nil, false, ErrInvalidTopUpQuota
 		}
+	}
+	if (reward.Points == 0 && (cents < 1 || cents > 1000000)) || (reward.Points > 0 && cents != 0) {
+		return nil, false, ErrInvalidTopUpQuota
 	}
 	var receipt TopUp
 	var quota int
@@ -247,6 +252,9 @@ func CreditCommunityLottery(userID int, reference string, cents int64, rewards .
 		}
 		ratio := decimal.NewFromFloat(rate)
 		rewardQuota := decimal.NewFromInt(cents).Div(decimal.NewFromInt(100)).Mul(ratio)
+		if reward.Points > 0 {
+			rewardQuota = decimal.NewFromInt(reward.Points).Mul(decimal.NewFromInt(quotaPerPoint))
+		}
 		if reward.Kind == WalletCharity && !rewardQuota.Equal(rewardQuota.Truncate(0)) {
 			return ErrInvalidTopUpQuota
 		}
@@ -255,7 +263,7 @@ func CreditCommunityLottery(userID int, reference string, cents int64, rewards .
 			return ErrInvalidTopUpQuota
 		}
 		now := common.GetTimestamp()
-		snapshot := &CommunityLotteryCreditSnapshot{QuotaAdded: quota, QuotaPerUSD: ratio.String()}
+		snapshot := &CommunityLotteryCreditSnapshot{QuotaAdded: quota, QuotaPerUSD: ratio.String(), RequestedPoints: reward.Points}
 		if reward.Kind == WalletCharity {
 			duration := int64(reward.ValidityHours) * 3600
 			if int64(quota)%quotaPerPoint != 0 || now <= 0 || now > int64(common.MaxWalletQuota)-duration {
@@ -283,8 +291,8 @@ func CreditCommunityLottery(userID int, reference string, cents int64, rewards .
 				return err
 			}
 		}
-		// Amount records the original USD cents for this provider; Money is zero
-		// because a promotional reward is not a payment received.
+		// Exact-point grants keep Amount zero and their unit in the receipt snapshot;
+		// promotional rewards are never payments received.
 		receipt = TopUp{UserId: userID, Amount: cents, Money: 0, TradeNo: reference, PaymentMethod: "community_lottery", PaymentProvider: "community_lottery", CreateTime: now, CompleteTime: now, Status: common.TopUpStatusSuccess}
 		receipt.LotteryCredit = snapshot
 		if err := tx.Create(&receipt).Error; err != nil {
@@ -311,7 +319,11 @@ func CreditCommunityLottery(userID int, reference string, cents int64, rewards .
 			// shortcut: existing top-up cache synchronization can wait for cache expiry after a crash; replay must never apply a second delta.
 			syncCreditUserQuotaCache(userID, quota, "community lottery")
 		}
-		RecordTopupLog(userID, common.NewMessage("Community lottery reward: {{amount}} USD", map[string]any{"amount": decimal.NewFromInt(cents).Div(decimal.NewFromInt(100)).StringFixed(2)}), "", "community_lottery", "community_lottery")
+		if reward.Points > 0 {
+			RecordTopupLog(userID, common.NewMessage("Community welfare reward: {{points}} points", map[string]any{"points": reward.Points}), "", "community_lottery", "community_lottery")
+		} else {
+			RecordTopupLog(userID, common.NewMessage("Community lottery reward: {{amount}} USD", map[string]any{"amount": decimal.NewFromInt(cents).Div(decimal.NewFromInt(100)).StringFixed(2)}), "", "community_lottery", "community_lottery")
+		}
 	}
 	return &receipt, alreadyDone, nil
 }
