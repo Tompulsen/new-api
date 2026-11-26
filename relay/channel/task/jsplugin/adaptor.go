@@ -1857,7 +1857,7 @@ func (a *TaskAdaptor) buildSubmit(c *gin.Context, info *relaycommon.RelayInfo) (
 		normalized := make(map[string]any, len(request)+1)
 		maps.Copy(normalized, request)
 		normalized["__c_reference_video_seconds"] = seconds
-		if upstreamModel == "DMC 视频超分" {
+		if upstreamModel == "DMC 视频超分" || upstreamModel == "AI去字幕" || upstreamModel == "AI去水印" {
 			normalized["seconds"] = math.Ceil(seconds)
 			normalized["__c_reference_video_seconds"] = 0.0
 		}

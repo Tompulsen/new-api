@@ -3,15 +3,15 @@ export const meta = {
   key: "c-compatible",
   name: "C兼容",
   icon: "text:C",
-  description: { en: "Asynchronous video generation with reference media", zh: "异步视频生成，支持参考素材" },
-  version: "1.0.2",
+  description: { en: "Asynchronous video generation and source video processing", zh: "异步视频生成与源视频处理" },
+  version: "1.0.3",
   author: { name: "QuantumNous" },
   models: [],
   fetchMode: "per_task",
   upstreams: ["vendor"],
   protocols: ["openai_video"],
   usageSchema: {
-    seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } },
+    seconds: { type: "number", unit: "second", description: { en: "Video generation or processing unit price", zh: "视频生成或处理单价" } },
   },
   usageExamples: [{ label: "6s", facts: { seconds: 6 } }],
 };
@@ -67,19 +67,33 @@ function reference(value, mediaType) {
   return { media_id: { __videoUpload: { dataUrl: value, mediaType } } };
 }
 
+function videoOperation(model) {
+  if (model === "DMC 视频超分") return "upscale";
+  if (model === "AI去字幕") return "remove-subtitles";
+  if (model === "AI去水印") return "remove-watermark";
+  return "";
+}
+
 function videoRequest(req, files, model, decoding = false) {
   if (!object(req)) throw new Error("request body must be an object");
   if (req.metadata !== undefined && !object(req.metadata)) throw new Error("metadata must be an object");
   rejectClientPlaceholders(req);
-  const upscale = model === "DMC 视频超分" || decoding && selected(req, ["operation"]) === "upscale";
-  if (!upscale && selected(req, ["operation"]) === "upscale") throw new Error("upscale requires the DMC video upscaling model");
+  let operation = videoOperation(model);
+  const hint = selected(req, ["operation"]);
+  if (hint !== undefined && hint !== operation) {
+    if (decoding && !operation && ["upscale", "remove-subtitles", "remove-watermark"].includes(hint)) operation = hint;
+    else if (operation || ["upscale", "remove-subtitles", "remove-watermark"].includes(hint))
+      throw new Error("video operation must match the mapped upstream model");
+  }
+  const upscale = operation === "upscale";
+  const removal = operation === "remove-subtitles" || operation === "remove-watermark";
   const body = { model };
-  if (upscale && req.prompt !== undefined) {
+  if (operation && req.prompt !== undefined) {
     if (typeof req.prompt !== "string" || req.prompt.length > 24000 || new TextEncoder().encode(req.prompt).length > 24000)
-      throw new Error("video upscaling prompt must be text no longer than 24000 UTF-8 bytes");
+      throw new Error("video processing prompt must be text no longer than 24000 UTF-8 bytes");
     if (req.prompt.trim()) body.prompt = req.prompt;
   }
-  if (!upscale) {
+  if (!operation) {
     if (!trimmed(req.prompt)) throw new Error("prompt is required");
     // Freeze an explicit duration for both reservation and submission, without guessing model defaults.
     const duration = selected(req, ["seconds", "duration_seconds", "duration"]);
@@ -96,7 +110,7 @@ function videoRequest(req, files, model, decoding = false) {
     ["aspect_ratio", ["aspect_ratio", "aspectRatio", "ratio"]],
     ["video_reference_frame_mode", ["video_reference_frame_mode"]],
   ]) {
-    if (upscale && key !== "resolution") continue;
+    if (removal || upscale && key !== "resolution") continue;
     const value = selected(req, aliases);
     if (value !== undefined) {
       if (typeof value !== "string" || !value.trim() || value.length > 128) throw new Error(key + " must be a non-empty string");
@@ -105,7 +119,7 @@ function videoRequest(req, files, model, decoding = false) {
   }
   if (body.size && !/^[1-9]\d{0,4}x[1-9]\d{0,4}$/.test(body.size)) throw new Error("size must be WIDTHxHEIGHT");
   const frameRate = selected(req, ["frame_rate"]);
-  if (frameRate !== undefined) {
+  if (!removal && frameRate !== undefined) {
     const value = Number(frameRate);
     if ((typeof frameRate !== "number" && typeof frameRate !== "string") || !Number.isSafeInteger(value) || value < 0 || value > 240)
       throw new Error("frame_rate must be an integer between 0 and 240");
@@ -116,7 +130,7 @@ function videoRequest(req, files, model, decoding = false) {
     body.frame_rate = 0;
   }
   const audio = selected(req, ["generate_audio"]);
-  if (audio !== undefined) {
+  if (!removal && audio !== undefined) {
     if (audio !== false && audio !== "false") throw new Error("generate_audio supports false only");
     if (!upscale) body.generate_audio = false;
   }
@@ -186,10 +200,10 @@ function videoRequest(req, files, model, decoding = false) {
     if (values.length > 128) throw new Error("too many reference media items");
     if (values.length) body["input_" + mediaType + "s"] = values;
   }
-  if (upscale) {
+  if (operation) {
     if (!body.input_videos || body.input_videos.length !== 1 || body.input_images || body.input_audios)
-      throw new Error("video upscaling requires exactly one source video and no image or audio references");
-    if (!["720p", "1080p", "2k", "4k"].includes(body.resolution))
+      throw new Error("video processing requires exactly one source video and no image or audio references");
+    if (upscale && !["720p", "1080p", "2k", "4k"].includes(body.resolution))
       throw new Error("video upscaling resolution must be 720p, 1080p, 2k, or 4k");
   }
   return body;
@@ -218,7 +232,9 @@ function decode(ctx) {
   const model = ctx.model || (object(req) && trimmed(req.model));
   if (!model) throw new Error("model is required");
   const body = videoRequest(req, ctx.body.files, model, true);
-  return { kind: "submit", model, action: model === "DMC 视频超分" || selected(req, ["operation"]) === "upscale" ? "upscale" : body.input_images || body.input_videos || body.input_audios ? "reference_to_video" : "text_to_video", requestBody: req };
+  const hint = selected(req, ["operation"]);
+  const operation = videoOperation(model) || (["upscale", "remove-subtitles", "remove-watermark"].includes(hint) ? hint : "");
+  return { kind: "submit", model, action: operation || (body.input_images || body.input_videos || body.input_audios ? "reference_to_video" : "text_to_video"), requestBody: req };
 }
 
 export function buildSubmitRequest(ctx) {
@@ -236,6 +252,9 @@ export function parseSubmitResponse(ctx, response) {
   const body = response.body;
   const id = object(body) && trimmed(body.id);
   if (!id || id.length > 256) throw new Error("video submission response is missing a valid task ID");
+  const operation = videoOperation(ctx.upstreamModel || ctx.model);
+  if (operation === "remove-subtitles" || operation === "remove-watermark")
+    return { taskId: id, state: { source_video_seconds: extractUsage(ctx).seconds } };
   const referenceSeconds = (ctx.upstreamModel || ctx.model) === "DMC 视频超分" ? 0 : measuredReferenceSeconds(ctx);
   return { taskId: id, state: { reference_video_seconds: referenceSeconds } };
 }
@@ -243,7 +262,7 @@ export function parseSubmitResponse(ctx, response) {
 export function extractUsage(ctx) {
   const model = ctx.upstreamModel || ctx.model;
   const body = videoRequest(ctx.requestBody, ctx.files, model);
-  if (model !== "DMC 视频超分") {
+  if (!videoOperation(model)) {
     const referenceSeconds = measuredReferenceSeconds(ctx);
     if (body.input_videos && referenceSeconds <= 0)
       throw new Error("video references require a measured source duration before billing");
@@ -252,11 +271,18 @@ export function extractUsage(ctx) {
   // The host replaces this billing-only field with the measured source duration before reservation.
   const seconds = Number(ctx.requestBody.seconds);
   if (!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 3600)
-    throw new Error("video upscaling requires a measured source duration no greater than 3600 seconds");
+    throw new Error("video processing requires a measured source duration no greater than 3600 seconds");
   return { seconds };
 }
 
 export function extractUsageOnComplete(task, result, body) {
+  const operation = object(task) && videoOperation(task.upstreamModel || task.model);
+  if (operation === "remove-subtitles" || operation === "remove-watermark") {
+    const seconds = object(task.state) && task.state.source_video_seconds;
+    if (!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 3600)
+      throw new Error("frozen source video duration must be a positive integer no greater than 3600 seconds");
+    return { seconds };
+  }
   if (!object(body)) return {};
   const value = body.seconds === undefined ? body.duration_seconds : body.seconds;
   const seconds = typeof value === "number" || typeof value === "string" ? Number(value) : NaN;

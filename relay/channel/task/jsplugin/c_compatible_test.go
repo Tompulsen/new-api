@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -412,6 +413,151 @@ func TestCCompatibleVideoUpscaling(t *testing.T) {
 		})
 		require.ErrorContains(t, err, "prompt is required")
 	})
+}
+
+func TestCCompatibleVideoRemoval(t *testing.T) {
+	service.InitHttpClient()
+	source, err := plugins.Source("c-compatible")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "c-compatible"})
+	require.NoError(t, err)
+	t.Run("host rejects source above 64 MiB before reading", func(t *testing.T) {
+		form := &multipart.Form{File: map[string][]*multipart.FileHeader{
+			"input_videos": {{Size: 64<<20 + 1}},
+		}}
+		_, err := measureVideoSource(map[string]any{"fileRef": pluginruntime.FileReference("input_videos", 0)}, form)
+		require.ErrorContains(t, err, "upload size limit")
+	})
+	for _, processing := range []struct{ model, operation string }{
+		{"AI去字幕", "remove-subtitles"}, {"AI去水印", "remove-watermark"},
+	} {
+		for _, input := range []string{"base64", "multipart", "canonical model", "optional prompt", "no source", "multiple sources", "image", "audio", "long prompt", "invalid video", "too long", "wrong mapped model", "wrong operation", "opposite removal operation"} {
+			t.Run(processing.model+"/"+input, func(t *testing.T) {
+				video := cCompatibleUpscaleMP4(t, 6500, 6500, 6500, [4]byte{'v', 'i', 'd', 'e'})
+				if input == "invalid video" {
+					video = []byte("invalid MP4")
+				} else if input == "too long" {
+					video = cCompatibleUpscaleMP4(t, 3600001, 3600001, 3600001, [4]byte{'v', 'i', 'd', 'e'})
+				}
+				uploads := 0
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					uploads++
+					assert.Equal(t, "/v1/media/uploads", r.URL.Path)
+					_, _ = w.Write([]byte(`{"media_id":"med_removal_source"}`))
+				}))
+				defer upstream.Close()
+				request := map[string]any{"seconds": 1, "__c_reference_video_seconds": 1,
+					"metadata": map[string]any{"operation": processing.operation, "duration_seconds": 1,
+						"size": "1280x720", "resolution": "720p", "aspect_ratio": "16:9", "frame_rate": 30,
+						"video_reference_frame_mode": "first_frame", "generate_audio": false}}
+				if input == "optional prompt" {
+					request["prompt"] = "保留背景"
+				} else if input == "long prompt" {
+					request["prompt"] = strings.Repeat("中", 8001)
+				} else {
+					request["prompt"] = ""
+				}
+				dataURL := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(video)
+				request["input_videos"] = []any{dataURL}
+				if input == "no source" {
+					delete(request, "input_videos")
+				} else if input == "multiple sources" {
+					request["input_videos"] = []any{dataURL, "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(append(video, 0))}
+				} else if input == "image" {
+					request["input_images"] = []any{"data:image/png;base64,AA=="}
+				} else if input == "audio" {
+					request["input_audios"] = []any{"data:audio/wav;base64,AA=="}
+				} else if input == "wrong operation" {
+					request["metadata"].(map[string]any)["operation"] = "upscale"
+				} else if input == "opposite removal operation" {
+					operation := "remove-subtitles"
+					if processing.operation == operation {
+						operation = "remove-watermark"
+					}
+					request["metadata"].(map[string]any)["operation"] = operation
+				}
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader("{}"))
+				c.Request.Header.Set("Content-Type", "application/json")
+				if input == "multipart" {
+					delete(request, "input_videos")
+					c = newMultipartFileContext(t, "input_videos", "source.mp4", "video/mp4", video)
+				}
+				mapped, origin := processing.model, "processing-alias"
+				if input == "canonical model" {
+					origin = mapped
+					delete(request, "metadata")
+				} else if input == "wrong mapped model" {
+					mapped = "ordinary-video"
+				}
+				c.Set("task_request", request)
+				info := &relaycommon.RelayInfo{
+					ChannelMeta:   &relaycommon.ChannelMeta{ChannelBaseUrl: upstream.URL, ApiKey: "secret", UpstreamModelName: mapped},
+					TaskRelayInfo: &relaycommon.TaskRelayInfo{PublicTaskID: "removal-video-task"}, OriginModelName: origin,
+				}
+				adaptor := New(plugin)
+				adaptor.Init(info)
+				taskErr := adaptor.ValidateRequestAndSetAction(c, info)
+				assert.Zero(t, uploads, "validation and measurement must precede uploads")
+				if input != "base64" && input != "multipart" && input != "canonical model" && input != "optional prompt" {
+					require.NotNil(t, taskErr)
+					return
+				}
+				require.Nil(t, taskErr)
+				facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+				require.NoError(t, err)
+				assert.Equal(t, map[string]any{"seconds": float64(7)}, facts)
+				assert.Equal(t, 1, request["seconds"], "the client input stays immutable")
+				ratios, err := adaptor.EstimateBillingValidated(c, info)
+				require.NoError(t, err)
+				assert.Equal(t, map[string]float64{"seconds": 7}, ratios)
+				assert.Zero(t, uploads)
+				body, err := adaptor.BuildRequestBody(c, info)
+				require.NoError(t, err)
+				var sent map[string]any
+				require.NoError(t, common.DecodeJson(body, &sent))
+				want := map[string]any{"model": mapped, "input_videos": []any{map[string]any{"media_id": "med_removal_source"}}}
+				if input == "optional prompt" {
+					want["prompt"] = request["prompt"]
+				}
+				assert.Equal(t, want, sent, "source processing strips all generation controls and private billing inputs")
+				assert.Equal(t, 1, uploads)
+				parsed, taskErr := adaptor.ParseResponse(c, &http.Response{StatusCode: http.StatusAccepted,
+					Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"upstream-removal-task"}`))}, info)
+				require.Nil(t, taskErr)
+				require.NotNil(t, parsed)
+				assert.JSONEq(t, `{"source_video_seconds":7}`, string(parsed.PluginState))
+				for _, actual := range []any{nil, 0, 9999, 3.5} {
+					task := &model.Task{TaskID: "removal-video-task", Status: model.TaskStatusSuccess,
+						Properties:  model.Properties{OriginModelName: origin, UpstreamModelName: mapped},
+						PrivateData: model.TaskPrivateData{PluginState: parsed.PluginState}}
+					encoded, err := common.Marshal(map[string]any{"status": "completed", "seconds": actual})
+					require.NoError(t, err)
+					result, err := adaptor.ParseTaskResult(task, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, encoded)
+					require.NoError(t, err)
+					assert.Equal(t, map[string]any{"seconds": float64(7)}, result.UsageFacts, "settlement bills the frozen source once regardless of output duration")
+				}
+			})
+		}
+		t.Run(processing.model+"/alias decode", func(t *testing.T) {
+			var intent map[string]any
+			require.NoError(t, plugin.Engine.CallPathInto(t.Context(), &intent, "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": "processing-alias", "body": map[string]any{"kind": "json", "value": map[string]any{
+					"metadata": map[string]any{"operation": processing.operation}, "input_videos": []any{"data:video/mp4;base64,AA=="},
+				}},
+			}))
+			assert.Equal(t, processing.operation, intent["action"])
+		})
+		t.Run(processing.model+"/invalid frozen source", func(t *testing.T) {
+			for _, seconds := range []any{nil, 0, -1, 3601, 6.5, "7"} {
+				_, err := plugin.Engine.Call(t.Context(), "extractUsageOnComplete", map[string]any{
+					"model": "processing-alias", "upstreamModel": processing.model,
+					"state": map[string]any{"source_video_seconds": seconds},
+				}, nil, map[string]any{"seconds": 1})
+				require.Error(t, err, "invalid frozen source must not become an upstream-based discount")
+			}
+		})
+	}
 }
 
 func TestCCompatibleReferenceVideoBilling(t *testing.T) {
