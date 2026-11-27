@@ -224,6 +224,9 @@ describe('API keys mutate drawer Auto group integration', () => {
       ].map((item) => item.textContent)
     ).toEqual(['vip', 'default'])
     expect(findButton('Restore global Auto', true).disabled).toBe(true)
+    expect(
+      screen.getByRole('switch', { name: 'Cross-group retry' })
+    ).not.toBeChecked()
 
     changeInput(getControlByLabel('Name'), 'batch')
     changeInput(getControlByLabel('Quantity'), '2')
@@ -235,7 +238,7 @@ describe('API keys mutate drawer Auto group integration', () => {
     for (const payload of createdPayloads) {
       expect(payload.group).toBe('auto')
       expect(payload.auto_groups).toEqual([])
-      expect(payload.cross_group_retry).toBe(true)
+      expect(payload.cross_group_retry).toBe(false)
     }
   })
 
@@ -262,9 +265,16 @@ describe('API keys mutate drawer Auto group integration', () => {
     expect(findButton('Restore global Auto', true).disabled).toBe(false)
 
     const groupTrigger = getControlByLabel('Group')
+    fireEvent.click(screen.getByRole('switch', { name: 'Cross-group retry' }))
+    expect(
+      screen.getByRole('switch', { name: 'Cross-group retry' })
+    ).toBeChecked()
     selectComboboxOption(groupTrigger, 'Standard access')
     expect(document.querySelector('button[aria-label="Remove vip"]')).toBe(null)
     selectComboboxOption(groupTrigger, 'Automatic routing')
+    expect(
+      screen.getByRole('switch', { name: 'Cross-group retry' })
+    ).not.toBeChecked()
 
     expect(
       document.querySelector('button[aria-label="Remove vip"]')
@@ -278,6 +288,23 @@ describe('API keys mutate drawer Auto group integration', () => {
     fireEvent.click(findButton('Save changes', true))
     await waitFor(() => expect(createdPayloads).toHaveLength(1))
     expect(createdPayloads[0]?.auto_groups).toEqual(['vip'])
+    expect(createdPayloads[0]?.cross_group_retry).toBe(false)
+  })
+
+  test('sends cross-group retry only when the user explicitly enables it', async () => {
+    const createdPayloads: Array<Record<string, unknown>> = []
+    installApiFixtures(createdPayloads)
+    await renderCreateDrawer()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Cross-group retry' }))
+    expect(
+      screen.getByRole('switch', { name: 'Cross-group retry' })
+    ).toBeChecked()
+    changeInput(getControlByLabel('Name'), 'explicit retry')
+    fireEvent.click(findButton('Save changes', true))
+
+    await waitFor(() => expect(createdPayloads).toHaveLength(1))
+    expect(createdPayloads[0]?.cross_group_retry).toBe(true)
   })
 })
 

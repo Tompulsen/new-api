@@ -55,6 +55,31 @@ const baseApiKey: ApiKey = {
 }
 
 describe('API key Auto group form mapping', () => {
+  test.each([true, false])(
+    'disables cross-group retry when creating a key with default Auto %s',
+    (defaultUseAutoGroup) => {
+      const defaults = getApiKeyFormDefaultValues(defaultUseAutoGroup)
+
+      expect(defaults.cross_group_retry).toBe(false)
+      expect(transformFormDataToPayload(defaults).cross_group_retry).toBe(false)
+    }
+  )
+
+  test.each([true, false])(
+    'preserves the stored cross-group retry setting %s when editing an Auto key',
+    (crossGroupRetry) => {
+      const defaults = transformApiKeyToFormDefaults({
+        ...baseApiKey,
+        cross_group_retry: crossGroupRetry,
+      })
+
+      expect(defaults.cross_group_retry).toBe(crossGroupRetry)
+      expect(transformFormDataToPayload(defaults).cross_group_retry).toBe(
+        crossGroupRetry
+      )
+    }
+  )
+
   test('treats legacy token responses without auto_groups as inheritance', () => {
     const legacyApiKey: Record<string, unknown> = { ...baseApiKey }
     delete legacyApiKey.auto_groups
